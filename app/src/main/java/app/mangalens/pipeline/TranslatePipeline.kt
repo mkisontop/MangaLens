@@ -19,6 +19,8 @@ import app.mangalens.translate.TranslationCache
 import app.mangalens.translate.TranslationService
 import app.mangalens.translate.VisionLlmEngine
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.launch
 import org.json.JSONArray
 
 /**
@@ -89,40 +91,52 @@ class TranslatePipeline(
             }
         }
 
-        // Fast path first — reading never waits on the AI round-trip.
-        onPartial?.let { emit ->
-            val fast = runCatching { machineTranslate(bitmap, bubbles, ocrResult.lang, settings, forceGoogle = true) }
-                .getOrNull()
-            if (fast != null && fast.bubbles.isNotEmpty()) {
-                emit(fast.copy(note = "upgrading"))
-            }
-        }
-
-        // AI path: vision first where routed, then text-LLM, then keep fast.
-        if (useVision) {
-            try {
-                val pageBubbles = vision.translatePage(bitmap, ocrResult.lang, bubbles)
-                // The upgrade must never look worse than the draft: accept the
-                // vision result only if it covered most of the dialogue regions
-                // we know exist. Otherwise fall back to the text path, which
-                // renders AI text on exact OCR geometry.
-                val dialogueIds = bubbles.indices.filter { bubbles[it].kind == BubbleKind.DIALOGUE }
-                val covered = pageBubbles.count { it.id in dialogueIds }
-                val goodCoverage = dialogueIds.isEmpty() || covered * 2 >= dialogueIds.size
-                if (pageBubbles.isNotEmpty() && goodCoverage) {
-                    visionCachePut(vision.cacheNamespace, ocrResult.lang, bubbles, pageBubbles)
-                    return PageResult(
-                        toRender(bitmap, pageBubbles, bubbles, ignoreTop, ignoreBottom, exclusions),
-                        vision.label, null, polished = true,
-                    )
+        // Fast draft and AI request race concurrently: the draft paints in
+        // ~1 s, and the AI round-trip starts immediately rather than queuing
+        // behind it. If the AI finishes first the draft is skipped entirely.
+        return coroutineScope {
+            var aiFinished = false
+            val fastJob = onPartial?.let { emit ->
+                launch {
+                    val fast = runCatching {
+                        machineTranslate(bitmap, bubbles, ocrResult.lang, settings, forceGoogle = true)
+                    }.getOrNull()
+                    if (fast != null && fast.bubbles.isNotEmpty() && !aiFinished) {
+                        emit(fast.copy(note = "upgrading"))
+                    }
                 }
-            } catch (e: CancellationException) {
-                throw e
-            } catch (_: Exception) {
-                // fall through to the text path
+            }
+            try {
+                if (useVision) {
+                    try {
+                        val pageBubbles = vision.translatePage(bitmap, ocrResult.lang, bubbles)
+                        // The upgrade must never look worse than the draft:
+                        // accept the vision result only if it covered most of
+                        // the dialogue regions we know exist. Otherwise fall
+                        // back to the text path, which renders AI text on
+                        // exact OCR geometry.
+                        val dialogueIds = bubbles.indices.filter { bubbles[it].kind == BubbleKind.DIALOGUE }
+                        val covered = pageBubbles.count { it.id in dialogueIds }
+                        val goodCoverage = dialogueIds.isEmpty() || covered * 2 >= dialogueIds.size
+                        if (pageBubbles.isNotEmpty() && goodCoverage) {
+                            visionCachePut(vision.cacheNamespace, ocrResult.lang, bubbles, pageBubbles)
+                            return@coroutineScope PageResult(
+                                toRender(bitmap, pageBubbles, bubbles, ignoreTop, ignoreBottom, exclusions),
+                                vision.label, null, polished = true,
+                            )
+                        }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        // fall through to the text path
+                    }
+                }
+                aiTextTranslate(bitmap, bubbles, ocrResult.lang, settings)
+            } finally {
+                aiFinished = true
+                fastJob?.cancel()
             }
         }
-        return aiTextTranslate(bitmap, bubbles, ocrResult.lang, settings)
     }
 
     // ---- machine engines (Google / on-device), also the AI fast path ----
@@ -168,8 +182,9 @@ class TranslatePipeline(
         val outcome = translation.translate(
             bubbles.map { it.text }, lang, settings, kinds = bubbles.map { it.kind },
         )
+        val fromAi = outcome.engineLabel != "Google"
         val rendered = bubbles.mapIndexed { i, b ->
-            val gated = JunkFilter.accept(b.text, outcome.texts.getOrElse(i) { "" }, lang)
+            val gated = JunkFilter.accept(b.text, outcome.texts.getOrElse(i) { "" }, lang, fromAi)
                 ?: return@mapIndexed null
             renderBubble(bitmap, b.box, gated, b.text, b.vertical, b.kind)
         }.filterNotNull()

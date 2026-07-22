@@ -104,6 +104,14 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
     private var latestBitmap: Bitmap? = null
     private var prevThumb: IntArray? = null
 
+    // Reused frame buffers (capture thread only): the display feeds frames at
+    // refresh rate, but scroll detection only needs ~12 fps, and allocating a
+    // full-screen bitmap per frame melts batteries. One buffer holds the
+    // latest complete frame; the other is being written.
+    private var frameA: Bitmap? = null
+    private var frameB: Bitmap? = null
+    private var lastFrameProcessedAt = 0L
+
     @Volatile private var lastMotionAt = 0L
     @Volatile private var lastFrameAt = 0L
     @Volatile private var suppressUntil = 0L
@@ -238,11 +246,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
             translateJob?.cancel()
             state = State.SCANNING
             controller?.bubbleView?.clear()
-            synchronized(frameLock) {
-                latestBitmap?.recycle()
-                latestBitmap = null
-            }
-            prevThumb = null
+            releaseFrameBuffers()
             setupDisplay()
         }
     }
@@ -253,12 +257,15 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         try {
             val now = SystemClock.uptimeMillis()
             lastFrameAt = now
+            // ~12 fps is plenty for a 350 ms stability window; dropping the
+            // rest skips a full-screen copy per display frame.
+            if (now - lastFrameProcessedAt < 80) return
+            lastFrameProcessedAt = now
             val bmp = imageToBitmap(image)
-            val thumb = FrameStability.grayThumb(bmp)
+            val thumb = FrameStability.grayThumb(bmp, capW, capH)
             val diff = FrameStability.meanDiff(prevThumb, thumb)
             prevThumb = thumb
             synchronized(frameLock) {
-                latestBitmap?.recycle()
                 latestBitmap = bmp
             }
             if (now < suppressUntil) return
@@ -271,21 +278,43 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         }
     }
 
+    /**
+     * Copies the frame into one of two reused buffers (stride-padded width;
+     * cropped only when a translation pass actually grabs it).
+     */
     private fun imageToBitmap(image: Image): Bitmap {
         val plane = image.planes[0]
-        val pixelStride = plane.pixelStride
-        val rowStride = plane.rowStride
-        val rowPadding = rowStride - pixelStride * image.width
-        val bmp = Bitmap.createBitmap(
-            image.width + rowPadding / pixelStride,
-            image.height,
-            Bitmap.Config.ARGB_8888
-        )
-        bmp.copyPixelsFromBuffer(plane.buffer)
-        if (rowPadding == 0) return bmp
-        val cropped = Bitmap.createBitmap(bmp, 0, 0, image.width, image.height)
-        bmp.recycle()
-        return cropped
+        val strideW = plane.rowStride / plane.pixelStride
+        val current = synchronized(frameLock) { latestBitmap }
+        var target = if (current === frameA && frameA != null) frameB else frameA
+        if (target == null || target.width != strideW || target.height != image.height) {
+            target?.recycle()
+            target = Bitmap.createBitmap(strideW, image.height, Bitmap.Config.ARGB_8888)
+            if (current === frameA && frameA != null) frameB = target else frameA = target
+        }
+        plane.buffer.rewind()
+        target.copyPixelsFromBuffer(plane.buffer)
+        return target
+    }
+
+    /** Serialized onto the capture thread so a buffer is never freed mid-write. */
+    private fun releaseFrameBuffers() {
+        val action = Runnable {
+            synchronized(frameLock) { latestBitmap = null }
+            frameA?.recycle()
+            frameB?.recycle()
+            frameA = null
+            frameB = null
+            prevThumb = null
+        }
+        val handler = captureHandler
+        if (handler != null && handler.looper.thread.isAlive &&
+            Thread.currentThread() !== handler.looper.thread
+        ) {
+            handler.post(action)
+        } else {
+            action.run()
+        }
     }
 
     private fun onMotion() {
@@ -381,8 +410,15 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
             suppressUntil = SystemClock.uptimeMillis() + 900
             delay(280)
         }
+        // Crop away any stride padding here, once per translation pass, and
+        // always hand out a private copy so the reused buffers stay ours.
         return synchronized(frameLock) {
-            latestBitmap?.copy(Bitmap.Config.ARGB_8888, false)
+            latestBitmap?.let { src ->
+                val w = capW.coerceAtMost(src.width)
+                val h = capH.coerceAtMost(src.height)
+                val out = Bitmap.createBitmap(src, 0, 0, w, h)
+                if (out === src) src.copy(Bitmap.Config.ARGB_8888, false) else out
+            }
         }
     }
 
@@ -487,12 +523,9 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         projection = null
         controller?.detach()
         controller = null
+        releaseFrameBuffers()
         captureThread?.quitSafely()
         captureThread = null
-        synchronized(frameLock) {
-            latestBitmap?.recycle()
-            latestBitmap = null
-        }
         super.onDestroy()
     }
 }

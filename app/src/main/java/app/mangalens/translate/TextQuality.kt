@@ -48,27 +48,32 @@ object SfxDict {
 object JunkFilter {
 
     /** Returns null when the translation should not be rendered at all. */
-    fun accept(source: String, translated: String, lang: SourceLang): String? {
+    fun accept(source: String, translated: String, lang: SourceLang, fromAi: Boolean = false): String? {
         val out = translated.trim()
         if (out.isEmpty()) return null
         // Untranslated echo: painting the original text over itself helps nobody.
         if (Script.cjkCount(out) > out.length * 0.4f) return null
         val letters = out.count { it.isLetter() }
         if (letters < 2) return null
-        if (lang == SourceLang.JA && looksLikeRomajiEcho(source, out)) return null
+        // The AI engines are instructed to skip rather than romanize, and a
+        // shouted name (カナタ! -> "Kanata!") IS legitimate romaji — only the
+        // machine engines get this gate, and only for long echoes.
+        if (!fromAi && lang == SourceLang.JA && looksLikeRomajiEcho(source, out)) return null
         return out
     }
 
     /**
      * Google romanizes unparseable kana instead of translating it. Detected by
      * comparing the output against a Hepburn romanization of the source kana:
-     * near-match means no translation happened.
+     * near-match means no translation happened. Short matches are left alone —
+     * a romanized name bubble is a correct translation, a romanized sentence
+     * is not.
      */
     fun looksLikeRomajiEcho(source: String, out: String): Boolean {
         val romaji = romanizeKana(source)
-        if (romaji.length < 4) return false
+        if (romaji.length < 12) return false
         val cleanOut = out.lowercase().filter { it in 'a'..'z' }
-        if (cleanOut.length < 4) return false
+        if (cleanOut.length < 8) return false
         val dist = levenshtein(romaji, cleanOut)
         return dist <= max(romaji.length, cleanOut.length) * 0.34
     }

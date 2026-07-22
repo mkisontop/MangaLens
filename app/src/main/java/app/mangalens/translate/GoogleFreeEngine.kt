@@ -67,7 +67,7 @@ class GoogleFreeEngine : TranslationEngine {
             .header("User-Agent", "Mozilla/5.0 (Linux; Android 14; Tablet) AppleWebKit/537.36")
             .post(FormBody.Builder().add("q", text).build())
             .build()
-        client.newCall(request).execute().use { resp ->
+        LlmHttp.await(client.newCall(request)).use { resp ->
             if (!resp.isSuccessful) throw RuntimeException("Google translate HTTP " + resp.code)
             val body = resp.body?.string() ?: throw RuntimeException("empty translate response")
             val rows = JSONArray(body).getJSONArray(0)
