@@ -101,8 +101,15 @@ class TranslatePipeline(
         // AI path: vision first where routed, then text-LLM, then keep fast.
         if (useVision) {
             try {
-                val pageBubbles = vision.translatePage(bitmap, ocrResult.lang)
-                if (pageBubbles.isNotEmpty()) {
+                val pageBubbles = vision.translatePage(bitmap, ocrResult.lang, bubbles)
+                // The upgrade must never look worse than the draft: accept the
+                // vision result only if it covered most of the dialogue regions
+                // we know exist. Otherwise fall back to the text path, which
+                // renders AI text on exact OCR geometry.
+                val dialogueIds = bubbles.indices.filter { bubbles[it].kind == BubbleKind.DIALOGUE }
+                val covered = pageBubbles.count { it.id in dialogueIds }
+                val goodCoverage = dialogueIds.isEmpty() || covered * 2 >= dialogueIds.size
+                if (pageBubbles.isNotEmpty() && goodCoverage) {
                     visionCachePut(vision.cacheNamespace, ocrResult.lang, bubbles, pageBubbles)
                     return PageResult(
                         toRender(bitmap, pageBubbles, bubbles, ignoreTop, ignoreBottom, exclusions),
@@ -183,28 +190,45 @@ class TranslatePipeline(
         val w = bitmap.width
         val h = bitmap.height
         val unclaimed = ocrBubbles.toMutableList()
-        return pageBubbles.mapNotNull { v ->
+
+        // Anchored entries first: exact OCR geometry, AI text.
+        val anchored = pageBubbles.filter { it.id in ocrBubbles.indices }.mapNotNull { v ->
+            val anchor = ocrBubbles[v.id]
+            if (!unclaimed.remove(anchor)) return@mapNotNull null
+            renderBubble(
+                bitmap, anchor.box, v.en, v.src.ifBlank { anchor.text }, anchor.vertical,
+                if (v.sfx) BubbleKind.SFX else BubbleKind.DIALOGUE,
+            )
+        }
+
+        // Extras (text OCR missed) use the model's box — snapped to a leftover
+        // OCR region when one clearly matches, dropped when it lands nowhere
+        // sane. The model's geometry is never allowed to cover the page.
+        val extras = pageBubbles.filter { it.id < 0 }.mapNotNull { v ->
             var box = Rect(
                 v.nx * w / 1000,
                 v.ny * h / 1000,
                 (v.nx + v.nw) * w / 1000,
                 (v.ny + v.nh) * h / 1000,
             )
-            // Snap to the tight on-device OCR box when one clearly matches —
-            // OCR knows pixels, the LLM knows meaning.
+            var vertical = false
+            var original = v.src
             val match = unclaimed.maxByOrNull { iou(it.box, box) }
             if (match != null && iou(match.box, box) > 0.18f) {
                 box = Rect(match.box)
+                vertical = match.vertical
+                if (original.isBlank()) original = match.text
                 unclaimed.remove(match)
             }
             if (box.bottom <= ignoreTop || box.top >= h - ignoreBottom) return@mapNotNull null
             if (exclusions.any { Rect.intersects(it, box) }) return@mapNotNull null
             if (box.width() < 8 || box.height() < 8) return@mapNotNull null
             renderBubble(
-                bitmap, box, v.en, v.src.ifBlank { match?.text ?: "" }, match?.vertical ?: false,
+                bitmap, box, v.en, original, vertical,
                 if (v.sfx) BubbleKind.SFX else BubbleKind.DIALOGUE,
             )
         }
+        return anchored + extras
     }
 
     private fun iou(a: Rect, b: Rect): Float {
@@ -232,9 +256,10 @@ class TranslatePipeline(
             val arr = JSONArray(raw)
             (0 until arr.length()).map { i ->
                 val o = arr.getJSONArray(i)
+                if (o.length() != 8) throw IllegalStateException("stale vision cache entry")
                 VisionLlmEngine.VisionBubble(
-                    o.getInt(0), o.getInt(1), o.getInt(2), o.getInt(3),
-                    o.getString(4), o.getString(5), o.getInt(6) == 1,
+                    o.getInt(0), o.getInt(1), o.getInt(2), o.getInt(3), o.getInt(4),
+                    o.getString(5), o.getString(6), o.getInt(7) == 1,
                 )
             }
         }.getOrNull()
@@ -250,7 +275,7 @@ class TranslatePipeline(
         val arr = JSONArray()
         for (v in result) {
             arr.put(
-                JSONArray().put(v.nx).put(v.ny).put(v.nw).put(v.nh)
+                JSONArray().put(v.id).put(v.nx).put(v.ny).put(v.nw).put(v.nh)
                     .put(v.src).put(v.en).put(if (v.sfx) 1 else 0)
             )
         }

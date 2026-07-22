@@ -23,7 +23,9 @@ class VisionLlmEngine(
 ) {
 
     data class VisionBubble(
-        /** Bubble box normalized to 0..1000 of the sent image (aspect preserved). */
+        /** Index of the on-device OCR region this translates, or -1 for text OCR missed. */
+        val id: Int,
+        /** Bubble box normalized to 0..1000 of the sent image; only trusted when id == -1. */
         val nx: Int,
         val ny: Int,
         val nw: Int,
@@ -37,7 +39,11 @@ class VisionLlmEngine(
 
     val cacheNamespace: String get() = "Vision:" + label + ":" + settings.effectiveModel()
 
-    suspend fun translatePage(bitmap: Bitmap, lang: SourceLang): List<VisionBubble> =
+    suspend fun translatePage(
+        bitmap: Bitmap,
+        lang: SourceLang,
+        anchors: List<app.mangalens.ocr.Bubble>,
+    ): List<VisionBubble> =
         withContext(Dispatchers.IO) {
             LlmHttp.requireConfig(settings)
 
@@ -48,10 +54,32 @@ class VisionLlmEngine(
                 SourceLang.ZH -> "Chinese"
                 SourceLang.AUTO -> "Korean, Japanese or Chinese"
             }
+            // The AI reads and translates; on-device OCR owns the geometry.
+            // Each detected region is an anchor the model answers by id, so
+            // overlays land pixel-perfect even when the model's own sense of
+            // image coordinates drifts.
+            val regions = JSONArray()
+            anchors.forEachIndexed { i, b ->
+                regions.put(
+                    JSONObject()
+                        .put("id", i)
+                        .put(
+                            "box",
+                            JSONArray()
+                                .put(b.box.left * 1000 / bitmap.width)
+                                .put(b.box.top * 1000 / bitmap.height)
+                                .put(b.box.width() * 1000 / bitmap.width)
+                                .put(b.box.height() * 1000 / bitmap.height)
+                        )
+                        .put("ocr_text_maybe_garbled", b.text)
+                        .put("kind_guess", if (b.kind == app.mangalens.ocr.BubbleKind.SFX) "sfx" else "dialogue")
+                )
+            }
             val user = JSONObject()
                 .put("expected_source_language", langHint)
                 .put("glossary", JSONObject(glossary?.snapshot() ?: emptyMap<String, String>()))
                 .put("recent_lines_for_context", JSONArray(StoryContext.snapshot()))
+                .put("detected_regions", regions)
                 .toString()
 
             val anthropicContent = JSONArray()
@@ -78,10 +106,24 @@ class VisionLlmEngine(
             val reply = LlmHttp.extractJsonObject(raw)
 
             val out = ArrayList<VisionBubble>()
+            val seenIds = HashSet<Int>()
             val arr = reply.optJSONArray("bubbles") ?: JSONArray()
             for (i in 0 until arr.length()) {
                 val o = arr.optJSONObject(i) ?: continue
                 if (o.optString("kind") == "skip") continue
+                val en = o.optString("en", "").trim()
+                if (en.isEmpty()) continue
+                val sfx = o.optString("kind") == "sfx"
+                val src = o.optString("src", "").trim()
+
+                val id = o.optInt("id", -1)
+                if (id in anchors.indices) {
+                    if (!seenIds.add(id)) continue
+                    out.add(VisionBubble(id, 0, 0, 0, 0, src, en, sfx))
+                    continue
+                }
+                // Extra text the on-device OCR missed — here (and only here)
+                // the model's own box is used.
                 val box = o.optJSONArray("box") ?: continue
                 if (box.length() < 4) continue
                 val nx = box.optInt(0, -1)
@@ -89,17 +131,12 @@ class VisionLlmEngine(
                 val nw = box.optInt(2, 0)
                 val nh = box.optInt(3, 0)
                 if (nx !in 0..1000 || ny !in 0..1000 || nw <= 0 || nh <= 0) continue
-                val en = o.optString("en", "").trim()
-                if (en.isEmpty()) continue
-                val sfx = o.optString("kind") == "sfx"
                 out.add(
                     VisionBubble(
-                        nx, ny,
+                        -1, nx, ny,
                         nw.coerceAtMost(1000 - nx),
                         nh.coerceAtMost(1000 - ny),
-                        o.optString("src", "").trim(),
-                        en,
-                        sfx,
+                        src, en, sfx,
                     )
                 )
             }
@@ -136,20 +173,22 @@ class VisionLlmEngine(
         }
 
         private val SYSTEM_PROMPT = """
-You are an elite manga/manhwa/manhua localization translator looking at one raw comic page screenshot. Find every speech bubble, thought bubble, narration box and meaningful sound effect, read the original text directly from the art, and translate it into natural English that reads like an official licensed release.
+You are an elite manga/manhwa/manhua localization translator looking at one raw comic page screenshot. You also receive "detected_regions": text areas found by on-device OCR, each with an id, a box, and the OCR's (often garbled) reading.
+
+Your job, for EVERY detected region: look at that spot in the image, read the original text directly from the art (trust the image over ocr_text_maybe_garbled), and translate it into natural English that reads like an official licensed release. Answer by region id — never restate or adjust the given boxes.
 
 Rules:
-- Reading order: manga (Japanese) right-to-left, top-to-bottom; webtoons/manhwa top-to-bottom. Vertical text reads columns right-to-left.
+- Reading order: manga (Japanese) right-to-left, top-to-bottom; webtoons/manhwa top-to-bottom. Vertical text reads columns right-to-left. Use the whole page and the story context to get tone and meaning right.
 - Write the way real people speak: contractions, matching emotion and register per line. Keep honorifics that carry nuance (oppa, hyung, noona, -nim, senpai, -san, -sama, -chan, gege, shifu).
 - Use the provided glossary EXACTLY for known names/terms; romanize new names sensibly.
-- Sound effects: translate as punchy comic onomatopoeia in CAPS (WHAM, BA-DUMP, KRAK) with "kind":"sfx". Skip decorative or unreadable SFX.
-- IGNORE app/browser UI, status bars, page numbers, watermarks, and anything that is not part of the comic art.
-- "box" is [x,y,width,height] of the text's bounding area, each 0-1000 normalized to the image (x,width against image width; y,height against image height). Cover the text tightly.
+- Sound effects: punchy comic onomatopoeia in CAPS (WHAM, BA-DUMP, KRAK) with "kind":"sfx". Use "kind":"skip" for regions that are UI scraps, watermarks, page numbers, or decorative/unreadable SFX.
+- If real comic text is visible that has NO detected region, add an entry WITHOUT an id and WITH "box":[x,y,width,height], each value 0-1000 normalized to the FULL image including any dark background (x and width against image width, y and height against image height). Never add boxes for app/browser UI.
 - "src" is the original text as printed. Keep lines tight; no notes, no romanization in "en".
 
 Respond with ONLY this JSON object, no markdown fences:
-{"bubbles":[{"box":[x,y,w,h],"src":"<original>","en":"<English>","kind":"dialogue|sfx|skip"}...],"new_terms":{"<source name/term>":"<English>"}}
-- Bubbles in reading order. "new_terms": only newly established proper nouns/terms not already in the glossary.
+{"bubbles":[{"id":<region id>,"src":"<original>","en":"<English>","kind":"dialogue|sfx|skip"}, ...,{"box":[x,y,w,h],"src":"...","en":"...","kind":"dialogue"}],"new_terms":{"<source name/term>":"<English>"}}
+- One entry per detected region id (plus any no-id extras), in reading order.
+- "new_terms": only newly established proper nouns/terms not already in the glossary.
 """.trim()
     }
 }
