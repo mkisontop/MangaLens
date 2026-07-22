@@ -36,6 +36,7 @@ import app.mangalens.pipeline.TranslatePipeline
 import app.mangalens.settings.AppSettings
 import app.mangalens.settings.CaptureMode
 import app.mangalens.settings.SettingsRepository
+import app.mangalens.translate.GlossaryStore
 import app.mangalens.translate.TranslationCache
 import app.mangalens.translate.TranslationService
 import kotlinx.coroutines.CancellationException
@@ -94,8 +95,10 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
     private var controller: OverlayController? = null
     private val ocr = OcrEngine()
     private val cache = TranslationCache()
-    private val translation = TranslationService(cache)
-    private val pipeline = TranslatePipeline(ocr, translation)
+    // lazy: these need a Context, which a Service only has after construction
+    private val glossary by lazy { GlossaryStore(this) }
+    private val translation by lazy { TranslationService(cache, glossary) }
+    private val pipeline by lazy { TranslatePipeline(ocr, translation, cache, glossary) }
 
     private val frameLock = Any()
     private var latestBitmap: Bitmap? = null
@@ -330,7 +333,20 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                     return@launch
                 }
                 setPill("translating…")
-                val result = withContext(Dispatchers.Default) { pipeline.process(bmp, settings) }
+                val exclusions = controller?.overlayExclusions() ?: emptyList()
+                val result = withContext(Dispatchers.Default) {
+                    pipeline.process(bmp, settings, exclusions) { partial ->
+                        // Fast path landed — paint it now, AI polish follows.
+                        withContext(Dispatchers.Main.immediate) {
+                            if (isActive && state == State.TRANSLATING) {
+                                lastShown = partial.bubbles
+                                suppressUntil = SystemClock.uptimeMillis() + 600
+                                controller?.bubbleView?.setBubbles(partial.bubbles)
+                                setPill("✓ ${partial.bubbles.size} · ${partial.engineLabel} · ✨ upgrading…")
+                            }
+                        }
+                    }
+                }
                 bmp.recycle()
                 if (!isActive) return@launch
                 lastShown = result.bubbles
@@ -340,8 +356,9 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                 if (result.bubbles.isEmpty()) {
                     setPill(if (auto) null else "no CJK text found", 1800)
                 } else {
+                    val mark = if (result.polished) "✨" else "✓"
                     val extra = result.note?.let { " · $it" } ?: ""
-                    setPill("✓ ${result.bubbles.size} · ${result.engineLabel}$extra", 2400)
+                    setPill("$mark ${result.bubbles.size} · ${result.engineLabel}$extra", 2400)
                 }
             } catch (e: CancellationException) {
                 throw e

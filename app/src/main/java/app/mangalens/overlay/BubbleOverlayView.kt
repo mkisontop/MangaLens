@@ -11,6 +11,7 @@ import android.text.Layout
 import android.text.StaticLayout
 import android.text.TextPaint
 import android.view.View
+import app.mangalens.ocr.BubbleKind
 
 data class RenderBubble(
     val box: Rect,
@@ -19,6 +20,7 @@ data class RenderBubble(
     val bgColor: Int,
     val textColor: Int,
     val vertical: Boolean,
+    val kind: BubbleKind = BubbleKind.DIALOGUE,
 )
 
 /**
@@ -58,22 +60,24 @@ class BubbleOverlayView(context: Context) : View(context) {
 
     private fun place(b: RenderBubble): Placed? {
         if (b.translated.isBlank()) return null
+        val sfx = b.kind == BubbleKind.SFX
         val screenW = (if (width > 0) width else resources.displayMetrics.widthPixels).toFloat()
         val screenH = (if (height > 0) height else resources.displayMetrics.heightPixels).toFloat()
-        val pad = dp(7f)
+        val pad = if (sfx) dp(4f) else dp(7f)
 
         var boxW = b.box.width().toFloat()
         if (b.vertical) boxW = maxOf(boxW, b.box.height() * 0.85f)
-        boxW = boxW.coerceAtLeast(dp(88f)).coerceAtMost(screenW * 0.92f)
+        boxW = boxW.coerceAtLeast(if (sfx) dp(48f) else dp(88f)).coerceAtMost(screenW * 0.92f)
         val maxH = maxOf(b.box.height() + dp(26f), dp(64f))
 
         var layout: StaticLayout? = null
-        var size = 18f * textScale
+        var size = (if (sfx) 12f else 18f) * textScale
         while (size >= 9f) {
             val tp = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = b.textColor
+                color = if (sfx) Color.WHITE else b.textColor
                 textSize = dp(size)
-                typeface = Typeface.create("sans-serif-medium", Typeface.NORMAL)
+                typeface = if (sfx) Typeface.create("sans-serif-condensed", Typeface.BOLD_ITALIC)
+                else Typeface.create("sans-serif-medium", Typeface.NORMAL)
             }
             val candidate = StaticLayout.Builder
                 .obtain(b.translated, 0, b.translated.length, tp, (boxW - pad * 2).toInt().coerceAtLeast(40))
@@ -97,8 +101,14 @@ class BubbleOverlayView(context: Context) : View(context) {
         left = left.coerceAtMost(screenW - w - dp(2f)).coerceAtLeast(dp(2f))
         top = top.coerceAtMost(screenH - h - dp(2f)).coerceAtLeast(dp(2f))
 
-        val alpha = (255 * bgOpacity).toInt().coerceIn(70, 255)
-        val bg = Color.argb(alpha, Color.red(b.bgColor), Color.green(b.bgColor), Color.blue(b.bgColor))
+        // SFX render as compact dark captions floating on the art, not as
+        // page-colored patches — closer to how scanlators letter small SFX.
+        val bg = if (sfx) {
+            Color.argb(200, 24, 25, 40)
+        } else {
+            val alpha = (255 * bgOpacity).toInt().coerceIn(70, 255)
+            Color.argb(alpha, Color.red(b.bgColor), Color.green(b.bgColor), Color.blue(b.bgColor))
+        }
         return Placed(RectF(left, top, left + w, top + h), chosen, bg)
     }
 

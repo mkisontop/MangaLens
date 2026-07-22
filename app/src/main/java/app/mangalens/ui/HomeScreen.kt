@@ -42,6 +42,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
@@ -49,6 +50,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.mangalens.capture.ScreenCaptureService
+import app.mangalens.settings.AiVisionMode
 import app.mangalens.settings.AppSettings
 import app.mangalens.settings.CaptureMode
 import app.mangalens.settings.EngineKind
@@ -231,7 +233,7 @@ private fun EngineCard(settings: AppSettings, repo: SettingsRepository) {
             Text(
                 when (settings.engine) {
                     EngineKind.GOOGLE -> "Works instantly, no setup. Solid everyday quality."
-                    EngineKind.LLM -> "Master-translator quality: an AI translates whole pages with story context, natural tone and honorifics. Needs an API key."
+                    EngineKind.LLM -> "Feels like an official release: the AI reads whole pages (even the raw image) with story memory, a name glossary, natural tone and honorifics. A fast draft appears instantly; the AI polish replaces it seconds later. Needs an API key — Gemini's is free."
                     EngineKind.MLKIT -> "100% offline after a one-time ~30 MB model download per language. Roughest quality of the three."
                 },
                 style = MaterialTheme.typography.bodySmall,
@@ -292,12 +294,60 @@ private fun EngineCard(settings: AppSettings, repo: SettingsRepository) {
                         modifier = Modifier.fillMaxWidth()
                     )
                 }
+                Spacer(Modifier.height(12.dp))
+                Text("AI Vision — let the AI read the raw page image", style = MaterialTheme.typography.bodyMedium)
+                Spacer(Modifier.height(6.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Chip("Auto", settings.aiVision == AiVisionMode.AUTO) {
+                        scope.launch { repo.setAiVision(AiVisionMode.AUTO) }
+                    }
+                    Chip("Always", settings.aiVision == AiVisionMode.ALWAYS) {
+                        scope.launch { repo.setAiVision(AiVisionMode.ALWAYS) }
+                    }
+                    Chip("Text only", settings.aiVision == AiVisionMode.OFF) {
+                        scope.launch { repo.setAiVision(AiVisionMode.OFF) }
+                    }
+                }
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    "Claude key → console.anthropic.com · Gemini has a free tier → aistudio.google.com",
+                    when (settings.aiVision) {
+                        AiVisionMode.AUTO -> "Smart: sends the page image only for Japanese / vertical text (where on-device OCR struggles). Korean webtoons use tiny text-only requests — best for slow internet."
+                        AiVisionMode.ALWAYS -> "Every page goes to the AI as an image. Highest quality, biggest uploads (~150–300 KB per page)."
+                        AiVisionMode.OFF -> "Only OCR'd text is sent (a few KB). Fastest on slow internet; Japanese quality depends on on-device OCR."
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Chip("Data saver — smaller page uploads", settings.dataSaver) {
+                        scope.launch { repo.setDataSaver(!settings.dataSaver) }
+                    }
+                }
+                Spacer(Modifier.height(10.dp))
+                val uriHandler = LocalUriHandler.current
+                if (settings.provider == LlmProvider.GEMINI) {
+                    Text(
+                        "Gemini is FREE (no card needed): create a key at aistudio.google.com/apikey, paste it above. Takes ~2 minutes.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                    Text(
+                        "Open aistudio.google.com/apikey →",
+                        modifier = Modifier
+                            .clickable { uriHandler.openUri("https://aistudio.google.com/apikey") }
+                            .padding(vertical = 4.dp),
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.SemiBold
+                    )
+                } else {
+                    Text(
+                        "Claude key → console.anthropic.com · No key yet? Pick Google Gemini — it has a free tier.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
             }
 
             Spacer(Modifier.height(12.dp))
@@ -473,8 +523,9 @@ private fun TipsCard() {
                 "• Brave private tabs block screen capture (they render black). Use a normal tab.\n" +
                     "• Overlays never block touches — scroll right through them.\n" +
                     "• Scrolling instantly hides overlays; stopping re-translates. That's the live loop.\n" +
-                    "• AI Pro sends only the bubble text to your chosen provider — never the image.\n" +
-                    "• Everything else (capture + OCR) runs fully on this device.\n" +
+                    "• AI Pro shows a fast draft instantly, then the AI polish replaces it — slow internet never blocks reading.\n" +
+                    "• Text mode sends only bubble text; AI Vision sends the page image — only ever to the provider you chose.\n" +
+                    "• Names stay consistent: the AI keeps a glossary of characters and terms as you read.\n" +
                     "• Reading raws you love? Support the official release when it exists.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant,

@@ -1,5 +1,6 @@
 package app.mangalens.translate
 
+import app.mangalens.ocr.BubbleKind
 import app.mangalens.settings.AppSettings
 import app.mangalens.settings.EngineKind
 import app.mangalens.settings.SourceLang
@@ -18,19 +19,31 @@ interface TranslationEngine {
 /**
  * Runs translations through the configured engine with caching, falling back to
  * the free Google engine when a fancier engine fails (bad key, offline, etc).
+ * A blank result means "render nothing for this bubble" and is never cached, so
+ * transient misses retry on the next pass.
  */
-class TranslationService(private val cache: TranslationCache) {
+class TranslationService(
+    private val cache: TranslationCache,
+    private val glossary: GlossaryStore? = null,
+) {
 
     private val google = GoogleFreeEngine()
     private val mlkit = MlKitEngine()
 
     data class Outcome(val texts: List<String>, val engineLabel: String, val note: String? = null)
 
-    suspend fun translate(items: List<String>, lang: SourceLang, settings: AppSettings): Outcome {
-        val chain: List<TranslationEngine> = when (settings.engine) {
-            EngineKind.LLM -> listOf(LlmEngine(settings), google)
-            EngineKind.GOOGLE -> listOf(google)
-            EngineKind.MLKIT -> listOf(mlkit, google)
+    suspend fun translate(
+        items: List<String>,
+        lang: SourceLang,
+        settings: AppSettings,
+        kinds: List<BubbleKind>? = null,
+        forceGoogle: Boolean = false,
+    ): Outcome {
+        val chain: List<TranslationEngine> = when {
+            forceGoogle -> listOf(google)
+            settings.engine == EngineKind.LLM -> listOf(LlmEngine(settings, glossary), google)
+            settings.engine == EngineKind.GOOGLE -> listOf(google)
+            else -> listOf(mlkit, google)
         }
         var lastError: Exception? = null
         for (engine in chain) {
@@ -44,19 +57,34 @@ class TranslationService(private val cache: TranslationCache) {
                 return Outcome(resolved.map { it ?: "" }, engine.label)
             }
             try {
-                val fresh = engine.translate(missing.map { it.second }, lang)
+                val fresh = if (engine is LlmEngine && kinds != null) {
+                    engine.translateWithKinds(
+                        missing.map { it.second },
+                        missing.map { kinds.getOrNull(it.first) ?: BubbleKind.DIALOGUE },
+                        lang,
+                    )
+                } else {
+                    engine.translate(missing.map { it.second }, lang)
+                }
                 for ((k, pair) in missing.withIndex()) {
                     val (idx, src) = pair
-                    val translated = fresh.getOrNull(k)?.takeIf { it.isNotBlank() } ?: src
+                    val translated = fresh.getOrNull(k).orEmpty()
                     resolved[idx] = translated
-                    cache.put(TranslationCache.key(engine.cacheNamespace, lang.name, src), translated)
+                    if (translated.isNotBlank()) {
+                        cache.put(TranslationCache.key(engine.cacheNamespace, lang.name, src), translated)
+                    }
                 }
                 val note = if (engine !== chain.first()) "fallback" else null
                 return Outcome(resolved.map { it ?: "" }, engine.label, note)
             } catch (e: Exception) {
+                if (e is kotlinx.coroutines.CancellationException) throw e
                 lastError = e
             }
         }
         throw RuntimeException(lastError?.message ?: "translation failed", lastError)
     }
+
+    /** True when every item is already cached under [ns] — no network needed. */
+    fun fullyCached(ns: String, lang: SourceLang, items: List<String>): Boolean =
+        items.all { cache.get(TranslationCache.key(ns, lang.name, it)) != null }
 }

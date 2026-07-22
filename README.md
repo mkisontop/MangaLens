@@ -29,12 +29,14 @@ mode, settings, stop).
 
 | Engine | Quality | Speed | Setup | Notes |
 |---|---|---|---|---|
-| **Free · Google** *(default)* | ★★★☆ | fast | none | Uses Google Translate's public web endpoint. |
-| **AI Pro ✨** | ★★★★★ | ~1–3 s/page | API key | An LLM translates the whole page with rolling story context: natural dialogue, correct tone, honorifics, smart SFX. Claude (Anthropic) recommended; OpenAI, Gemini, OpenRouter and any OpenAI-compatible endpoint also work. Gemini currently has a free tier (aistudio.google.com). Falls back to Google automatically if the call fails. |
+| **Free · Google** *(default)* | ★★★☆ | fast | none | Whole page in one batched request for cross-line context; junk-gated so OCR noise is never rendered. |
+| **AI Pro ✨** | ★★★★★ | instant draft, polish in ~2–5 s | API key | The scanlation-grade mode. A fast draft paints immediately, then the AI result replaces it in place — slow internet never blocks reading. **AI Vision** sends the raw page image so the model reads vertical Japanese and stylized lettering itself (Auto: only where on-device OCR struggles; Korean webtoons use tiny text-only requests). Rolling story context + a **persistent glossary** keep names, honorifics and running jokes consistent forever. Claude (Anthropic) recommended; OpenAI, Gemini, OpenRouter and any OpenAI-compatible endpoint work. **Gemini has a free tier** (aistudio.google.com/apikey — the app links you there). Falls back to Google automatically. |
 | **Offline** | ★★☆☆ | fast | one-time ~30 MB model per language | ML Kit on-device translation. Works with zero network. |
 
-Only in AI Pro mode does any text leave your device — and it's just the bubble
-*text*, never the screen image. Screen capture and OCR are 100% on-device.
+Privacy: in AI **text** mode only bubble text leaves the device; in AI
+**Vision** mode the page image goes to the provider you chose — and nowhere
+else. The free and offline engines never send an image anywhere. Screen
+capture and OCR always run on-device.
 
 ## How it works
 
@@ -58,18 +60,32 @@ Frame differ ──"user stopped scrolling"──▶ ML Kit OCR (KO/JA/ZH race, 
 
 Key details:
 
-- **Overlay feedback loop is impossible by design**: overlays are always cleared
-  before a frame is captured for OCR, and re-OCR only triggers after real screen
-  motion — so the app never translates its own English output.
+- **Progressive AI rendering**: in AI Pro the free draft paints in ~1 s and the
+  AI polish swaps in when it lands — the reading loop never waits on a slow
+  connection. The status pill shows ✓ for drafts and ✨ once polished.
+- **AI Vision routing (Auto)**: pages routed by script — vertical Japanese and
+  manhua go to the vision model as a compressed image (~150–300 KB, less with
+  Data saver); horizontal Korean webtoons use text-only requests a few KB big.
+- **Persistent glossary**: the AI registers every name/term it establishes
+  (강태오 → "Kang Tae-oh") and reuses it across pages, chapters and restarts.
+- **Overlay feedback loop is impossible by design**: overlays are cleared
+  before every capture, re-OCR only triggers after real screen motion, and the
+  app's own floating button region is excluded from OCR.
+- **Junk gates**: stray border pipes, furigana, one-character crumbs and
+  romanized-gibberish translations are filtered — a bubble renders correctly or
+  not at all.
+- **SFX intelligence**: oversized katakana bursts are classified as sound
+  effects and rendered as compact comic captions (WHAM, BA-DUMP) — or left as
+  untouched art — never word-for-word translated.
 - **Language auto-detect** races all three CJK recognizers and pins the winner
   after two consecutive wins, so steady-state pages pay for exactly one OCR pass.
-- **Bubble grouping** clusters OCR lines by padded-box overlap (union-find), then
-  reads vertical Japanese columns right-to-left like a human.
+- **Bubble grouping** clusters OCR lines with direction-aware padding
+  (union-find), then reads vertical columns right-to-left like a human.
 - **Patches match the page**: each patch samples the pixels around the bubble so
   white bubbles get white patches, tinted panels get tinted patches, and the text
   auto-shrinks to fit.
-- **Cache**: every translated bubble is LRU-cached, so scrolling back or peeking
-  never re-translates (or re-bills) anything.
+- **Cache**: bubbles and whole vision pages are LRU-cached, so scrolling back
+  or peeking never re-translates (or re-bills) anything.
 
 ## Building it yourself
 
@@ -92,6 +108,10 @@ makes the captured screen black.
 Reading settings.
 
 **Battery?** Use "Tap to translate" mode — capture idles until you tap.
+
+**Slow internet?** You still read at full speed: the free draft is instant and
+the AI polish arrives whenever it arrives. Turn on **Data saver** to shrink
+vision uploads, or set AI Vision to **Text only** for requests a few KB big.
 
 **Which languages?** Korean, Japanese (incl. reasonable vertical text), Chinese
 (simplified & traditional) → English.

@@ -77,6 +77,28 @@ class OverlayController(private val context: Context, private val listener: List
         attached = false
     }
 
+    /**
+     * Screen regions occupied by MangaLens's own floating controls. Excluded
+     * from OCR so the app never translates its own 文A button ("Sentence A").
+     */
+    fun overlayExclusions(): List<android.graphics.Rect> {
+        val out = ArrayList<android.graphics.Rect>(2)
+        val lp = controlsLp
+        val row = controls
+        if (lp != null && row != null) {
+            val w = if (row.width > 0) row.width else dp(220f)
+            val h = if (row.height > 0) row.height else dp(52f)
+            val m = dp(6f)
+            out.add(android.graphics.Rect(lp.x - m, lp.y - m, lp.x + w + m, lp.y + h + m))
+            menu?.let { mv ->
+                val mw = if (mv.width > 0) mv.width else dp(220f)
+                val mh = if (mv.height > 0) mv.height else dp(280f)
+                out.add(android.graphics.Rect(lp.x - m, lp.y + dp(52f) - m, lp.x + mw + m, lp.y + dp(52f) + mh + m))
+            }
+        }
+        return out
+    }
+
     fun setStatus(text: String?, autoHideMs: Long = 0) {
         val p = pill ?: return
         p.removeCallbacks(hidePill)
@@ -141,7 +163,9 @@ class OverlayController(private val context: Context, private val listener: List
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                // Screen-space coords so overlayExclusions() matches the capture.
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         )
         lp.gravity = Gravity.TOP or Gravity.START
@@ -233,7 +257,8 @@ class OverlayController(private val context: Context, private val listener: List
             WindowManager.LayoutParams.WRAP_CONTENT,
             WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
+                WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN,
             PixelFormat.TRANSLUCENT
         )
         lp.gravity = Gravity.TOP or Gravity.START

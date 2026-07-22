@@ -2,6 +2,7 @@ package app.mangalens.settings
 
 import android.content.Context
 import androidx.datastore.preferences.core.Preferences
+import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
@@ -16,6 +17,13 @@ enum class LlmProvider { ANTHROPIC, OPENAI, GEMINI, OPENROUTER, CUSTOM }
 enum class SourceLang { AUTO, KO, JA, ZH }
 enum class CaptureMode { AUTO, MANUAL }
 
+/**
+ * How AI Pro reads the page. AUTO sends the page image for scripts that break
+ * on-device OCR (vertical Japanese/Chinese) and cheap text-only requests for
+ * everything else; ALWAYS forces vision; OFF keeps every request text-only.
+ */
+enum class AiVisionMode { AUTO, ALWAYS, OFF }
+
 data class AppSettings(
     val engine: EngineKind = EngineKind.GOOGLE,
     val provider: LlmProvider = LlmProvider.ANTHROPIC,
@@ -24,6 +32,8 @@ data class AppSettings(
     val customUrl: String = "",
     val sourceLang: SourceLang = SourceLang.AUTO,
     val mode: CaptureMode = CaptureMode.AUTO,
+    val aiVision: AiVisionMode = AiVisionMode.AUTO,
+    val dataSaver: Boolean = false,
     val textScale: Float = 1.0f,
     val bgOpacity: Float = 1.0f,
     val stabilityMs: Int = 350,
@@ -33,7 +43,7 @@ data class AppSettings(
     fun effectiveModel(): String = if (model.isNotBlank()) model else when (provider) {
         LlmProvider.ANTHROPIC -> "claude-sonnet-5"
         LlmProvider.OPENAI -> "gpt-4o-mini"
-        LlmProvider.GEMINI -> "gemini-2.0-flash"
+        LlmProvider.GEMINI -> "gemini-flash-latest"
         LlmProvider.OPENROUTER -> "anthropic/claude-sonnet-4.5"
         LlmProvider.CUSTOM -> ""
     }
@@ -59,6 +69,8 @@ class SettingsRepository(private val context: Context) {
         val CUSTOM_URL = stringPreferencesKey("custom_url")
         val SOURCE_LANG = stringPreferencesKey("source_lang")
         val MODE = stringPreferencesKey("mode")
+        val AI_VISION = stringPreferencesKey("ai_vision")
+        val DATA_SAVER = booleanPreferencesKey("data_saver")
         val TEXT_SCALE = floatPreferencesKey("text_scale")
         val BG_OPACITY = floatPreferencesKey("bg_opacity")
         val STABILITY_MS = intPreferencesKey("stability_ms")
@@ -80,6 +92,8 @@ class SettingsRepository(private val context: Context) {
             customUrl = p[Keys.CUSTOM_URL] ?: d.customUrl,
             sourceLang = enumOr(p[Keys.SOURCE_LANG], d.sourceLang),
             mode = enumOr(p[Keys.MODE], d.mode),
+            aiVision = enumOr(p[Keys.AI_VISION], d.aiVision),
+            dataSaver = p[Keys.DATA_SAVER] ?: d.dataSaver,
             textScale = p[Keys.TEXT_SCALE] ?: d.textScale,
             bgOpacity = p[Keys.BG_OPACITY] ?: d.bgOpacity,
             stabilityMs = p[Keys.STABILITY_MS] ?: d.stabilityMs,
@@ -98,6 +112,8 @@ class SettingsRepository(private val context: Context) {
     suspend fun setCustomUrl(v: String) = context.settingsStore.edit { it[Keys.CUSTOM_URL] = v }
     suspend fun setSourceLang(v: SourceLang) = context.settingsStore.edit { it[Keys.SOURCE_LANG] = v.name }
     suspend fun setMode(v: CaptureMode) = context.settingsStore.edit { it[Keys.MODE] = v.name }
+    suspend fun setAiVision(v: AiVisionMode) = context.settingsStore.edit { it[Keys.AI_VISION] = v.name }
+    suspend fun setDataSaver(v: Boolean) = context.settingsStore.edit { it[Keys.DATA_SAVER] = v }
     suspend fun setTextScale(v: Float) = context.settingsStore.edit { it[Keys.TEXT_SCALE] = v }
     suspend fun setBgOpacity(v: Float) = context.settingsStore.edit { it[Keys.BG_OPACITY] = v }
     suspend fun setStabilityMs(v: Int) = context.settingsStore.edit { it[Keys.STABILITY_MS] = v }
