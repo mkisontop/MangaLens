@@ -298,11 +298,8 @@ private fun EngineCard(settings: AppSettings, repo: SettingsRepository) {
                 Text("AI Vision — let the AI read the raw page image", style = MaterialTheme.typography.bodyMedium)
                 Spacer(Modifier.height(6.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Chip("Auto", settings.aiVision == AiVisionMode.AUTO) {
+                    Chip("AI Vision (recommended)", settings.aiVision != AiVisionMode.OFF) {
                         scope.launch { repo.setAiVision(AiVisionMode.AUTO) }
-                    }
-                    Chip("Always", settings.aiVision == AiVisionMode.ALWAYS) {
-                        scope.launch { repo.setAiVision(AiVisionMode.ALWAYS) }
                     }
                     Chip("Text only", settings.aiVision == AiVisionMode.OFF) {
                         scope.launch { repo.setAiVision(AiVisionMode.OFF) }
@@ -310,11 +307,10 @@ private fun EngineCard(settings: AppSettings, repo: SettingsRepository) {
                 }
                 Spacer(Modifier.height(6.dp))
                 Text(
-                    when (settings.aiVision) {
-                        AiVisionMode.AUTO -> "Smart: sends the page image only for Japanese / vertical text (where on-device OCR struggles). Korean webtoons use tiny text-only requests — best for slow internet."
-                        AiVisionMode.ALWAYS -> "Every page goes to the AI as an image. Highest quality, biggest uploads (~150–300 KB per page)."
-                        AiVisionMode.OFF -> "Only OCR'd text is sent (a few KB). Fastest on slow internet; Japanese quality depends on on-device OCR."
-                    },
+                    if (settings.aiVision != AiVisionMode.OFF)
+                        "The AI reads the page image itself — catches handwriting, stylized lettering and anything OCR misses, in manhwa and manga alike (~150–300 KB per page, less with Data saver). Falls back to text-only, then Google, automatically."
+                    else
+                        "Only OCR'd text is sent (a few KB). Best for very slow internet; stylized lettering depends on on-device OCR.",
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

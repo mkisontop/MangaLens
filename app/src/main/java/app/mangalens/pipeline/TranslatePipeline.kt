@@ -66,13 +66,10 @@ class TranslatePipeline(
         }
 
         val vision = VisionLlmEngine(settings, glossary)
-        val useVision = when (settings.aiVision) {
-            AiVisionMode.ALWAYS -> true
-            AiVisionMode.OFF -> false
-            AiVisionMode.AUTO ->
-                ocrResult.lang == SourceLang.JA ||
-                    bubbles.count { it.vertical } * 3 >= bubbles.size
-        }
+        // Anchored vision is the quality path for every script — manhwa's
+        // stylized/handwritten lettering needs it as much as vertical
+        // Japanese does, and it degrades to the text path automatically.
+        val useVision = settings.aiVision != AiVisionMode.OFF
 
         // Straight-to-final when the AI answer is already cached (re-reads,
         // scroll-backs, peeks): no fast flash, no network.

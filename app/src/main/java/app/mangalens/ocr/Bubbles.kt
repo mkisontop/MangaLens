@@ -106,12 +106,13 @@ object BubbleGrouper {
         }
 
         // Direction-aware padding: vertical columns sit side by side with a gap
-        // close to a full character width, horizontal lines stack with generous
-        // line spacing. Pad more across the reading axis than along it.
+        // close to a full character width; horizontal lines (webtoon bubbles)
+        // stack with line spacing up to ~1.5x the glyph height. Pad more
+        // across the reading axis than along it.
         val padded = usable.map { l ->
             val s = stroke(l).coerceAtLeast(8)
-            val padX = if (l.vertical) (s * 1.5f).toInt() else (s * 0.7f).toInt()
-            val padY = if (l.vertical) (s * 0.7f).toInt() else (s * 1.1f).toInt()
+            val padX = if (l.vertical) (s * 1.5f).toInt() else (s * 0.85f).toInt()
+            val padY = if (l.vertical) (s * 0.7f).toInt() else (s * 1.3f).toInt()
             Rect(l.box.left - padX, l.box.top - padY, l.box.right + padX, l.box.bottom + padY)
         }
         for (i in 0 until n) {
