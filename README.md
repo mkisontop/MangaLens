@@ -75,6 +75,23 @@ Key details:
 - **AI Vision routing (Auto)**: pages routed by script — vertical Japanese and
   manhua go to the vision model as a compressed image (~150–300 KB, less with
   Data saver); horizontal Korean webtoons use text-only requests a few KB big.
+- **Balloons are found in the pixels, not inferred from OCR**: a speech
+  balloon is an enclosed light region bounded by ink and holding lettering,
+  and it is detected as one. Clustering OCR lines by proximity infers a
+  balloon from its contents and inherits every OCR mistake — a wide balloon
+  with generously spaced columns, or one with a furigana column wedged between
+  two kanji columns, splits into fragments, and each fragment is then handed
+  to the translator as if it were a whole utterance. A model given 「よ」 alone
+  does not decline to answer; it invents a line that fits. Detecting the
+  balloon itself fixes both halves of that: fragments inside one balloon are
+  welded into the single line it holds, and a balloon whose vertical lettering
+  OCR could not read *at all* still becomes a region for the vision model to
+  read off the image.
+- **Nothing is silently left untranslated**: a region the vision model skips
+  used to render nothing, so a page came back with translated balloons
+  interleaved with raw ones and no sign anything was missing. Whatever it
+  passes over now falls through to the text engine — a weaker translation for
+  those balloons, but a finished page.
 - **Panel-aware reading order**: the page is split recursively on the
   whitespace gutters between panels — tiers first, then panels within a tier,
   right-to-left on a manga page and left-to-right in a webtoon. Order is not

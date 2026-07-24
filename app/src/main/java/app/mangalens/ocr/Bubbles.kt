@@ -68,6 +68,12 @@ object Script {
  */
 object BubbleGrouper {
 
+    /**
+     * @param balloons balloon regions detected from the page pixels. Where
+     *   these disagree with the clustering below, they win — see [BalloonMerge].
+     * @param includeEmptyBalloons report balloons holding no readable text.
+     *   Only for engines that can read the image themselves.
+     */
     fun group(
         lines: List<OcrLine>,
         screenH: Int,
@@ -75,6 +81,8 @@ object BubbleGrouper {
         ignoreBottomPx: Int,
         lang: SourceLang,
         exclusions: List<Rect> = emptyList(),
+        balloons: List<Rect> = emptyList(),
+        includeEmptyBalloons: Boolean = false,
     ): List<Bubble> {
         val usable = lines.mapNotNull { l ->
             val cleaned = Script.clean(l.text)
@@ -84,7 +92,16 @@ object BubbleGrouper {
             if (exclusions.any { Rect.intersects(it, l.box) }) return@mapNotNull null
             OcrLine(cleaned, l.box, l.vertical)
         }
-        if (usable.isEmpty()) return emptyList()
+        if (usable.isEmpty()) {
+            // OCR read nothing, but the page may still plainly show balloons —
+            // vertical lettering it cannot resolve at all is the usual reason,
+            // and that is precisely when handing them to a vision model helps.
+            return if (includeEmptyBalloons && balloons.isNotEmpty()) {
+                finish(BalloonMerge.apply(emptyList(), balloons, lang, includeEmpty = true), lang)
+            } else {
+                emptyList()
+            }
+        }
 
         // Character size ("stroke") per line: width of a vertical column, height
         // of a horizontal line. Median across the page anchors SFX detection.
@@ -131,10 +148,18 @@ object BubbleGrouper {
         val bubbles = groups.values.mapNotNull { raw ->
             buildBubble(raw, lang, medianStroke)
         }
-        // Panel-aware order, then link the bubbles that share one sentence.
-        // Both feed the translator directly: order is what "reading order"
-        // means in the prompt, and the links are what let it resolve a clause
-        // whose subject lives in the previous balloon.
+        // Reconcile against the balloons actually on the page before anything
+        // downstream treats a region as an utterance.
+        return finish(BalloonMerge.apply(bubbles, balloons, lang, includeEmptyBalloons), lang)
+    }
+
+    /**
+     * Panel-aware order, then link the bubbles that share one sentence. Both
+     * feed the translator directly: order is what "reading order" means in the
+     * prompt, and the links are what let it resolve a clause whose subject
+     * lives in the previous balloon.
+     */
+    private fun finish(bubbles: List<Bubble>, lang: SourceLang): List<Bubble> {
         val ordered = ReadingOrder.order(bubbles, ReadingOrder.isRightToLeft(bubbles, lang))
         return Utterance.link(ordered, lang)
     }

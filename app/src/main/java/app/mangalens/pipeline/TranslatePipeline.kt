@@ -3,6 +3,7 @@ package app.mangalens.pipeline
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Rect
+import app.mangalens.ocr.BalloonFinder
 import app.mangalens.ocr.Bubble
 import app.mangalens.ocr.BubbleGrouper
 import app.mangalens.ocr.BubbleKind
@@ -58,8 +59,18 @@ class TranslatePipeline(
         val ocrResult = ocr.recognize(bitmap, settings.sourceLang)
         val ignoreTop = (bitmap.height * settings.ignoreTopPct).toInt()
         val ignoreBottom = (bitmap.height * settings.ignoreBottomPct).toInt()
+
+        // Anchored vision is the quality path for every script — manhwa's
+        // stylized/handwritten lettering needs it as much as vertical
+        // Japanese does, and it degrades to the text path automatically.
+        val useVision = settings.engine == EngineKind.LLM && settings.aiVision != AiVisionMode.OFF
+
+        // Balloons come from the page pixels, so a region exists because the
+        // page shows one — not because OCR happened to read something in it.
+        val balloons = BalloonFinder.find(bitmap, ignoreTop, ignoreBottom, exclusions)
         val bubbles = BubbleGrouper.group(
             ocrResult.lines, bitmap.height, ignoreTop, ignoreBottom, ocrResult.lang, exclusions,
+            balloons, includeEmptyBalloons = useVision,
         )
         if (bubbles.isEmpty()) return PageResult(emptyList(), "", null)
 
@@ -68,10 +79,6 @@ class TranslatePipeline(
         }
 
         val vision = VisionLlmEngine(settings, glossary, cast)
-        // Anchored vision is the quality path for every script — manhwa's
-        // stylized/handwritten lettering needs it as much as vertical
-        // Japanese does, and it degrades to the text path automatically.
-        val useVision = settings.aiVision != AiVisionMode.OFF
 
         // Straight-to-final when the AI answer is already cached (re-reads,
         // scroll-backs, peeks): no fast flash, no network.
@@ -118,9 +125,17 @@ class TranslatePipeline(
                         val covered = pageBubbles.count { it.id in dialogueIds }
                         val goodCoverage = dialogueIds.isEmpty() || covered * 2 >= dialogueIds.size
                         if (pageBubbles.isNotEmpty() && goodCoverage) {
-                            visionCachePut(vision.cacheNamespace, ocrResult.lang, bubbles, pageBubbles)
+                            // A region the model skipped used to render
+                            // nothing at all, leaving raw balloons scattered
+                            // through an otherwise translated page. Anything
+                            // it passed over that OCR *could* read is filled
+                            // in from the text engine instead.
+                            val complete = pageBubbles + gapFill(
+                                bubbles, pageBubbles, ocrResult.lang, settings,
+                            )
+                            visionCachePut(vision.cacheNamespace, ocrResult.lang, bubbles, complete)
                             return@coroutineScope PageResult(
-                                toRender(bitmap, pageBubbles, bubbles, ignoreTop, ignoreBottom, exclusions),
+                                toRender(bitmap, complete, bubbles, ignoreTop, ignoreBottom, exclusions),
                                 vision.label, null, polished = true,
                             )
                         }
@@ -147,7 +162,9 @@ class TranslatePipeline(
         settings: AppSettings,
         forceGoogle: Boolean = false,
     ): PageResult {
-        val dialogue = bubbles.filter { it.kind == BubbleKind.DIALOGUE }
+        // Balloons detected in the pixels but unread by OCR carry no text; the
+        // machine engines have nothing to work from and would render blanks.
+        val dialogue = bubbles.filter { it.kind == BubbleKind.DIALOGUE && it.text.isNotBlank() }
         val outcome = if (dialogue.isEmpty()) {
             TranslationService.Outcome(emptyList(), "Google")
         } else {
@@ -178,20 +195,64 @@ class TranslatePipeline(
         lang: SourceLang,
         settings: AppSettings,
     ): PageResult {
+        // Text-only requests can say nothing about a balloon OCR could not
+        // read, so those regions are left out rather than sent as blanks.
+        val idx = bubbles.indices.filter { bubbles[it].text.isNotBlank() }
+        if (idx.isEmpty()) return PageResult(emptyList(), "", null)
+
         val outcome = translation.translate(
-            bubbles.map { it.text }, lang, settings,
-            kinds = bubbles.map { it.kind },
-            runs = bubbles.map { it.runId },
-            parts = bubbles.map { it.runPart },
+            idx.map { bubbles[it].text }, lang, settings,
+            kinds = idx.map { bubbles[it].kind },
+            runs = idx.map { bubbles[it].runId },
+            parts = idx.map { bubbles[it].runPart },
         )
         val fromAi = outcome.engineLabel != "Google"
-        val rendered = bubbles.mapIndexed { i, b ->
-            val gated = JunkFilter.accept(b.text, outcome.texts.getOrElse(i) { "" }, lang, fromAi)
-                ?: return@mapIndexed null
+        val rendered = idx.mapIndexedNotNull { k, i ->
+            val b = bubbles[i]
+            val gated = JunkFilter.accept(b.text, outcome.texts.getOrElse(k) { "" }, lang, fromAi)
+                ?: return@mapIndexedNotNull null
             renderBubble(bitmap, b.box, gated, b.text, b.vertical, b.kind)
-        }.filterNotNull()
-        val polished = outcome.engineLabel != "Google"
-        return PageResult(rendered, outcome.engineLabel, outcome.note, polished)
+        }
+        return PageResult(rendered, outcome.engineLabel, outcome.note, fromAi)
+    }
+
+    /**
+     * Translates the dialogue the vision model passed over.
+     *
+     * A region it declines to answer for used to render nothing, so a page
+     * came back with translated balloons interleaved with raw ones and no
+     * indication anything was missing. Whatever it skipped that OCR could read
+     * is put through the text engine instead — a worse translation for those
+     * balloons, but a translated page.
+     */
+    private suspend fun gapFill(
+        bubbles: List<Bubble>,
+        answered: List<VisionLlmEngine.VisionBubble>,
+        lang: SourceLang,
+        settings: AppSettings,
+    ): List<VisionLlmEngine.VisionBubble> {
+        val done = answered.filter { it.id >= 0 }.mapTo(HashSet()) { it.id }
+        val missing = bubbles.indices.filter {
+            it !in done && bubbles[it].kind == BubbleKind.DIALOGUE && bubbles[it].text.isNotBlank()
+        }
+        if (missing.isEmpty()) return emptyList()
+
+        val outcome = runCatching {
+            translation.translate(
+                missing.map { bubbles[it].text }, lang, settings,
+                kinds = missing.map { bubbles[it].kind },
+                runs = missing.map { bubbles[it].runId },
+                parts = missing.map { bubbles[it].runPart },
+            )
+        }.getOrNull() ?: return emptyList()
+
+        val fromAi = outcome.engineLabel != "Google"
+        return missing.mapIndexedNotNull { k, i ->
+            val gated = JunkFilter.accept(
+                bubbles[i].text, outcome.texts.getOrElse(k) { "" }, lang, fromAi,
+            ) ?: return@mapIndexedNotNull null
+            VisionLlmEngine.VisionBubble(i, 0, 0, 0, 0, bubbles[i].text, gated, sfx = false)
+        }
     }
 
     // ---- vision result mapping ----
