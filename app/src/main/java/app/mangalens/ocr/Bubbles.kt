@@ -136,8 +136,16 @@ object BubbleGrouper {
             val padY = if (l.vertical) (s * 0.7f).toInt() else (s * 1.3f).toInt()
             Rect(l.box.left - padX, l.box.top - padY, l.box.right + padX, l.box.bottom + padY)
         }
+        // Balloons are hard boundaries. Padding scales with the lettering, so
+        // on large vertical text it reaches far enough to cross a panel gutter
+        // and weld one balloon's columns to the next balloon's — two speakers,
+        // two panels, one card straddling the border between them. Proximity
+        // cannot tell that apart on its own, and [BalloonMerge] runs later and
+        // can only join regions, never separate them.
+        val balloonOf = IntArray(n) { balloonIndexOf(usable[it].box, balloons) }
         for (i in 0 until n) {
             for (j in i + 1 until n) {
+                if (balloonOf[i] != balloonOf[j]) continue
                 if (Rect.intersects(padded[i], padded[j])) union(i, j)
             }
         }
@@ -151,6 +159,31 @@ object BubbleGrouper {
         // Reconcile against the balloons actually on the page before anything
         // downstream treats a region as an utterance.
         return finish(BalloonMerge.apply(bubbles, balloons, lang, includeEmptyBalloons), lang)
+    }
+
+    /**
+     * Index of the balloon holding most of [box], or -1 when it belongs to no
+     * balloon — sound effects on the art, captions, narration boxes. Lines
+     * outside every balloon share the -1 group and still cluster by proximity
+     * as before.
+     */
+    private fun balloonIndexOf(box: Rect, balloons: List<Rect>): Int {
+        if (balloons.isEmpty()) return -1
+        val area = box.width().toLong() * box.height()
+        if (area <= 0L) return -1
+        var best = -1
+        var bestShare = 0.5f
+        for ((i, balloon) in balloons.withIndex()) {
+            val ix = min(box.right, balloon.right) - max(box.left, balloon.left)
+            val iy = min(box.bottom, balloon.bottom) - max(box.top, balloon.top)
+            if (ix <= 0 || iy <= 0) continue
+            val share = (ix.toLong() * iy).toFloat() / area
+            if (share > bestShare) {
+                bestShare = share
+                best = i
+            }
+        }
+        return best
     }
 
     /**

@@ -320,6 +320,20 @@ private fun EngineCard(settings: AppSettings, repo: SettingsRepository) {
                         scope.launch { repo.setDataSaver(!settings.dataSaver) }
                     }
                 }
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Chip("Diagnostics — show what was detected", settings.diagnostics) {
+                        scope.launch { repo.setDiagnostics(!settings.diagnostics) }
+                    }
+                }
+                Text(
+                    "Outlines every balloon found and keeps a status line up: " +
+                        "ocr (text lines read) · balloons (found in the page) · " +
+                        "regions (sent to translate) · cards (painted). " +
+                        "If a balloon is untranslated, this says which step lost it.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
                 Spacer(Modifier.height(10.dp))
                 val uriHandler = LocalUriHandler.current
                 if (settings.provider == LlmProvider.GEMINI) {

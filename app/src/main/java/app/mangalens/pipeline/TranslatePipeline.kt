@@ -48,6 +48,10 @@ class TranslatePipeline(
         val engineLabel: String,
         val note: String?,
         val polished: Boolean = false,
+        /** Stage-by-stage counts, when diagnostics are on. */
+        val diag: String? = null,
+        /** Balloons found in the page, outlined on screen when diagnostics are on. */
+        val balloons: List<Rect> = emptyList(),
     )
 
     suspend fun process(
@@ -72,8 +76,50 @@ class TranslatePipeline(
             ocrResult.lines, bitmap.height, ignoreTop, ignoreBottom, ocrResult.lang, exclusions,
             balloons, includeEmptyBalloons = useVision,
         )
-        if (bubbles.isEmpty()) return PageResult(emptyList(), "", null)
+        // Each count answers a different question when a balloon comes back
+        // untranslated: whether OCR read anything, whether the balloon was seen
+        // at all, whether it survived into a region, and whether the translator
+        // answered for it.
+        val diag = if (!settings.diagnostics) null else
+            "ocr ${ocrResult.lines.size} · balloons ${balloons.size} · regions ${bubbles.size}"
 
+        if (bubbles.isEmpty()) {
+            // Nothing was resolved into a region — but a page can plainly carry
+            // text that neither OCR nor balloon detection can get hold of:
+            // jagged shout balloons, lettering drawn straight onto a screentone,
+            // balloons that touch and flood together. When OCR saw *something*,
+            // or a balloon was spotted, the page is not blank, and the vision
+            // model can still read it with no anchors at all rather than the
+            // page coming back untouched.
+            val worthALook = useVision && (ocrResult.lines.isNotEmpty() || balloons.isNotEmpty())
+            if (!worthALook) {
+                return PageResult(emptyList(), "", null, diag = diag?.plus(" · cards 0"), balloons = balloons)
+            }
+        }
+
+        val result = dispatch(
+            bitmap, settings, exclusions, onPartial,
+            ocrResult, bubbles, balloons, ignoreTop, ignoreBottom, useVision,
+        )
+        return if (diag == null) result else result.copy(
+            diag = "$diag · cards ${result.bubbles.size}",
+            balloons = balloons,
+        )
+    }
+
+    /** Routes one page of regions to the configured engine. */
+    private suspend fun dispatch(
+        bitmap: Bitmap,
+        settings: AppSettings,
+        exclusions: List<Rect>,
+        onPartial: (suspend (PageResult) -> Unit)?,
+        ocrResult: OcrEngine.Result,
+        bubbles: List<Bubble>,
+        balloons: List<Rect>,
+        ignoreTop: Int,
+        ignoreBottom: Int,
+        useVision: Boolean,
+    ): PageResult {
         if (settings.engine != EngineKind.LLM) {
             return machineTranslate(bitmap, bubbles, ocrResult.lang, settings)
         }

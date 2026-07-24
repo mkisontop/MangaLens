@@ -52,6 +52,18 @@ class BubbleOverlayView(context: Context) : View(context) {
         strokeWidth = dp(1f)
         color = 0x2E000000
     }
+    private val debugPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = dp(1.5f)
+        color = 0xCCE6008C.toInt()
+    }
+
+    /**
+     * Balloons the page detector found, outlined when diagnostics are on. An
+     * untranslated balloon means something different depending on whether it
+     * was outlined: a detection failure if not, a translation failure if so.
+     */
+    private var debugBalloons: List<Rect> = emptyList()
 
     fun setBubbles(bubbles: List<RenderBubble>) {
         source = bubbles
@@ -59,9 +71,15 @@ class BubbleOverlayView(context: Context) : View(context) {
         invalidate()
     }
 
+    fun setDebugBalloons(rects: List<Rect>) {
+        debugBalloons = rects
+        invalidate()
+    }
+
     fun clear() {
         source = emptyList()
         placed = emptyList()
+        debugBalloons = emptyList()
         invalidate()
     }
 
@@ -140,6 +158,9 @@ class BubbleOverlayView(context: Context) : View(context) {
     }
 
     override fun onDraw(canvas: Canvas) {
+        if (debugBalloons.isNotEmpty()) {
+            for (r in debugBalloons) canvas.drawRect(r, debugPaint)
+        }
         val radius = dp(9f)
         for (p in placed) {
             bgPaint.color = p.bg

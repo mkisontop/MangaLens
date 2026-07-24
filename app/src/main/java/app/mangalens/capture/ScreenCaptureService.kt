@@ -435,7 +435,14 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                     controller?.bubbleView?.placedRects() ?: emptyList(), capW, capH,
                 )
                 needBaseline = true
-                if (result.bubbles.isEmpty()) {
+                controller?.bubbleView?.setDebugBalloons(
+                    if (settings.diagnostics) result.balloons else emptyList()
+                )
+                // Diagnostics stay up: they exist to be read off a page that
+                // came back wrong, and a pill that vanishes is no use for that.
+                if (result.diag != null) {
+                    setPill("${result.engineLabel.ifBlank { "—" }} · ${result.diag}")
+                } else if (result.bubbles.isEmpty()) {
                     setPill(if (auto) null else "no CJK text found", 1800)
                 } else {
                     val mark = if (result.polished) "✨" else "✓"

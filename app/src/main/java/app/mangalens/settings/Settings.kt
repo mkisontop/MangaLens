@@ -34,6 +34,13 @@ data class AppSettings(
     val mode: CaptureMode = CaptureMode.AUTO,
     val aiVision: AiVisionMode = AiVisionMode.AUTO,
     val dataSaver: Boolean = false,
+    /**
+     * Reports what each stage of a pass actually found, and outlines the
+     * balloons detected in the page. When a balloon comes back untranslated the
+     * cause is at OCR, at balloon detection, or at the model, and the fixes are
+     * unrelated — without this there is no way to tell which from the screen.
+     */
+    val diagnostics: Boolean = false,
     val textScale: Float = 1.0f,
     val bgOpacity: Float = 1.0f,
     val stabilityMs: Int = 350,
@@ -71,6 +78,7 @@ class SettingsRepository(private val context: Context) {
         val MODE = stringPreferencesKey("mode")
         val AI_VISION = stringPreferencesKey("ai_vision")
         val DATA_SAVER = booleanPreferencesKey("data_saver")
+        val DIAGNOSTICS = booleanPreferencesKey("diagnostics")
         val TEXT_SCALE = floatPreferencesKey("text_scale")
         val BG_OPACITY = floatPreferencesKey("bg_opacity")
         val STABILITY_MS = intPreferencesKey("stability_ms")
@@ -94,6 +102,7 @@ class SettingsRepository(private val context: Context) {
             mode = enumOr(p[Keys.MODE], d.mode),
             aiVision = enumOr(p[Keys.AI_VISION], d.aiVision),
             dataSaver = p[Keys.DATA_SAVER] ?: d.dataSaver,
+            diagnostics = p[Keys.DIAGNOSTICS] ?: d.diagnostics,
             textScale = p[Keys.TEXT_SCALE] ?: d.textScale,
             bgOpacity = p[Keys.BG_OPACITY] ?: d.bgOpacity,
             stabilityMs = p[Keys.STABILITY_MS] ?: d.stabilityMs,
@@ -114,6 +123,7 @@ class SettingsRepository(private val context: Context) {
     suspend fun setMode(v: CaptureMode) = context.settingsStore.edit { it[Keys.MODE] = v.name }
     suspend fun setAiVision(v: AiVisionMode) = context.settingsStore.edit { it[Keys.AI_VISION] = v.name }
     suspend fun setDataSaver(v: Boolean) = context.settingsStore.edit { it[Keys.DATA_SAVER] = v }
+    suspend fun setDiagnostics(v: Boolean) = context.settingsStore.edit { it[Keys.DIAGNOSTICS] = v }
     suspend fun setTextScale(v: Float) = context.settingsStore.edit { it[Keys.TEXT_SCALE] = v }
     suspend fun setBgOpacity(v: Float) = context.settingsStore.edit { it[Keys.BG_OPACITY] = v }
     suspend fun setStabilityMs(v: Int) = context.settingsStore.edit { it[Keys.STABILITY_MS] = v }
