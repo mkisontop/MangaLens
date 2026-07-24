@@ -48,10 +48,19 @@ Frame differ ──"user stopped scrolling"──▶ ML Kit OCR (KO/JA/ZH race, 
         │                                        │ lines + boxes
    scroll detected                               ▼
         │                              Bubble grouper (union-find clustering,
-        ▼                               vertical-column reading order)
+        ▼                               vertical-column ordering, furigana drop)
  overlays cleared                                │ bubbles
                                                  ▼
-                                    Translation engine (+ LRU cache, fallback chain)
+                                      Reading order (recursive X-Y cut over
+                                       panel gutters, right-to-left for manga)
+                                                 │
+                                                 ▼
+                                      Utterance linker (sentences split
+                                       across balloons rejoined)
+                                                 │
+                                                 ▼
+                                    Translation engine (+ LRU cache, fallback chain,
+                                     glossary + cast + story context)
                                                  │ English
                                                  ▼
                                     Overlay renderer (color-sampled patches,
@@ -66,6 +75,29 @@ Key details:
 - **AI Vision routing (Auto)**: pages routed by script — vertical Japanese and
   manhua go to the vision model as a compressed image (~150–300 KB, less with
   Data saver); horizontal Korean webtoons use text-only requests a few KB big.
+- **Panel-aware reading order**: the page is split recursively on the
+  whitespace gutters between panels — tiers first, then panels within a tier,
+  right-to-left on a manga page and left-to-right in a webtoon. Order is not
+  cosmetic: it is what the translator is told the page's reading order *is*,
+  the sequence story context accumulates in, and the adjacency used to rejoin
+  split sentences. Vertical lettering is the tell for right-to-left, so a
+  Japanese webtoon still reads top-down.
+- **Split sentences are rejoined**: one line of dialogue broken over two or
+  three balloons ("あいつが……" / "……来たのか") is detected from the dangling
+  particle and translated as a single sentence, then divided back across the
+  balloons. Japanese and Korean drop the subject *and* the verb mid-sentence,
+  so a tail balloon read alone is genuinely ambiguous rather than merely
+  flavourless.
+- **The page is marked before it is sent**: in AI Vision each detected region
+  is outlined and numbered directly on the uploaded image, so the model reads
+  "region 7" off the page instead of matching coordinates to positions — the
+  thing vision models are least reliable at. Answers stop landing on the wrong
+  balloon.
+- **Speaker attribution and a persistent cast**: every line comes back
+  attributed to a character, and each character's pronoun and speech register
+  are remembered across pages and restarts. This is what resolves the subjects
+  CJK omits — and it stops the pronoun coin-flip that leaves a character "he"
+  on one page and "she" on the next.
 - **Persistent glossary**: the AI registers every name/term it establishes
   (강태오 → "Kang Tae-oh") and reuses it across pages, chapters and restarts.
 - **Overlay feedback loop is impossible by design**: overlays are cleared
@@ -76,7 +108,9 @@ Key details:
   not at all.
 - **SFX intelligence**: oversized katakana bursts are classified as sound
   effects and rendered as compact comic captions (WHAM, BA-DUMP) — or left as
-  untouched art — never word-for-word translated.
+  untouched art — never word-for-word translated. Japanese sound effects name
+  states as often as noises, so シーン becomes "…SILENCE…" and ジー becomes
+  "…STARE…" rather than an invented crash.
 - **Language auto-detect** races all three CJK recognizers and pins the winner
   after two consecutive wins, so steady-state pages pay for exactly one OCR pass.
 - **Bubble grouping** clusters OCR lines with direction-aware padding

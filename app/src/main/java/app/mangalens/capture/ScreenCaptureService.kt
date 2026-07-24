@@ -36,6 +36,7 @@ import app.mangalens.pipeline.TranslatePipeline
 import app.mangalens.settings.AppSettings
 import app.mangalens.settings.CaptureMode
 import app.mangalens.settings.SettingsRepository
+import app.mangalens.translate.CastBook
 import app.mangalens.translate.GlossaryStore
 import app.mangalens.translate.TranslationCache
 import app.mangalens.translate.TranslationService
@@ -97,8 +98,9 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
     private val cache = TranslationCache()
     // lazy: these need a Context, which a Service only has after construction
     private val glossary by lazy { GlossaryStore(this) }
-    private val translation by lazy { TranslationService(cache, glossary) }
-    private val pipeline by lazy { TranslatePipeline(ocr, translation, cache, glossary) }
+    private val cast by lazy { CastBook(this) }
+    private val translation by lazy { TranslationService(cache, glossary, cast) }
+    private val pipeline by lazy { TranslatePipeline(ocr, translation, cache, glossary, cast) }
 
     private val frameLock = Any()
     private var latestBitmap: Bitmap? = null

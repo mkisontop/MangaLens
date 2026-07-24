@@ -14,6 +14,10 @@ data class Bubble(
     val box: Rect,
     val vertical: Boolean,
     val kind: BubbleKind = BubbleKind.DIALOGUE,
+    /** Utterance this bubble is part of, or -1 when it stands alone. See [Utterance]. */
+    val runId: Int = -1,
+    /** 0-based position within [runId]. */
+    val runPart: Int = 0,
 )
 
 object Script {
@@ -127,7 +131,12 @@ object BubbleGrouper {
         val bubbles = groups.values.mapNotNull { raw ->
             buildBubble(raw, lang, medianStroke)
         }
-        return bubbles.sortedWith(compareBy({ it.box.top }, { it.box.left }))
+        // Panel-aware order, then link the bubbles that share one sentence.
+        // Both feed the translator directly: order is what "reading order"
+        // means in the prompt, and the links are what let it resolve a clause
+        // whose subject lives in the previous balloon.
+        val ordered = ReadingOrder.order(bubbles, ReadingOrder.isRightToLeft(bubbles, lang))
+        return Utterance.link(ordered, lang)
     }
 
     private fun buildBubble(raw: MutableList<OcrLine>, lang: SourceLang, pageStroke: Int): Bubble? {

@@ -12,6 +12,7 @@ import app.mangalens.settings.AiVisionMode
 import app.mangalens.settings.AppSettings
 import app.mangalens.settings.EngineKind
 import app.mangalens.settings.SourceLang
+import app.mangalens.translate.CastBook
 import app.mangalens.translate.GlossaryStore
 import app.mangalens.translate.JunkFilter
 import app.mangalens.translate.SfxDict
@@ -38,6 +39,7 @@ class TranslatePipeline(
     private val translation: TranslationService,
     private val cache: TranslationCache,
     private val glossary: GlossaryStore? = null,
+    private val cast: CastBook? = null,
 ) {
 
     data class PageResult(
@@ -65,7 +67,7 @@ class TranslatePipeline(
             return machineTranslate(bitmap, bubbles, ocrResult.lang, settings)
         }
 
-        val vision = VisionLlmEngine(settings, glossary)
+        val vision = VisionLlmEngine(settings, glossary, cast)
         // Anchored vision is the quality path for every script — manhwa's
         // stylized/handwritten lettering needs it as much as vertical
         // Japanese does, and it degrades to the text path automatically.
@@ -177,7 +179,10 @@ class TranslatePipeline(
         settings: AppSettings,
     ): PageResult {
         val outcome = translation.translate(
-            bubbles.map { it.text }, lang, settings, kinds = bubbles.map { it.kind },
+            bubbles.map { it.text }, lang, settings,
+            kinds = bubbles.map { it.kind },
+            runs = bubbles.map { it.runId },
+            parts = bubbles.map { it.runPart },
         )
         val fromAi = outcome.engineLabel != "Google"
         val rendered = bubbles.mapIndexed { i, b ->
@@ -268,10 +273,12 @@ class TranslatePipeline(
             val arr = JSONArray(raw)
             (0 until arr.length()).map { i ->
                 val o = arr.getJSONArray(i)
-                if (o.length() != 8) throw IllegalStateException("stale vision cache entry")
+                // Entries written before the speaker field existed are dropped
+                // rather than read short.
+                if (o.length() != 9) throw IllegalStateException("stale vision cache entry")
                 VisionLlmEngine.VisionBubble(
                     o.getInt(0), o.getInt(1), o.getInt(2), o.getInt(3), o.getInt(4),
-                    o.getString(5), o.getString(6), o.getInt(7) == 1,
+                    o.getString(5), o.getString(6), o.getInt(7) == 1, o.getString(8),
                 )
             }
         }.getOrNull()
@@ -288,7 +295,7 @@ class TranslatePipeline(
         for (v in result) {
             arr.put(
                 JSONArray().put(v.id).put(v.nx).put(v.ny).put(v.nw).put(v.nh)
-                    .put(v.src).put(v.en).put(if (v.sfx) 1 else 0)
+                    .put(v.src).put(v.en).put(if (v.sfx) 1 else 0).put(v.who)
             )
         }
         cache.put(visionKey(ns, lang, bubbles), arr.toString())

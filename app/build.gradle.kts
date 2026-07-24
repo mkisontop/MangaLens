@@ -12,8 +12,8 @@ android {
         applicationId = "app.mangalens"
         minSdk = 26
         targetSdk = 35
-        versionCode = 5
-        versionName = "0.2.3"
+        versionCode = 6
+        versionName = "0.3.0"
 
         ndk {
             // Every modern tablet is arm64; dropping the other ABIs takes the
@@ -56,6 +56,14 @@ android {
     packaging {
         resources.excludes += "/META-INF/{AL2.0,LGPL2.1}"
     }
+    testOptions {
+        unitTests {
+            // Reading order and utterance linking are pure geometry over
+            // android.graphics.Rect, so the tests need real framework classes
+            // rather than the stub jar's "not mocked" methods.
+            isIncludeAndroidResources = true
+        }
+    }
 }
 
 dependencies {
@@ -79,4 +87,7 @@ dependencies {
     implementation("com.google.mlkit:text-recognition-korean:16.0.1")
     // Optional fully-offline translation engine
     implementation("com.google.mlkit:translate:17.0.3")
+
+    testImplementation("junit:junit:4.13.2")
+    testImplementation("org.robolectric:robolectric:4.14.1")
 }
