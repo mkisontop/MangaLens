@@ -40,11 +40,17 @@ object Utterance {
     /**
      * Japanese clause connectives and case particles that cannot legally end a
      * sentence — seeing one at a bubble's tail means the clause continues.
+     *
+     * Conspicuously absent: の, な and や. Each joins clauses in prose but is
+     * overwhelmingly a sentence-final particle in comics dialogue — 「そうなの」
+     * and 「そうだな」 are complete lines, and treating them as dangling welds
+     * them onto whatever the next character says. A particle earns a place
+     * here only if it cannot close a spoken line.
      */
     private val JA_CONNECTIVES = listOf(
         "けれど", "けれども", "のに", "ので", "から", "けど", "たら", "なら", "ながら",
         "ため", "って", "とか", "ても", "でも", "だが", "しかし",
-        "が", "を", "に", "へ", "と", "は", "も", "で", "て", "し", "の", "な", "や",
+        "が", "を", "に", "へ", "と", "は", "も", "で", "て", "し",
     )
 
     /**

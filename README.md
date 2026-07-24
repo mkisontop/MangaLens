@@ -81,13 +81,28 @@ Key details:
   cosmetic: it is what the translator is told the page's reading order *is*,
   the sequence story context accumulates in, and the adjacency used to rejoin
   split sentences. Vertical lettering is the tell for right-to-left, so a
-  Japanese webtoon still reads top-down.
+  Japanese webtoon still reads top-down. Scored against a corpus of standard
+  page layouts (`ReadingOrderBenchmarkTest`), this reads **13/13** correctly
+  where the previous top-to-bottom, left-to-right sort managed 6/13.
+
+  One layout family is genuinely undecidable and is marked as such in the
+  corpus: a full-height panel down one side, with a balloon near its top,
+  produces balloon geometry identical to a two-panel tier above a single
+  panel — and the two read in different orders. Only the panel borders
+  distinguish them, and the grouper sees balloon boxes alone. Detecting panel
+  borders from the frame is what would close it.
 - **Split sentences are rejoined**: one line of dialogue broken over two or
   three balloons ("あいつが……" / "……来たのか") is detected from the dangling
   particle and translated as a single sentence, then divided back across the
   balloons. Japanese and Korean drop the subject *and* the verb mid-sentence,
   so a tail balloon read alone is genuinely ambiguous rather than merely
-  flavourless.
+  flavourless. Detection is tuned against false positives — welding two
+  characters' lines together invents a sentence that was never on the page,
+  which is worse than translating a tail clause alone — and scores 10/10
+  linked and 11/11 kept apart on the labelled corpus in
+  `UtteranceAccuracyTest`. That corpus is what caught の and な being treated
+  as connectives when in dialogue they are overwhelmingly sentence-final:
+  「そうなの」 is a complete line, not the front half of one.
 - **The page is marked before it is sent**: in AI Vision each detected region
   is outlined and numbered directly on the uploaded image, so the model reads
   "region 7" off the page instead of matching coordinates to positions — the
