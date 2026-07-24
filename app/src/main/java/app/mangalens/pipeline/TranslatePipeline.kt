@@ -121,7 +121,20 @@ class TranslatePipeline(
         useVision: Boolean,
     ): PageResult {
         if (settings.engine != EngineKind.LLM) {
-            return machineTranslate(bitmap, bubbles, ocrResult.lang, settings)
+            val result = machineTranslate(bitmap, bubbles, ocrResult.lang, settings)
+            // The free and offline engines only ever see text on-device OCR
+            // managed to read, and stylized vertical lettering routinely
+            // defeats it. Balloon detection can still see those balloons, so
+            // say how many were found and left alone — silently skipping them
+            // reads as the app being broken rather than as the engine's limit.
+            val unread = balloons.count { balloon ->
+                bubbles.none { it.text.isNotBlank() && Rect.intersects(it.box, balloon) }
+            }
+            return if (unread > 0) {
+                result.copy(note = "$unread unread · AI Pro reads these")
+            } else {
+                result
+            }
         }
 
         val vision = VisionLlmEngine(settings, glossary, cast)
