@@ -49,6 +49,58 @@ class CastBook(context: Context) {
     private val cast = LinkedHashMap<String, Member>(32, 0.75f, true)
     private var loaded = false
 
+    /**
+     * Which work this cast belongs to. Sharing one cast across everything read
+     * is worse here than for the glossary, because a pronoun is deliberately
+     * held once set: a "Yuu" established as *he* in one series would fix the
+     * pronoun of an unrelated "Yuu" in the next, and the stickiness that keeps
+     * a character consistent within a story is exactly what carries the error
+     * across stories.
+     */
+    private var scope = DEFAULT_SCOPE
+
+    /** Switches to another work's cast, saving the current one first. */
+    @Synchronized
+    fun setScope(id: String) {
+        if (id == scope) return
+        if (loaded) persist()
+        scope = id
+        cast.clear()
+        loaded = false
+    }
+
+    /** Forgets a work's cast entirely, when it is evicted. */
+    @Synchronized
+    fun dropScope(id: String) {
+        prefs.edit().remove(keyFor(id)).apply()
+        if (scope == id) {
+            cast.clear()
+            loaded = true
+        }
+    }
+
+    /** Folds [from] into [to] without overwriting characters [to] already knows. */
+    @Synchronized
+    fun mergeScope(from: String, to: String) {
+        if (from == to) return
+        val source = read(from)
+        if (source.isEmpty()) return
+        val target = read(to)
+        for ((k, v) in source) target.putIfAbsent(k, v)
+        write(to, target)
+        prefs.edit().remove(keyFor(from)).apply()
+        if (scope == from) {
+            // Already folded into [to]; dropping it here stops the next
+            // scope switch from writing it straight back out again.
+            cast.clear()
+            loaded = true
+        }
+        if (scope == to) {
+            cast.clear()
+            loaded = false
+        }
+    }
+
     @Synchronized
     fun snapshot(): Map<String, Member> {
         ensureLoaded()
@@ -117,23 +169,35 @@ class CastBook(context: Context) {
     private fun ensureLoaded() {
         if (loaded) return
         loaded = true
+        cast.putAll(read(scope))
+    }
+
+    private fun persist() {
+        write(scope, LinkedHashMap(cast))
+    }
+
+    private fun keyFor(id: String) = if (id == DEFAULT_SCOPE) KEY else "$KEY:$id"
+
+    private fun read(id: String): LinkedHashMap<String, Member> {
+        val out = LinkedHashMap<String, Member>()
         runCatching {
-            val raw = prefs.getString(KEY, null) ?: return
+            val raw = prefs.getString(keyFor(id), null) ?: return out
             val obj = JSONObject(raw)
             for (name in obj.keys()) {
                 val o = obj.optJSONObject(name) ?: continue
-                cast[name] = Member(
+                out[name] = Member(
                     o.optString("pronoun", ""),
                     o.optString("register", ""),
                     o.optString("note", ""),
                 )
             }
         }
+        return out
     }
 
-    private fun persist() {
+    private fun write(id: String, map: Map<String, Member>) {
         val obj = JSONObject()
-        for ((name, m) in cast) {
+        for ((name, m) in map) {
             obj.put(
                 name,
                 JSONObject()
@@ -142,12 +206,13 @@ class CastBook(context: Context) {
                     .put("note", m.note),
             )
         }
-        prefs.edit().putString(KEY, obj.toString()).apply()
+        prefs.edit().putString(keyFor(id), obj.toString()).apply()
     }
 
     companion object {
         private const val KEY = "cast"
         private const val MAX_CAST = 24
+        private const val DEFAULT_SCOPE = "default"
 
         /** Parses the `characters` object the translator returns. */
         fun parse(obj: JSONObject?): Map<String, Member> {

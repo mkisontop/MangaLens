@@ -132,6 +132,21 @@ Key details:
   on one page and "she" on the next.
 - **Persistent glossary**: the AI registers every name/term it establishes
   (강태오 → "Kang Tae-oh") and reuses it across pages, chapters and restarts.
+- **One series never contaminates the next**: the glossary, the cast and the
+  story context are all scoped per work. Pooled, they invert their own
+  purpose — 先生 fixed as "Doctor" by a medical series is then obeyed exactly
+  in a school one, a pronoun deliberately held steady for one "Yuu" fixes an
+  unrelated character of the same name, and the last thirty lines of one story
+  arrive as context for the first page of another, which is precisely the
+  input that decides who an elided subject refers to.
+
+  A screen-capture app cannot ask what is being read, so a work is identified
+  by its own content: once a session establishes a couple of proper nouns,
+  those name it, and if a stored work shares them it is resumed with
+  everything it had. A work ends on a long enough reading gap or a run of
+  pages with no dialogue — leaving a series always crosses an index page, a
+  cover or a pause. **New series** in the long-press menu forces it, for going
+  straight from one work to the next with neither.
 - **Tap-to-turn readers are noticed too**: while a translated page is on
   screen, frames are compared against *that page* rather than against the
   frame before them. Frame-to-frame differencing sees scrolling easily but is

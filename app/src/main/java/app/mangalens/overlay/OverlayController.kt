@@ -27,6 +27,8 @@ class OverlayController(private val context: Context, private val listener: List
         fun onTogglePause()
         fun onToggleMode()
         fun onPeek()
+        /** Forget this series' glossary, cast and story so far, and start fresh. */
+        fun onNewSeries()
         fun onOpenSettings()
         fun onStopRequested()
         fun isPaused(): Boolean
@@ -249,6 +251,7 @@ class OverlayController(private val context: Context, private val listener: List
             listener.onToggleMode()
         }
         item("👁  Peek at original (4 s)") { listener.onPeek() }
+        item("📖  New series — forget names so far") { listener.onNewSeries() }
         item("⚙  Settings") { listener.onOpenSettings() }
         item("✕  Stop translating") { listener.onStopRequested() }
 

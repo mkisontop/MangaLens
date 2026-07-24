@@ -40,6 +40,7 @@ import app.mangalens.translate.CastBook
 import app.mangalens.translate.GlossaryStore
 import app.mangalens.translate.TranslationCache
 import app.mangalens.translate.TranslationService
+import app.mangalens.translate.WorkMemory
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -109,6 +110,13 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
     // lazy: these need a Context, which a Service only has after construction
     private val glossary by lazy { GlossaryStore(this) }
     private val cast by lazy { CastBook(this) }
+
+    /**
+     * Keeps each series' glossary, cast and story context to itself. Reading
+     * several works in a sitting otherwise pools them, and the memory that
+     * makes one story consistent then contradicts the next.
+     */
+    private val works by lazy { WorkMemory(this, glossary, cast) }
     private val translation by lazy { TranslationService(cache, glossary, cast) }
     private val pipeline by lazy { TranslatePipeline(ocr, translation, cache, glossary, cast) }
 
@@ -402,6 +410,9 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         state = State.TRANSLATING
         translateJob = scope.launch {
             try {
+                // A long enough break since the last translated page means the
+                // next one probably belongs to a different series.
+                works.beginPass(System.currentTimeMillis())
                 val bmp = grabCleanBitmap()
                 if (bmp == null) {
                     state = State.SCANNING
@@ -435,13 +446,21 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                     controller?.bubbleView?.placedRects() ?: emptyList(), capW, capH,
                 )
                 needBaseline = true
+                // A page with dialogue keeps the current work alive and feeds it
+                // the names that identify it; a run of pages without any means
+                // the reader has left the story — an index, a cover, a menu.
+                if (result.bubbles.isEmpty()) {
+                    works.noteQuietPass()
+                } else {
+                    works.noteTranslated(System.currentTimeMillis(), glossary.snapshot().keys)
+                }
                 controller?.bubbleView?.setDebugBalloons(
                     if (settings.diagnostics) result.balloons else emptyList()
                 )
                 // Diagnostics stay up: they exist to be read off a page that
                 // came back wrong, and a pill that vanishes is no use for that.
                 if (result.diag != null) {
-                    setPill("${result.engineLabel.ifBlank { "—" }} · ${result.diag}")
+                    setPill("${result.engineLabel.ifBlank { "—" }} · ${result.diag} · ${works.describe()}")
                 } else if (result.bubbles.isEmpty()) {
                     setPill(if (auto) null else "no CJK text found", 1800)
                 } else {
@@ -495,6 +514,14 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
     override fun onTranslateNow() {
         if (projection == null || state == State.TRANSLATING) return
         startTranslate(auto = false)
+    }
+
+    override fun onNewSeries() {
+        // The automatic boundaries — a long gap, or a run of pages with no
+        // dialogue — cover switching series the usual way. This is for going
+        // straight from one work to the next with neither.
+        works.startNewWork()
+        setPill("new series · names cleared", 2000)
     }
 
     override fun onTogglePause() {
