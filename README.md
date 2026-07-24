@@ -132,6 +132,22 @@ Key details:
   on one page and "she" on the next.
 - **Persistent glossary**: the AI registers every name/term it establishes
   (강태오 → "Kang Tae-oh") and reuses it across pages, chapters and restarts.
+- **Tap-to-turn readers are noticed too**: while a translated page is on
+  screen, frames are compared against *that page* rather than against the
+  frame before them. Frame-to-frame differencing sees scrolling easily but is
+  structurally blind to an animated page turn — each step of a cross-fade
+  moves the screen only slightly, and since the reference is the previous
+  frame, it follows the animation onto the new page without ever registering
+  motion. Measured over a nine-frame turn, no step exceeds a quarter of the
+  motion threshold while the accumulated change is twice the page-change
+  threshold. Cards are masked out of the comparison, since they are captured
+  along with the page and sit exactly where it changes.
+- **One balloon, one card**: a balloon that already has a card never gets a
+  second one, and a free-floating entry is only trusted where the page
+  actually shows text. The model sometimes answers a region by id *and*
+  repeats it as an unanchored entry — usually when a long line tempts it to
+  continue in a second one — and the repeat carries its own drifting box that
+  lands beside or below the balloon it belongs to.
 - **Overlay feedback loop is impossible by design**: overlays are cleared
   before every capture, re-OCR only triggers after real screen motion, and the
   app's own floating button region is excluded from OCR.

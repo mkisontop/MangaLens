@@ -85,7 +85,7 @@ class TranslatePipeline(
         if (useVision) {
             visionCacheGet(vision.cacheNamespace, ocrResult.lang, bubbles)?.let { cached ->
                 return PageResult(
-                    toRender(bitmap, cached, bubbles, ignoreTop, ignoreBottom, exclusions),
+                    toRender(bitmap, cached, bubbles, ignoreTop, ignoreBottom, exclusions, balloons),
                     vision.label, null, polished = true,
                 )
             }
@@ -135,7 +135,7 @@ class TranslatePipeline(
                             )
                             visionCachePut(vision.cacheNamespace, ocrResult.lang, bubbles, complete)
                             return@coroutineScope PageResult(
-                                toRender(bitmap, complete, bubbles, ignoreTop, ignoreBottom, exclusions),
+                                toRender(bitmap, complete, bubbles, ignoreTop, ignoreBottom, exclusions, balloons),
                                 vision.label, null, polished = true,
                             )
                         }
@@ -264,15 +264,20 @@ class TranslatePipeline(
         ignoreTop: Int,
         ignoreBottom: Int,
         exclusions: List<Rect>,
+        balloons: List<Rect>,
     ): List<RenderBubble> {
         val w = bitmap.width
         val h = bitmap.height
         val unclaimed = ocrBubbles.toMutableList()
 
         // Anchored entries first: exact OCR geometry, AI text.
+        val takenBoxes = ArrayList<Rect>()
+        val takenText = HashSet<String>()
         val anchored = pageBubbles.filter { it.id in ocrBubbles.indices }.mapNotNull { v ->
             val anchor = ocrBubbles[v.id]
             if (!unclaimed.remove(anchor)) return@mapNotNull null
+            takenBoxes.add(anchor.box)
+            takenText.add(fingerprint(v.en))
             renderBubble(
                 bitmap, anchor.box, v.en, v.src.ifBlank { anchor.text }, anchor.vertical,
                 if (v.sfx) BubbleKind.SFX else BubbleKind.DIALOGUE,
@@ -301,6 +306,25 @@ class TranslatePipeline(
             if (box.bottom <= ignoreTop || box.top >= h - ignoreBottom) return@mapNotNull null
             if (exclusions.any { Rect.intersects(it, box) }) return@mapNotNull null
             if (box.width() < 8 || box.height() < 8) return@mapNotNull null
+
+            // A balloon that already has a card never gets a second one. The
+            // model sometimes answers a region by id *and* repeats it as a
+            // free-floating entry — usually when a long line tempts it to
+            // continue in a second entry — and the repeat carries its own
+            // drifting box, which lands beside or below the balloon it
+            // belongs to.
+            if (takenBoxes.any { overlapping(it, box) }) return@mapNotNull null
+            if (!takenText.add(fingerprint(v.en))) return@mapNotNull null
+
+            // An unanchored box is the model's own geometry and is trusted
+            // only where the page actually shows text. Balloon detection knows
+            // where those are; without it, fall back to trusting the box.
+            if (balloons.isNotEmpty() &&
+                balloons.none { overlapping(it, box) } &&
+                unclaimed.none { overlapping(it.box, box) }
+            ) {
+                return@mapNotNull null
+            }
             renderBubble(
                 bitmap, box, v.en, original, vertical,
                 if (v.sfx) BubbleKind.SFX else BubbleKind.DIALOGUE,
@@ -308,6 +332,14 @@ class TranslatePipeline(
         }
         return anchored + extras
     }
+
+    /** True when [b] sits on [a] closely enough to be the same balloon. */
+    private fun overlapping(a: Rect, b: Rect): Boolean =
+        a.contains(b.centerX(), b.centerY()) || b.contains(a.centerX(), a.centerY()) || iou(a, b) > 0.2f
+
+    /** Collapses a translation to a form that catches near-repeats. */
+    private fun fingerprint(s: String): String =
+        s.lowercase().filter { it.isLetterOrDigit() }
 
     private fun iou(a: Rect, b: Rect): Float {
         val ix = maxOf(0, minOf(a.right, b.right) - maxOf(a.left, b.left))

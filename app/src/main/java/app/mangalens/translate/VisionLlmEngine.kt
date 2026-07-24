@@ -216,6 +216,7 @@ Punchy comic onomatopoeia in CAPS (WHAM, BA-DUMP, KRAK) with "kind":"sfx". Japan
 
 MISSED TEXT
 If real comic text is visible with NO magenta outline, add an entry WITHOUT an id and WITH "box":[x,y,width,height], each value 0-1000 normalized to the FULL image (x and width against image width, y and height against image height). Never add boxes for app or browser UI.
+This is ONLY for text that has no outline of its own. Never add a no-id entry for text inside an outlined region — answer that region by its id, once. In particular, put a long line entirely in its region's own "en"; never continue it into a second entry, and never repeat a line you already gave by id. A duplicate entry is painted as a second card next to the balloon it belongs to.
 
 Respond with ONLY this JSON object, no markdown fences:
 {"bubbles":[{"id":<region id>,"who":"<speaker>","src":"<original>","en":"<English>","kind":"dialogue|sfx|skip"}, ...,{"box":[x,y,w,h],"who":"...","src":"...","en":"...","kind":"dialogue"}],"new_terms":{"<source name/term>":"<English>"},"characters":{"<English name>":{"pronoun":"he|she|they","register":"<how they speak>","note":"<role or relationship>"}}}

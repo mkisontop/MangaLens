@@ -34,6 +34,15 @@ class BubbleOverlayView(context: Context) : View(context) {
 
     private var placed: List<Placed> = emptyList()
 
+    /**
+     * Kept so cards can be laid out again once the view knows its real size.
+     * [place] clamps each card inside the screen, and the first pass often runs
+     * before layout, when the only width available is the display metric — on a
+     * multi-window or letterboxed reader that is wider than the view, and a
+     * card against the right edge is clipped.
+     */
+    private var source: List<RenderBubble> = emptyList()
+
     @Volatile var textScale = 1f
     @Volatile var bgOpacity = 1f
 
@@ -45,16 +54,34 @@ class BubbleOverlayView(context: Context) : View(context) {
     }
 
     fun setBubbles(bubbles: List<RenderBubble>) {
+        source = bubbles
         placed = bubbles.mapNotNull { place(it) }
         invalidate()
     }
 
     fun clear() {
+        source = emptyList()
         placed = emptyList()
         invalidate()
     }
 
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        if (source.isEmpty()) return
+        placed = source.mapNotNull { place(it) }
+        invalidate()
+    }
+
     fun hasBubbles() = placed.isNotEmpty()
+
+    /**
+     * Screen rectangles the cards currently occupy. The capture pipeline masks
+     * these out when watching for a page change — they are captured along with
+     * the page and would otherwise hide the change beneath them.
+     */
+    fun placedRects(): List<Rect> = placed.map {
+        Rect(it.rect.left.toInt(), it.rect.top.toInt(), it.rect.right.toInt(), it.rect.bottom.toInt())
+    }
 
     private fun dp(v: Float) = v * resources.displayMetrics.density
 

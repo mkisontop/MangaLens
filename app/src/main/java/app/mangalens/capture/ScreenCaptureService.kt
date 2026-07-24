@@ -77,6 +77,16 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         private const val NOTIF_ID = 41
         private const val MOTION_THRESHOLD = 3.6
 
+        /**
+         * Share of the visible page that must differ from the page we
+         * translated before it counts as a new page. Readers that turn on a
+         * tap swap the page between two frames with no scroll to notice, and
+         * the swap is often too gentle for [MOTION_THRESHOLD] — two comic
+         * pages are mostly white, so the average difference stays low even
+         * when the panels are entirely different.
+         */
+        private const val PAGE_CHANGE_FRACTION = 0.015
+
         val running = MutableStateFlow(false)
     }
 
@@ -105,6 +115,17 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
     private val frameLock = Any()
     private var latestBitmap: Bitmap? = null
     private var prevThumb: IntArray? = null
+
+    /**
+     * The page as it looked when we translated it, plus the cells its overlay
+     * cards cover. While overlays are up, every frame is compared against this
+     * rather than against the frame before it — a tap-to-turn swap produces
+     * one changed frame and then stillness, so frame-to-frame differencing has
+     * a single chance to catch it and cumulative comparison has every frame.
+     */
+    @Volatile private var shownThumb: IntArray? = null
+    @Volatile private var shownMask: BooleanArray? = null
+    @Volatile private var needBaseline = false
 
     // Reused frame buffers (capture thread only): the display feeds frames at
     // refresh rate, but scroll detection only needs ~12 fps, and allocating a
@@ -274,6 +295,20 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
             if (diff > MOTION_THRESHOLD) {
                 lastMotionAt = now
                 if (state != State.SCANNING) scope.launch { onMotion() }
+                return
+            }
+            if (state == State.SHOWING) {
+                if (needBaseline) {
+                    // First settled frame with the finished cards up: this is
+                    // the page those cards belong to.
+                    shownThumb = thumb
+                    needBaseline = false
+                } else if (
+                    FrameStability.changedFraction(shownThumb, thumb, shownMask) > PAGE_CHANGE_FRACTION
+                ) {
+                    lastMotionAt = now
+                    scope.launch { onMotion() }
+                }
             }
         } finally {
             image.close()
@@ -324,16 +359,25 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
             State.TRANSLATING -> {
                 translateJob?.cancel()
                 state = State.SCANNING
+                clearPageBaseline()
                 controller?.bubbleView?.clear()
                 setPill(null)
             }
             State.SHOWING -> {
                 state = State.SCANNING
+                clearPageBaseline()
                 controller?.bubbleView?.clear()
                 setPill(null)
             }
             State.SCANNING -> Unit
         }
+    }
+
+    /** Drops the translated-page reference so it is never compared to a new page. */
+    private fun clearPageBaseline() {
+        shownThumb = null
+        shownMask = null
+        needBaseline = false
     }
 
     private fun startTicker() {
@@ -384,6 +428,13 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                 suppressUntil = SystemClock.uptimeMillis() + 500
                 controller?.bubbleView?.setBubbles(result.bubbles)
                 state = State.SHOWING
+                // Watch this page for a swap that never scrolls. The mask is
+                // taken after the final cards are placed, so it covers where
+                // they actually landed rather than where the draft sat.
+                shownMask = FrameStability.mask(
+                    controller?.bubbleView?.placedRects() ?: emptyList(), capW, capH,
+                )
+                needBaseline = true
                 if (result.bubbles.isEmpty()) {
                     setPill(if (auto) null else "no CJK text found", 1800)
                 } else {
@@ -395,6 +446,10 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                 throw e
             } catch (e: Exception) {
                 state = State.SHOWING
+                // No cards to mask, but the page still needs watching or a
+                // failed pass would sit here until something scrolls.
+                shownMask = null
+                needBaseline = true
                 setPill("⚠ " + (e.message?.take(90) ?: "translation failed"), 4500)
             }
         }
