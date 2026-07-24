@@ -45,8 +45,15 @@ object BalloonFinder {
      * Component pixels over bounding-box area. Balloons are blobby and convex —
      * an ellipse fills about 0.79 of its box. The floor rejects ragged
      * highlights in the artwork.
+     *
+     * The ceiling rejects rectangles, and it is load-bearing: a panel with a
+     * white background is itself an enclosed light region bounded by ink, and
+     * satisfies every other test here. Taken for a balloon, it swallows every
+     * balloon drawn inside it and welds their separate lines into one — two
+     * characters speaking in one card, centred on the panel.
      */
     private const val MIN_FILL = 0.55f
+    private const val MAX_FILL = 0.93f
 
     /** Share of the box that must be lettering for a light blob to be a balloon. */
     private const val MIN_INK = 0.02f
@@ -126,7 +133,8 @@ object BalloonFinder {
             val boxW = maxX - minX + 1
             val boxH = maxY - minY + 1
             if (boxW < 10 || boxH < 10) continue
-            if (count.toFloat() / (boxW * boxH) < MIN_FILL) continue
+            val fill = count.toFloat() / (boxW * boxH)
+            if (fill < MIN_FILL || fill > MAX_FILL) continue
             // Extreme slivers are panel highlights, not balloons.
             val ratio = boxW.toFloat() / boxH
             if (ratio > 12f || ratio < 1f / 12f) continue
@@ -153,7 +161,35 @@ object BalloonFinder {
             if (exclusions.any { Rect.intersects(it, full) }) continue
             out.add(full)
         }
-        return out
+        return dropContainers(out)
+    }
+
+    /**
+     * Removes regions that enclose other regions.
+     *
+     * No balloon contains another balloon, so a region that does is something
+     * a balloon sits inside — a light panel, an inset, a page margin caught
+     * between borders. Left in, it claims the text of everything it contains
+     * and merges separate speakers into a single line.
+     */
+    private fun dropContainers(found: List<Rect>): List<Rect> {
+        if (found.size < 2) return found
+        return found.filter { outer ->
+            found.none { inner -> inner !== outer && encloses(outer, inner) }
+        }
+    }
+
+    /** True when [outer] holds essentially all of [inner] and is clearly bigger. */
+    private fun encloses(outer: Rect, inner: Rect): Boolean {
+        if (!outer.contains(inner.centerX(), inner.centerY())) return false
+        val ix = minOf(outer.right, inner.right) - maxOf(outer.left, inner.left)
+        val iy = minOf(outer.bottom, inner.bottom) - maxOf(outer.top, inner.top)
+        if (ix <= 0 || iy <= 0) return false
+        val innerArea = inner.width().toLong() * inner.height()
+        if (innerArea <= 0L) return false
+        val covered = (ix.toLong() * iy).toFloat() / innerArea
+        val outerArea = outer.width().toLong() * outer.height()
+        return covered > 0.9f && outerArea > innerArea * 1.3f
     }
 
     /** Pushes a neighbour if it is unvisited light; returns the new stack top. */

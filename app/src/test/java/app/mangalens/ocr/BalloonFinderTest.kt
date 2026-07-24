@@ -179,6 +179,70 @@ class BalloonFinderTest {
         assertEquals("列0列1列2列3列4", inBig[0].text)
     }
 
+    /**
+     * A white-backed panel holding two balloons — the arrangement at the top of
+     * an ordinary manga page, and the one that merged two speakers into a
+     * single card. The panel interior is itself an enclosed light region
+     * bounded by ink, so nothing but its rectangularity and the balloons nested
+     * inside it distinguishes it from a balloon.
+     */
+    private fun panelPage(): Pair<Bitmap, List<Rect>> {
+        // Proportions matter: the panel has to be a believable share of the
+        // page (about a quarter, as the top panel of a manga page is) and the
+        // balloons a modest share of the panel. Make the panel too large and
+        // the area cap rejects it for the wrong reason; make the balloons fill
+        // it and the fill floor does — and then the fixture proves nothing.
+        val w = 900
+        val h = 1400
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp)
+        canvas.drawColor(Color.WHITE)
+
+        // Top panel: white inside, ruled border, roughly a quarter of the page.
+        canvas.drawRect(Rect(40, 40, 860, 420), ink)
+
+        val right = Rect(560, 110, 790, 290)
+        val left = Rect(160, 140, 390, 320)
+        balloon(canvas, right, columns = 4, narrowColumn = true)
+        balloon(canvas, left, columns = 3, narrowColumn = false)
+        return bmp to listOf(right, left)
+    }
+
+    @Test
+    fun `a white panel holding balloons is not itself taken for a balloon`() {
+        val (bmp, truth) = panelPage()
+        val found = BalloonFinder.find(bmp)
+        writePreview("panel.png", bmp, found)
+
+        for (t in truth) {
+            assertTrue("no balloon detected at $t (found $found)", found.any { matches(it, t) })
+        }
+        assertTrue(
+            "the panel was reported as a balloon (found $found)",
+            found.none { it.width() > 600 && it.height() > 300 },
+        )
+        assertEquals("expected exactly the two balloons, got $found", 2, found.size)
+    }
+
+    @Test
+    fun `two speakers in one panel keep their own cards`() {
+        val (bmp, truth) = panelPage()
+        val found = BalloonFinder.find(bmp)
+
+        // One OCR fragment per balloon, as the grouper would produce.
+        val fragments = listOf(
+            Bubble("あちちこのココア", Rect(520, 150, 750, 350), true),
+            Bubble("そうこれGABAとか", Rect(160, 190, 370, 370), true),
+        )
+        val merged = BalloonMerge.apply(fragments, found, SourceLang.JA, includeEmpty = false)
+
+        assertEquals("the two lines must not be welded into one, got $merged", 2, merged.size)
+        assertTrue(
+            "each speaker keeps their own text, got ${merged.map { it.text }}",
+            merged.any { it.text == "あちちこのココア" } && merged.any { it.text == "そうこれGABAとか" },
+        )
+    }
+
     @Test
     fun `a balloon OCR could not read still becomes a region`() {
         val (bmp, truth) = page(toned = true)

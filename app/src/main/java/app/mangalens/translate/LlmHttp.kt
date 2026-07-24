@@ -116,9 +116,14 @@ internal object LlmHttp {
         val messages = JSONArray()
             .put(JSONObject().put("role", "system").put("content", system))
             .put(JSONObject().put("role", "user").put("content", content))
+        // Greedy decoding. Re-reading a page must not re-word it: the cache is
+        // keyed on OCR text, and OCR varies slightly between two captures of
+        // the same page, so a re-read often misses the cache and asks again.
+        // With sampling on, that second answer differs from the first — the
+        // same panel worded two ways depending on when you looked at it.
         val body = JSONObject()
             .put("model", settings.effectiveModel())
-            .put("temperature", 0.3)
+            .put("temperature", 0)
             .put("max_tokens", maxTokens)
             .put("messages", messages)
         val builder = Request.Builder()
