@@ -521,7 +521,7 @@ private fun ReadingCard(settings: AppSettings, repo: SettingsRepository) {
                 { "${(it * 100).toInt()}%" },
             ) { scope.launch { repo.setTextScale(it) } }
             LabeledSlider(
-                "Patch opacity",
+                "Floating card opacity (cleaned balloons stay solid)",
                 settings.bgOpacity,
                 0.6f..1.0f,
                 { "${(it * 100).toInt()}%" },

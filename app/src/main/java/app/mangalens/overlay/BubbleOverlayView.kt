@@ -268,8 +268,11 @@ class BubbleOverlayView(context: Context) : View(context) {
         val bounds = RectF(box)
         bounds.union(textX, textY, textX + chosen.width, textY + chosen.height)
 
-        val alpha = (255 * bgOpacity).toInt().coerceIn(70, 255)
-        val fill = Color.argb(alpha, Color.red(b.bgColor), Color.green(b.bgColor), Color.blue(b.bgColor))
+        // A cleaning is a replacement, not a patch: whatever the card-opacity
+        // slider says — and devices upgraded from the patch era carry low
+        // values in their saved settings — the original lettering must be
+        // fully gone, or the balloon shows both languages interleaved.
+        val fill = Color.argb(255, Color.red(b.bgColor), Color.green(b.bgColor), Color.blue(b.bgColor))
         return Placed(
             bounds = bounds,
             layout = chosen,

@@ -160,6 +160,33 @@ class ScanlationRenderTest {
         )
     }
 
+    /**
+     * The field failure this pins: devices upgraded from the patch era carry
+     * a low card-opacity value in their saved settings, and honoring it in
+     * cleaning mode painted the fill translucent — both languages showing
+     * interleaved in one balloon. A cleaning is a replacement; the slider
+     * belongs to floating cards only.
+     */
+    @Test
+    fun `a low card opacity setting cannot make the cleaning translucent`() {
+        val v = view()
+        v.bgOpacity = 0.6f
+        v.setBubbles(listOf(bubble("I NEVER ASKED FOR THIS")))
+        val out = page()
+        v.draw(Canvas(out))
+        writePreview("cleaned-low-opacity.png", out)
+        val px = pixels(out)
+
+        assertEquals(
+            "the fill must stay exactly opaque paper under a low slider",
+            Color.WHITE,
+            out.getPixel(box.left + 32, box.centerY()),
+        )
+        var leftover = 0
+        for (c in px) if (isLetteringInk(c)) leftover++
+        assertEquals("no original lettering may bleed through the fill", 0, leftover)
+    }
+
     @Test
     fun `the card layer rides the shift and placedRects reports it`() {
         val v = view()

@@ -37,6 +37,14 @@ object ScrollTracker {
     private const val MIN_BANDS = 16
 
     /**
+     * Centered-brightness change below which a band is treated as not having
+     * moved between two frames — capture noise and compression shimmer, not
+     * content. Bands under this floor are the static furniture (chrome, our
+     * button, unmoving art) and are kept out of the shift scoring entirely.
+     */
+    private const val CHANGE_FLOOR = 4.0
+
+    /**
      * Profile contrast (mean absolute deviation) below this is a blank gap,
      * motion blur, or capture jitter — nothing an alignment could hold on to.
      */
@@ -163,17 +171,35 @@ object ScrollTracker {
         if (actP < MIN_ACTIVITY || actC < MIN_ACTIVITY) return null
         val act = (actP + actC) / 2
 
+        // A captured frame is never all strip: the status bar, the reader's
+        // toolbar and our own floating button ride every frame without
+        // moving, and at full weight those bands vote "no movement" hard
+        // enough to out-argue the content and drop the lock mid-scroll. Only
+        // the bands that actually changed between the two frames belong to
+        // the moving content, so only they get to score — and if next to
+        // nothing changed, the screen simply is still.
+        val moved = BooleanArray(n)
+        var movedCount = 0
+        for (y in 0 until n) {
+            if (pOk[y] && cOk[y] && abs(pv[y] - cv[y]) > CHANGE_FLOOR) {
+                moved[y] = true
+                movedCount++
+            }
+        }
+        if (movedCount < maxOf(MIN_BANDS / 2, n / 24)) return Lock(0, 1f)
+        val minMoved = maxOf(MIN_BANDS / 2, movedCount / 3)
+
         fun score(s: Int): Double {
             var sum = 0.0
             var k = 0
             val yFrom = maxOf(0, -s)
             val yTo = minOf(n, n - s)
             for (y in yFrom until yTo) {
-                if (!pOk[y] || !cOk[y + s]) continue
+                if (!moved[y] || !pOk[y] || !cOk[y + s]) continue
                 sum += abs(pv[y] - cv[y + s])
                 k++
             }
-            return if (k >= minBands) sum / k else Double.MAX_VALUE
+            return if (k >= minMoved) sum / k else Double.MAX_VALUE
         }
 
         val lo = Math.floorDiv(guessPx - maxShiftPx, BIN).coerceAtLeast(-(n - 1))

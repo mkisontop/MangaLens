@@ -126,6 +126,67 @@ class ScrollTrackerTest {
         }
     }
 
+    /**
+     * The frame capture delivers is never all strip: the status bar, the
+     * browser's toolbar and tab row, the system navigation bar, and our own
+     * floating button all sit at fixed screen positions with high-contrast
+     * detail while the content moves beneath them. Scored at full weight,
+     * those bands vote "no movement" hard enough to out-argue the strip —
+     * the field failure where the tracker lost lock mid-scroll, coasted,
+     * and reset the session, leaving revisited balloons bare.
+     */
+    private fun withChrome(src: Bitmap): Bitmap {
+        val out = src.copy(Bitmap.Config.ARGB_8888, true)
+        val canvas = Canvas(out)
+        val bar = Paint().apply { color = Color.rgb(32, 33, 36) }
+        val icon = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(214, 216, 220) }
+        // Status bar and browser toolbar: dark bands full of light detail.
+        canvas.drawRect(Rect(0, 0, width, 96), bar)
+        canvas.drawRect(Rect(0, 96, width, 210), bar)
+        for (x in 40 until width - 40 step 90) {
+            canvas.drawRect(Rect(x, 24, x + 46, 72), icon)
+            canvas.drawRect(Rect(x, 120, x + 60, 186), icon)
+        }
+        // System navigation, and the floating toggle over the content.
+        canvas.drawRect(Rect(0, height - 110, width, height), bar)
+        for (x in intArrayOf(width / 4, width / 2, 3 * width / 4)) {
+            canvas.drawRect(Rect(x - 30, height - 84, x + 30, height - 30), icon)
+        }
+        canvas.drawOval(RectF(18f, 300f, 122f, 404f), Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.rgb(59, 63, 140)
+        })
+        return out
+    }
+
+    private fun chromedProfile(offset: Int): IntArray {
+        val plain = view(offset)
+        val framed = withChrome(plain)
+        plain.recycle()
+        val prof = ScrollTracker.profile(framed)
+        framed.recycle()
+        return prof
+    }
+
+    @Test
+    fun `static chrome cannot anchor the lock to zero`() {
+        val prev = chromedProfile(1000)
+        for (d in intArrayOf(24, 90, 260)) {
+            val lock = ScrollTracker.delta(prev, chromedProfile(1000 + d), maxShiftPx = 320)
+            assertNotNull("a scroll of $d px under chrome must lock", lock)
+            println("chromed scroll $d px -> delta ${lock!!.deltaPx} px, confidence %.2f".format(lock.confidence))
+            assertTrue("chromed scroll of $d px read as ${lock.deltaPx} px", abs(lock.deltaPx + d) <= 3)
+        }
+    }
+
+    @Test
+    fun `a chromed still pair is still, not lost`() {
+        val a = chromedProfile(1400)
+        val b = chromedProfile(1400)
+        val lock = ScrollTracker.delta(a, b, maxShiftPx = 320)
+        assertNotNull(lock)
+        assertEquals(0, lock!!.deltaPx)
+    }
+
     @Test
     fun `a velocity guess recenters the search window`() {
         // The window alone is far too narrow for a 240 px jump; the guess
