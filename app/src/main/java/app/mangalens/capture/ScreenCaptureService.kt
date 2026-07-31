@@ -219,6 +219,9 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
     /** Coast ended on re-acquired locks; the next settle must vote the blind gap away. */
     @Volatile private var needsReground = false
 
+    /** Consecutive settles whose reground found nothing where cards were expected. */
+    private var regroundStrikes = 0
+
     // Capture thread only.
     private var prevProfile: IntArray? = null
     private var settledProfile: IntArray? = null
@@ -546,6 +549,12 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                     }
                     else -> scope.launch { stickyReset() }
                 }
+            } else if (coastLocks >= COAST_RELOCK_FRAMES) {
+                // The strip is readable again mid-motion; stop coasting and
+                // ride it. The blind gap stays in the offset until the next
+                // settle's landmarks vote it out.
+                coasting = false
+                needsReground = true
             }
             return true
         }
@@ -648,6 +657,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         stickyLive = false
         coasting = false
         needsReground = false
+        regroundStrikes = 0
         trackOffset = 0
         paintedAtOffset = 0
         paintedRects = emptyList()
@@ -844,8 +854,15 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                             }
                         }
                         // Each card's strip identity, taken while the pixels
-                        // are still in hand.
-                        if (sticky) hashes = r.bubbles.map { PageKey.regionHash(bmp, it.box) }
+                        // are still in hand. Hashed over the balloon's box
+                        // where one was detected: the text-tight box shifts
+                        // between passes with OCR's mood, and an identity
+                        // that drifts cannot vote in a reground.
+                        if (sticky) {
+                            hashes = r.bubbles.map {
+                                PageKey.regionHash(bmp, it.balloon?.box ?: it.box)
+                            }
+                        }
                         r
                     }
                 } finally {
@@ -863,50 +880,77 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                     settings.stickyScroll && settings.mode == CaptureMode.AUTO
                 if (stickyStill) {
                     var offsetForAdd = offsetAtCapture
+                    var holdBack = false
                     if (needsReground) {
                         // A coast ended on re-acquired locks alone, so the
                         // blind gap is still in the offset. Stored balloons
-                        // re-detected just now are landmarks: their votes
-                        // relocate the strip; none of them with the store
-                        // insisting cards belong on this screen means this
-                        // is not the strip the session knows.
+                        // re-detected just now are landmarks: hash votes
+                        // first, the balloons' layout pattern when the
+                        // hashes jitter. One settle finding nothing where
+                        // cards were expected is a fingerprint quirk; only a
+                        // run of them means the strip is genuinely gone.
                         val corrected = strip.reground(
-                            result.bubbles.mapIndexed { i, b -> b.box to hashes[i] },
+                            result.bubbles.mapIndexed { i, b ->
+                                (b.balloon?.box ?: b.box) to hashes[i]
+                            },
                             offsetAtCapture,
                         )
                         when {
-                            corrected != null && kotlin.math.abs(corrected - offsetAtCapture) <= capH * 4 -> {
+                            corrected != null && kotlin.math.abs(corrected - offsetAtCapture) <= capH * 6 -> {
                                 val fix = corrected - offsetAtCapture
                                 offsetForAdd = corrected
                                 trackOffset += fix
                                 needsReground = false
+                                regroundStrikes = 0
                             }
-                            claims.isEmpty() -> needsReground = false
+                            claims.isEmpty() -> {
+                                needsReground = false
+                                regroundStrikes = 0
+                            }
                             else -> {
-                                stickyReset()
-                                return@launch
+                                regroundStrikes++
+                                if (regroundStrikes >= 3) {
+                                    stickyReset()
+                                    return@launch
+                                }
+                                // Show this screen translated, but keep its
+                                // cards out of the strip until the offset can
+                                // be trusted — entries stored at a wrong
+                                // offset misplace the whole session.
+                                holdBack = true
                             }
                         }
+                    } else {
+                        regroundStrikes = 0
                     }
-                    // A balloon straddling the frame edge was read in part;
-                    // storing the fragment would claim the whole balloon
-                    // against ever being translated whole. Leave it for the
-                    // settle that shows all of it.
-                    val edge = (capH / 100).coerceAtLeast(8)
-                    val keep = ArrayList<RenderBubble>(result.bubbles.size)
-                    val keepHashes = ArrayList<Long>(hashes.size)
-                    result.bubbles.forEachIndexed { i, b ->
-                        val whole = b.balloon?.box ?: b.box
-                        if (whole.top > edge && whole.bottom < capH - edge) {
-                            keep.add(b)
-                            keepHashes.add(hashes[i])
+                    if (holdBack) {
+                        // The offset is on probation: show this screen its
+                        // translations, but nothing enters the strip and the
+                        // next settle gets another vote.
+                        lastTranslatedOffset = offsetAtCapture
+                        lastShown = emptyList()
+                        paintCards(result.bubbles)
+                    } else {
+                        // A balloon straddling the frame edge was read in
+                        // part; storing the fragment would claim the whole
+                        // balloon against ever being translated whole. Leave
+                        // it for the settle that shows all of it.
+                        val edge = (capH / 100).coerceAtLeast(8)
+                        val keep = ArrayList<RenderBubble>(result.bubbles.size)
+                        val keepHashes = ArrayList<Long>(hashes.size)
+                        result.bubbles.forEachIndexed { i, b ->
+                            val whole = b.balloon?.box ?: b.box
+                            if (whole.top > edge && whole.bottom < capH - edge) {
+                                keep.add(b)
+                                keepHashes.add(hashes[i])
+                            }
                         }
+                        strip.add(keep, keepHashes, offsetForAdd)
+                        lastTranslatedOffset = offsetForAdd
+                        lastShown = emptyList()
+                        repaintFromStore()
                     }
-                    strip.add(keep, keepHashes, offsetForAdd)
-                    lastTranslatedOffset = offsetForAdd
                     stickyLive = true
-                    lastShown = emptyList()
-                    repaintFromStore()
                 } else {
                     lastShown = result.bubbles
                     suppressUntil = SystemClock.uptimeMillis() + 500

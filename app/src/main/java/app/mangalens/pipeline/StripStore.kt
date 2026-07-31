@@ -36,6 +36,11 @@ import kotlin.math.abs
  */
 class StripStore(private val maxEntries: Int = 400) {
 
+    private companion object {
+        /** How far apart two alignment proposals may sit and still agree. */
+        const val LAYOUT_TOLERANCE_PX = 14
+    }
+
     private class Entry(val bubble: RenderBubble, val hash: Long) {
         val top get() = bubble.box.top
         val bottom get() = bubble.box.bottom
@@ -126,9 +131,57 @@ class StripStore(private val maxEntries: Int = 400) {
             }
             if (vote != null) votes.add(vote)
         }
-        if (votes.size < 2) return null
-        votes.sort()
-        return votes[votes.size / 2]
+        if (votes.size >= 2) {
+            votes.sort()
+            return votes[votes.size / 2]
+        }
+        return regroundByLayout(detected, offset)
+    }
+
+    /**
+     * Content hashes are exact-match, and the same balloon re-detected on a
+     * later pass is cropped a little differently — enough jitter that a
+     * revisit can produce no hash votes at all, and treating that as "wrong
+     * strip" wipes a chapter of translations over a fingerprint quirk. The
+     * balloons' vertical layout is a landmark the hashes cannot lose: the
+     * spacing pattern of balloon tops is as good as a barcode on a real
+     * page. Every (detected, stored) pairing proposes the offset that would
+     * align it; the proposal that at least two distinct detections agree on
+     * (within [LAYOUT_TOLERANCE_PX]) is where the strip actually is. A
+     * swapped page's balloons land at unrelated spacings and never gather
+     * two agreeing proposals.
+     */
+    private fun regroundByLayout(detected: List<Pair<Rect, Long>>, offset: Int): Int? {
+        if (detected.size < 2 || entries.size < 2) return null
+        val proposals = ArrayList<Int>()
+        for ((box, _) in detected) {
+            for (e in entries) {
+                proposals.add(e.top - box.top)
+            }
+        }
+        var best: MutableList<Int>? = null
+        for (p in proposals) {
+            val support = ArrayList<Int>()
+            for ((box, _) in detected) {
+                var closest: Int? = null
+                for (e in entries) {
+                    val c = e.top - box.top
+                    if (abs(c - p) <= LAYOUT_TOLERANCE_PX &&
+                        (closest == null || abs(c - p) < abs(closest - p))
+                    ) {
+                        closest = c
+                    }
+                }
+                closest?.let { support.add(it) }
+            }
+            if (support.size >= 2 && (best == null || support.size > best.size ||
+                    (support.size == best.size && abs(p - offset) < abs(best[best.size / 2] - offset)))
+            ) {
+                support.sort()
+                best = support
+            }
+        }
+        return best?.let { it[it.size / 2] }
     }
 
     @Synchronized

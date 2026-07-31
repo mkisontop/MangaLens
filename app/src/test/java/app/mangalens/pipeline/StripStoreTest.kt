@@ -164,6 +164,42 @@ class StripStoreTest {
     }
 
     @Test
+    fun `layout alignment relocates the strip when every hash jitters`() {
+        // The field failure: content hashes are exact-match and the same
+        // balloon re-detected on a later pass crops a little differently, so
+        // a revisit can produce zero hash votes — and a session must not be
+        // wiped over a fingerprint quirk. The balloons' spacing pattern is
+        // the landmark hashes cannot lose.
+        val store = StripStore()
+        store.add(
+            listOf(
+                bubble(Rect(100, 1000, 500, 1200)),
+                bubble(Rect(120, 1400, 520, 1600)),
+                bubble(Rect(140, 2000, 540, 2200)),
+            ),
+            listOf(1L, 2L, 3L),
+            offset = 0,
+        )
+
+        // Truly at 950; every hash is unrecognizable.
+        val detected = listOf(
+            Rect(100, 50, 500, 250) to 111L,
+            Rect(120, 450, 520, 650) to 222L,
+            Rect(140, 1050, 540, 1250) to 333L,
+        )
+        assertEquals(950, store.reground(detected, 400)!!)
+
+        // A page whose balloons land at unrelated spacings gathers no two
+        // agreeing proposals, however many balloons it shows.
+        val swapped = listOf(
+            Rect(100, 120, 500, 320) to 444L,
+            Rect(120, 700, 520, 900) to 555L,
+            Rect(140, 1500, 540, 1700) to 666L,
+        )
+        assertNull(store.reground(swapped, 400))
+    }
+
+    @Test
     fun `an ambiguous hash votes with the entry nearest the belief`() {
         val store = StripStore()
         store.add(

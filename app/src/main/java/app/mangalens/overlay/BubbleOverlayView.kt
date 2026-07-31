@@ -319,7 +319,15 @@ class BubbleOverlayView(context: Context) : View(context) {
         var maxLine = 0f
         for (i in 0 until chosen.lineCount) maxLine = maxOf(maxLine, chosen.getLineWidth(i))
         val w = (maxLine + pad * 2).coerceAtLeast(dp(40f)).coerceAtMost(boxW + pad * 2)
-        val h = chosen.height + pad * 2
+        // A dialogue card must bury the whole original block, not just sit
+        // behind the English: CJK runs taller than its translation, and a
+        // card sized to the text leaves the source lines peeking above and
+        // below it. SFX captions stay compact by design.
+        val h = if (sfx) {
+            chosen.height + pad * 2
+        } else {
+            maxOf(chosen.height + pad * 2, b.box.height() + dp(6f))
+        }
 
         var left = b.box.centerX() - w / 2f
         var top = b.box.centerY() - h / 2f
@@ -339,7 +347,7 @@ class BubbleOverlayView(context: Context) : View(context) {
             bounds = rect,
             layout = chosen,
             textX = rect.centerX() - chosen.width / 2f,
-            textY = rect.top + pad,
+            textY = rect.centerY() - chosen.height / 2f,
             bg = bg,
             card = rect,
         )
