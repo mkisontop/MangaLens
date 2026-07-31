@@ -43,6 +43,14 @@ data class AppSettings(
     val diagnostics: Boolean = false,
     val textScale: Float = 1.0f,
     val bgOpacity: Float = 1.0f,
+    /**
+     * Cards ride the strip: scroll tracking keeps translations glued to
+     * their balloons, and a balloon scrolled back into view still wears its
+     * card — the chapter reads as if it was translated from the start.
+     * Auto-live mode only; falls back to the classic clear-and-retranslate
+     * loop whenever tracking cannot lock (tap-to-turn readers, page swaps).
+     */
+    val stickyScroll: Boolean = true,
     val stabilityMs: Int = 350,
     val ignoreTopPct: Float = 0.03f,
     val ignoreBottomPct: Float = 0.02f,
@@ -81,6 +89,7 @@ class SettingsRepository(private val context: Context) {
         val DIAGNOSTICS = booleanPreferencesKey("diagnostics")
         val TEXT_SCALE = floatPreferencesKey("text_scale")
         val BG_OPACITY = floatPreferencesKey("bg_opacity")
+        val STICKY_SCROLL = booleanPreferencesKey("sticky_scroll")
         val STABILITY_MS = intPreferencesKey("stability_ms")
         val IGNORE_TOP = floatPreferencesKey("ignore_top")
         val IGNORE_BOTTOM = floatPreferencesKey("ignore_bottom")
@@ -105,6 +114,7 @@ class SettingsRepository(private val context: Context) {
             diagnostics = p[Keys.DIAGNOSTICS] ?: d.diagnostics,
             textScale = p[Keys.TEXT_SCALE] ?: d.textScale,
             bgOpacity = p[Keys.BG_OPACITY] ?: d.bgOpacity,
+            stickyScroll = p[Keys.STICKY_SCROLL] ?: d.stickyScroll,
             stabilityMs = p[Keys.STABILITY_MS] ?: d.stabilityMs,
             ignoreTopPct = p[Keys.IGNORE_TOP] ?: d.ignoreTopPct,
             ignoreBottomPct = p[Keys.IGNORE_BOTTOM] ?: d.ignoreBottomPct,
@@ -126,6 +136,7 @@ class SettingsRepository(private val context: Context) {
     suspend fun setDiagnostics(v: Boolean) = context.settingsStore.edit { it[Keys.DIAGNOSTICS] = v }
     suspend fun setTextScale(v: Float) = context.settingsStore.edit { it[Keys.TEXT_SCALE] = v }
     suspend fun setBgOpacity(v: Float) = context.settingsStore.edit { it[Keys.BG_OPACITY] = v }
+    suspend fun setStickyScroll(v: Boolean) = context.settingsStore.edit { it[Keys.STICKY_SCROLL] = v }
     suspend fun setStabilityMs(v: Int) = context.settingsStore.edit { it[Keys.STABILITY_MS] = v }
     suspend fun setIgnoreTopPct(v: Float) = context.settingsStore.edit { it[Keys.IGNORE_TOP] = v }
     suspend fun setIgnoreBottomPct(v: Float) = context.settingsStore.edit { it[Keys.IGNORE_BOTTOM] = v }

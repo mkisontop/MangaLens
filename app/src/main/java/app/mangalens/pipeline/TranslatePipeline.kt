@@ -3,6 +3,7 @@ package app.mangalens.pipeline
 import android.graphics.Bitmap
 import android.graphics.Color
 import android.graphics.Rect
+import app.mangalens.ocr.Balloon
 import app.mangalens.ocr.BalloonFinder
 import app.mangalens.ocr.Bubble
 import app.mangalens.ocr.BubbleGrouper
@@ -82,7 +83,11 @@ class TranslatePipeline(
 
         // Balloons come from the page pixels, so a region exists because the
         // page shows one — not because OCR happened to read something in it.
-        val balloons = BalloonFinder.find(bitmap, ignoreTop, ignoreBottom, exclusions)
+        // The detailed detections carry each balloon's interior mask, which
+        // is what lets a card wipe the balloon clean instead of floating a
+        // patch over it.
+        val detected = BalloonFinder.findDetailed(bitmap, ignoreTop, ignoreBottom, exclusions)
+        val balloons = detected.map { it.box }
         val bubbles = BubbleGrouper.group(
             ocrResult.lines, bitmap.height, ignoreTop, ignoreBottom, ocrResult.lang, exclusions,
             balloons, includeEmptyBalloons = useVision,
@@ -120,7 +125,7 @@ class TranslatePipeline(
 
         val result = dispatch(
             bitmap, settings, exclusions, onPartial,
-            ocrResult, bubbles, balloons, anchorLines, ignoreTop, ignoreBottom, useVision,
+            ocrResult, bubbles, detected, anchorLines, ignoreTop, ignoreBottom, useVision,
         )
         return if (diag == null) result else result.copy(
             diag = "$diag · cards ${result.bubbles.size}",
@@ -136,14 +141,15 @@ class TranslatePipeline(
         onPartial: (suspend (PageResult) -> Unit)?,
         ocrResult: OcrEngine.Result,
         bubbles: List<Bubble>,
-        balloons: List<Rect>,
+        detected: List<Balloon>,
         anchorLines: List<OcrLine>,
         ignoreTop: Int,
         ignoreBottom: Int,
         useVision: Boolean,
     ): PageResult {
+        val balloons = detected.map { it.box }
         if (settings.engine != EngineKind.LLM) {
-            val result = machineTranslate(bitmap, bubbles, ocrResult.lang, settings)
+            val result = machineTranslate(bitmap, bubbles, ocrResult.lang, settings, detected)
             // The free and offline engines only ever see text on-device OCR
             // managed to read, and stylized vertical lettering routinely
             // defeats it. Balloon detection can still see those balloons, so
@@ -170,7 +176,7 @@ class TranslatePipeline(
         if (pageKey != null) {
             visionCacheGet(pageKey, bubbles, bitmap.width, bitmap.height)?.let { cached ->
                 return PageResult(
-                    toRender(bitmap, cached, bubbles, anchorLines, ignoreTop, ignoreBottom, exclusions, balloons),
+                    toRender(bitmap, cached, bubbles, anchorLines, ignoreTop, ignoreBottom, exclusions, detected),
                     vision.label, null, polished = true,
                 )
             }
@@ -178,7 +184,7 @@ class TranslatePipeline(
             val ns = vision.cacheNamespace.removePrefix("Vision:")
             val dialogue = bubbles.filter { it.kind == BubbleKind.DIALOGUE }
             if (dialogue.isNotEmpty() && translation.fullyCached(ns, ocrResult.lang, dialogue.map { it.text })) {
-                return aiTextTranslate(bitmap, bubbles, ocrResult.lang, settings)
+                return aiTextTranslate(bitmap, bubbles, ocrResult.lang, settings, detected)
             }
         }
 
@@ -190,7 +196,7 @@ class TranslatePipeline(
             val fastJob = onPartial?.let { emit ->
                 launch {
                     val fast = runCatching {
-                        machineTranslate(bitmap, bubbles, ocrResult.lang, settings, forceGoogle = true)
+                        machineTranslate(bitmap, bubbles, ocrResult.lang, settings, detected, forceGoogle = true)
                     }.getOrNull()
                     if (fast != null && fast.bubbles.isNotEmpty() && !aiFinished) {
                         emit(fast.copy(note = "upgrading"))
@@ -222,7 +228,7 @@ class TranslatePipeline(
                                 visionCachePut(it, bubbles, complete, bitmap.width, bitmap.height)
                             }
                             return@coroutineScope PageResult(
-                                toRender(bitmap, complete, bubbles, anchorLines, ignoreTop, ignoreBottom, exclusions, balloons),
+                                toRender(bitmap, complete, bubbles, anchorLines, ignoreTop, ignoreBottom, exclusions, detected),
                                 vision.label, null, polished = true,
                             )
                         }
@@ -232,7 +238,7 @@ class TranslatePipeline(
                         // fall through to the text path
                     }
                 }
-                aiTextTranslate(bitmap, bubbles, ocrResult.lang, settings)
+                aiTextTranslate(bitmap, bubbles, ocrResult.lang, settings, detected)
             } finally {
                 aiFinished = true
                 fastJob?.cancel()
@@ -247,6 +253,7 @@ class TranslatePipeline(
         bubbles: List<Bubble>,
         lang: SourceLang,
         settings: AppSettings,
+        detected: List<Balloon>,
         forceGoogle: Boolean = false,
     ): PageResult {
         // Balloons detected in the pixels but unread by OCR carry no text; the
@@ -269,7 +276,7 @@ class TranslatePipeline(
         }
         val rendered = bubbles.mapNotNull { b ->
             val t = texts[b] ?: return@mapNotNull null
-            renderBubble(bitmap, b.box, t, b.text, b.vertical, b.kind)
+            renderBubble(bitmap, b.box, t, b.text, b.vertical, b.kind, detected)
         }
         return PageResult(rendered, outcome.engineLabel, outcome.note)
     }
@@ -281,6 +288,7 @@ class TranslatePipeline(
         bubbles: List<Bubble>,
         lang: SourceLang,
         settings: AppSettings,
+        detected: List<Balloon>,
     ): PageResult {
         // Text-only requests can say nothing about a balloon OCR could not
         // read, so those regions are left out rather than sent as blanks.
@@ -298,7 +306,7 @@ class TranslatePipeline(
             val b = bubbles[i]
             val gated = JunkFilter.accept(b.text, outcome.texts.getOrElse(k) { "" }, lang, fromAi)
                 ?: return@mapIndexedNotNull null
-            renderBubble(bitmap, b.box, gated, b.text, b.vertical, b.kind)
+            renderBubble(bitmap, b.box, gated, b.text, b.vertical, b.kind, detected)
         }
         return PageResult(rendered, outcome.engineLabel, outcome.note, fromAi)
     }
@@ -352,10 +360,11 @@ class TranslatePipeline(
         ignoreTop: Int,
         ignoreBottom: Int,
         exclusions: List<Rect>,
-        balloons: List<Rect>,
+        detected: List<Balloon>,
     ): List<RenderBubble> {
         val w = bitmap.width
         val h = bitmap.height
+        val balloons = detected.map { it.box }
         val unclaimed = ocrBubbles.toMutableList()
 
         // Anchored entries first: exact OCR geometry, AI text.
@@ -368,7 +377,7 @@ class TranslatePipeline(
             takenText.add(fingerprint(v.en))
             renderBubble(
                 bitmap, anchor.box, v.en, v.src.ifBlank { anchor.text }, anchor.vertical,
-                if (v.sfx) BubbleKind.SFX else BubbleKind.DIALOGUE,
+                if (v.sfx) BubbleKind.SFX else BubbleKind.DIALOGUE, detected,
             )
         }
 
@@ -425,7 +434,7 @@ class TranslatePipeline(
             takenBoxes.add(box)
             renderBubble(
                 bitmap, box, v.en, original, vertical,
-                if (v.sfx) BubbleKind.SFX else BubbleKind.DIALOGUE,
+                if (v.sfx) BubbleKind.SFX else BubbleKind.DIALOGUE, detected,
             )
         }
         return anchored + extras
@@ -547,17 +556,93 @@ class TranslatePipeline(
         original: String,
         vertical: Boolean,
         kind: BubbleKind,
+        detected: List<Balloon>,
     ): RenderBubble {
-        val bg = sampleBackground(bitmap, box)
+        val balloon = balloonFor(box, detected)
+        val bg = if (balloon != null) interiorColor(bitmap, balloon) else sampleBackground(bitmap, box)
+        val textColor = when {
+            balloon?.inverted == true -> 0xFFF2F3F7.toInt()
+            luminance(bg) < 140 -> Color.WHITE
+            else -> 0xFF17181C.toInt()
+        }
         return RenderBubble(
             box = Rect(box),
             translated = translated,
             original = original,
             bgColor = bg,
-            textColor = if (luminance(bg) < 140) Color.WHITE else 0xFF17181C.toInt(),
+            textColor = textColor,
             vertical = vertical,
             kind = kind,
+            balloon = balloon,
         )
+    }
+
+    /**
+     * The detected balloon this region belongs to, so its card can wipe the
+     * whole balloon clean rather than float a patch over part of it. A welded
+     * region carries the balloon's own box; an OCR-tight region sits inside
+     * one; anything else — SFX on the art, captions, a drifted extra — has no
+     * balloon and keeps the plain card.
+     */
+    private fun balloonFor(box: Rect, detected: List<Balloon>): Balloon? {
+        detected.firstOrNull { it.box == box }?.let { return it }
+        return detected.firstOrNull { b ->
+            b.box.contains(box.centerX(), box.centerY()) &&
+                (iou(b.box, box) > 0.2f || containedShare(box, b.box) > 0.8f)
+        }
+    }
+
+    /** Fraction of [box] inside [within]. */
+    private fun containedShare(box: Rect, within: Rect): Float {
+        val ix = minOf(box.right, within.right) - maxOf(box.left, within.left)
+        val iy = minOf(box.bottom, within.bottom) - maxOf(box.top, within.top)
+        if (ix <= 0 || iy <= 0) return 0f
+        val area = box.width().toLong() * box.height()
+        if (area <= 0L) return 0f
+        return (ix.toLong() * iy).toFloat() / area
+    }
+
+    /**
+     * The color a scanlator's cleaning fill should be: the average of the
+     * paper pixels inside the balloon (or, for an inverted balloon, of its
+     * ink), sampled through the interior mask so the lettering itself never
+     * tints the fill.
+     */
+    private fun interiorColor(bitmap: Bitmap, balloon: Balloon): Int {
+        val box = balloon.box
+        val stepX = (balloon.maskW / 48).coerceAtLeast(1)
+        val stepY = (balloon.maskH / 48).coerceAtLeast(1)
+        var r = 0L
+        var g = 0L
+        var b = 0L
+        var n = 0
+        var cy = 0
+        while (cy < balloon.maskH) {
+            var cx = 0
+            while (cx < balloon.maskW) {
+                if (balloon.mask[cy * balloon.maskW + cx]) {
+                    val x = (box.left + ((cx * 2 + 1) * box.width()) / (2 * balloon.maskW))
+                        .coerceIn(0, bitmap.width - 1)
+                    val y = (box.top + ((cy * 2 + 1) * box.height()) / (2 * balloon.maskH))
+                        .coerceIn(0, bitmap.height - 1)
+                    val p = bitmap.getPixel(x, y)
+                    val lum = luminance(p)
+                    val keep = if (balloon.inverted) lum <= 120 else lum >= 150
+                    if (keep) {
+                        r += Color.red(p)
+                        g += Color.green(p)
+                        b += Color.blue(p)
+                        n++
+                    }
+                }
+                cx += stepX
+            }
+            cy += stepY
+        }
+        if (n == 0) return if (balloon.inverted) 0xFF17181C.toInt() else Color.WHITE
+        val avg = Color.rgb((r / n).toInt(), (g / n).toInt(), (b / n).toInt())
+        // Most bubbles are white; snap near-white fills to pure white.
+        return if (!balloon.inverted && luminance(avg) > 190) Color.WHITE else avg
     }
 
     private fun luminance(c: Int) = (Color.red(c) * 299 + Color.green(c) * 587 + Color.blue(c) * 114) / 1000

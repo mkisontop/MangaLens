@@ -494,6 +494,19 @@ private fun ReadingCard(settings: AppSettings, repo: SettingsRepository) {
                     scope.launch { repo.setMode(CaptureMode.MANUAL) }
                 }
             }
+            Spacer(Modifier.height(10.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Chip("Sticky translations — cards ride the scroll", settings.stickyScroll) {
+                    scope.launch { repo.setStickyScroll(!settings.stickyScroll) }
+                }
+            }
+            Text(
+                "Translations stay glued to their balloons while you scroll, and a " +
+                    "balloon scrolled back into view still wears its card — the chapter " +
+                    "reads as if it was translated from the start. Auto-live mode only.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
             Spacer(Modifier.height(14.dp))
             LabeledSlider(
                 "Reaction time",
