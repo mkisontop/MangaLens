@@ -4,10 +4,10 @@ import android.annotation.SuppressLint
 import android.content.Context
 import android.graphics.Color
 import android.graphics.PixelFormat
-import android.graphics.Typeface
 import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.view.Gravity
+import android.view.HapticFeedbackConstants
 import android.view.MotionEvent
 import android.view.View
 import android.view.WindowManager
@@ -39,7 +39,7 @@ class OverlayController(private val context: Context, private val listener: List
     val bubbleView = BubbleOverlayView(context)
 
     private var controls: LinearLayout? = null
-    private var button: TextView? = null
+    private var button: FloatingButtonView? = null
     private var pill: TextView? = null
     private var menu: LinearLayout? = null
     private var controlsLp: WindowManager.LayoutParams? = null
@@ -95,7 +95,7 @@ class OverlayController(private val context: Context, private val listener: List
             menu?.let { mv ->
                 val mw = if (mv.width > 0) mv.width else dp(220f)
                 val mh = if (mv.height > 0) mv.height else dp(280f)
-                out.add(android.graphics.Rect(lp.x - m, lp.y + dp(52f) - m, lp.x + mw + m, lp.y + dp(52f) + mh + m))
+                out.add(android.graphics.Rect(lp.x - m, lp.y + dp(58f) - m, lp.x + mw + m, lp.y + dp(58f) + mh + m))
             }
         }
         return out
@@ -114,12 +114,12 @@ class OverlayController(private val context: Context, private val listener: List
     }
 
     fun setPaused(paused: Boolean) {
-        button?.background = circle(if (paused) 0xE6555A66.toInt() else 0xEE3B3F8C.toInt())
+        button?.setPaused(paused)
     }
 
-    private fun circle(color: Int) = GradientDrawable().apply {
-        shape = GradientDrawable.OVAL
-        setColor(color)
+    /** Sweeps the busy ring on the button while a translation pass runs. */
+    fun setBusy(busy: Boolean) {
+        button?.setBusy(busy)
     }
 
     private fun rounded(color: Int, radiusDp: Float) = GradientDrawable().apply {
@@ -134,14 +134,8 @@ class OverlayController(private val context: Context, private val listener: List
             orientation = LinearLayout.HORIZONTAL
             gravity = Gravity.CENTER_VERTICAL
         }
-        val btn = TextView(context).apply {
-            text = "文A"
-            setTextColor(Color.WHITE)
-            textSize = 13f
-            typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
-            gravity = Gravity.CENTER
-            background = circle(0xEE3B3F8C.toInt())
-            layoutParams = LinearLayout.LayoutParams(dp(46f), dp(46f))
+        val btn = FloatingButtonView(context).apply {
+            layoutParams = LinearLayout.LayoutParams(dp(52f), dp(52f))
             elevation = dp(4f).toFloat()
         }
         val status = TextView(context).apply {
@@ -208,7 +202,11 @@ class OverlayController(private val context: Context, private val listener: List
                 }
                 MotionEvent.ACTION_UP -> {
                     v.removeCallbacks(longPress)
-                    if (!moved && System.currentTimeMillis() - downTime < 450) listener.onTranslateNow()
+                    if (!moved && System.currentTimeMillis() - downTime < 450) {
+                        v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                        btn.playTapPulse()
+                        listener.onTogglePause()
+                    }
                 }
                 MotionEvent.ACTION_CANCEL -> v.removeCallbacks(longPress)
             }
@@ -266,7 +264,7 @@ class OverlayController(private val context: Context, private val listener: List
         )
         lp.gravity = Gravity.TOP or Gravity.START
         lp.x = lpControls.x
-        lp.y = lpControls.y + dp(52f)
+        lp.y = lpControls.y + dp(58f)
 
         col.setOnTouchListener { _, e ->
             if (e.actionMasked == MotionEvent.ACTION_OUTSIDE) {

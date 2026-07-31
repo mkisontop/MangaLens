@@ -8,6 +8,7 @@ import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.PixelFormat
+import android.graphics.Rect
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.Image
@@ -462,7 +463,9 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
             return true
         }
 
-        trackOffset += lock.deltaPx
+        // delta is negative when the reader scrolls down (content moves
+        // up) while strip offsets grow scrolling down — hence subtraction.
+        trackOffset -= lock.deltaPx
         if (lock.deltaPx != 0) lastMotionAt = now
         if (kotlin.math.abs(lock.deltaPx) >= SETTLED_DELTA_PX) {
             settledRunStart = 0L
@@ -478,12 +481,12 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                 val wide = if (base == null) null else ScrollTracker.delta(
                     base, prof,
                     maxShiftPx = capH * 2,
-                    guessPx = trackOffset - settledOffset,
+                    guessPx = settledOffset - trackOffset,
                 )
                 if (wide != null) {
                     // Same strip, further along: correct the offset from the
                     // absolute match instead of the drift the fling smeared.
-                    trackOffset = settledOffset + wide.deltaPx
+                    trackOffset = settledOffset - wide.deltaPx
                     coasting = false
                     settledProfile = prof
                     settledOffset = trackOffset
@@ -508,8 +511,8 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                     ScrollTracker.delta(
                         base, prof,
                         maxShiftPx = capH,
-                        guessPx = trackOffset - settledOffset,
-                    )?.let { trackOffset = settledOffset + it.deltaPx }
+                        guessPx = settledOffset - trackOffset,
+                    )?.let { trackOffset = settledOffset - it.deltaPx }
                 }
                 settledProfile = prof
                 settledOffset = trackOffset

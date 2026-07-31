@@ -322,4 +322,125 @@ class BalloonFinderTest {
         )
         assertTrue("blank regions should carry no text", withVision.any { it.text.isBlank() })
     }
+
+    /**
+     * A solid black narration box with light lettering rows — flashback
+     * furniture. Its interior is exactly what the light-interior model calls
+     * ink, so only the inverted pass can see it.
+     */
+    private fun invertedBox(canvas: Canvas, box: Rect, rows: Int) {
+        canvas.drawRect(box, black)
+        for (r in 0 until rows) {
+            val top = box.top + 40 + r * 50
+            canvas.drawRect(Rect(box.left + 40, top, box.right - 40, top + 22), white)
+        }
+    }
+
+    @Test
+    fun `a dark narration box with light lettering is found inverted`() {
+        val bmp = Bitmap.createBitmap(900, 500, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp)
+        canvas.drawColor(Color.WHITE)
+        val box = Rect(200, 120, 700, 360)
+        invertedBox(canvas, box, rows = 4)
+
+        val balloons = BalloonFinder.findDetailed(bmp)
+        writePreview("inverted.png", bmp, balloons.map { it.box })
+
+        val hits = balloons.filter { matches(it.box, box) }
+        assertEquals(
+            "the narration box at $box must be detected exactly once, got ${balloons.map { it.box }}",
+            1, hits.size,
+        )
+        assertTrue("a dark box carrying light lettering must be flagged inverted", hits[0].inverted)
+        assertEquals(balloons.map { it.box }, BalloonFinder.find(bmp))
+    }
+
+    /**
+     * A lone balloon with sparse lettering, for pinning the mask itself. The
+     * column lettering the [balloon] helper draws lands its interiors near
+     * the fill floor, where which pass accepts the component — and therefore
+     * the exact mask — turns on antialiasing noise; sparse rows keep this one
+     * an unambiguous first-pass find.
+     */
+    private fun lonePage(): Pair<Bitmap, Rect> {
+        val bmp = Bitmap.createBitmap(900, 500, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp)
+        canvas.drawColor(Color.WHITE)
+        val box = Rect(280, 100, 620, 400)
+        canvas.drawOval(RectF(box), white)
+        canvas.drawOval(RectF(box), ink)
+        for (r in 0 until 3) {
+            val top = 195 + r * 40
+            canvas.drawRect(Rect(370, top, 530, top + 20), black)
+        }
+        return bmp to box
+    }
+
+    @Test
+    fun `the mask is the flooded interior, not the box`() {
+        val (bmp, truth) = lonePage()
+        val balloons = BalloonFinder.findDetailed(bmp)
+        writePreview("mask.png", bmp, balloons.map { it.box })
+
+        assertTrue(
+            "no balloon detected at $truth (found ${balloons.map { it.box }})",
+            balloons.any { matches(it.box, truth) },
+        )
+        val b = balloons.first { matches(it.box, truth) }
+        assertEquals("a row-major mask covers exactly its dims", b.maskW * b.maskH, b.mask.size)
+
+        // Masks live at the finder's analysis resolution: at most 640 pixels
+        // on the page's long side.
+        val scale = 640f / bmp.width
+        assertEquals("mask width is the component's at work scale", b.box.width() * scale, b.maskW.toFloat(), 2f)
+        assertEquals("mask height is the component's at work scale", b.box.height() * scale, b.maskH.toFloat(), 2f)
+
+        val filled = b.mask.count { it }.toFloat() / b.mask.size
+        assertTrue(
+            "an ellipse fills its box partially, not fully, got $filled",
+            filled > 0.55f && filled < 0.95f,
+        )
+    }
+
+    /**
+     * A page mixing polarities: the two smaller balloons of the plain-page
+     * fixture beside a black narration box. Each pass must contribute its own
+     * kind while the dedupe and container logic runs across all of them.
+     */
+    private fun mixedPage(): Triple<Bitmap, List<Rect>, Rect> {
+        val bmp = Bitmap.createBitmap(900, 500, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp)
+        canvas.drawColor(Color.WHITE)
+
+        val mid = Rect(250, 90, 420, 300)
+        val small = Rect(60, 60, 190, 200)
+        balloon(canvas, mid, columns = 2, narrowColumn = false)
+        balloon(canvas, small, columns = 1, narrowColumn = false)
+        val box = Rect(500, 120, 860, 340)
+        invertedBox(canvas, box, rows = 3)
+        return Triple(bmp, listOf(mid, small), box)
+    }
+
+    @Test
+    fun `an inverted box and ordinary balloons share a page`() {
+        val (bmp, ellipses, darkBox) = mixedPage()
+        val balloons = BalloonFinder.findDetailed(bmp)
+        writePreview("mixed.png", bmp, balloons.map { it.box })
+
+        for (t in ellipses) {
+            assertTrue(
+                "no ordinary balloon detected at $t (found ${balloons.map { it.box }})",
+                balloons.any { matches(it.box, t) && !it.inverted },
+            )
+        }
+        assertTrue(
+            "the narration box at $darkBox must be found inverted",
+            balloons.any { matches(it.box, darkBox) && it.inverted },
+        )
+        assertEquals(
+            "each region exactly once across passes, got ${balloons.map { it.box }}",
+            3, balloons.size,
+        )
+    }
 }

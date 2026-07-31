@@ -7,6 +7,25 @@ import kotlin.math.max
 import kotlin.math.min
 
 /**
+ * One detected balloon.
+ *
+ * [box] is in full-resolution page coordinates. [mask] is the flooded
+ * interior itself — row-major over the component's bounding box at the
+ * analysis resolution, [maskW] by [maskH]. The overlay paints an opaque
+ * cleaning fill through it, and the fill must stop where the balloon does:
+ * painted through the box instead, every curve and tail squares off onto the
+ * art around it. [inverted] marks a dark balloon carrying light lettering, so
+ * the fill and the text drawn over it flip polarity together.
+ */
+data class Balloon(
+    val box: Rect,
+    val maskW: Int,
+    val maskH: Int,
+    val mask: BooleanArray,
+    val inverted: Boolean,
+)
+
+/**
  * Finds speech balloons in the page pixels, independently of what OCR managed
  * to read.
  *
@@ -25,6 +44,12 @@ import kotlin.math.min
  * as its own connected component. This inverts the dependency that matters —
  * a balloon whose vertical text ML Kit garbled completely is still found, and
  * still becomes a region the vision model can read off the image.
+ *
+ * Black narration boxes and flashback panels are the same object with the
+ * polarity flipped: an enclosed dark region carrying light lettering. To the
+ * light model their interior is indistinguishable from ink, so a mirrored
+ * pass floods enclosed dark components under the same gates. It needs no
+ * sealed variant — dark boxes are drawn solid, not as rings of ticks.
  */
 object BalloonFinder {
 
@@ -36,6 +61,15 @@ object BalloonFinder {
 
     /** Luminance below this counts as lettering. */
     private const val DARK = 128
+
+    /**
+     * Luminance at or below this is the interior of an inverted balloon.
+     * Deliberately below [DARK]: downscaling blurs screentone toward
+     * mid-grey, and the band between the two thresholds keeps that tone as
+     * lettering only, never an interior the inverted flood could spread
+     * through.
+     */
+    private const val INVERTED_INTERIOR = 110
 
     /** Fractions of the analysed page a balloon may occupy. */
     private const val MIN_AREA = 0.0012f
@@ -75,17 +109,26 @@ object BalloonFinder {
      */
     private const val BURST_MIN_FILL = 0.38f
 
-    /**
-     * Detects balloon regions, in full-resolution page coordinates.
-     *
-     * @param exclusions regions never to report, such as the app's own overlay.
-     */
+    /** The boxes alone, exactly as [findDetailed] carries them in [Balloon.box]. */
     fun find(
         bitmap: Bitmap,
         ignoreTopPx: Int = 0,
         ignoreBottomPx: Int = 0,
         exclusions: List<Rect> = emptyList(),
-    ): List<Rect> {
+    ): List<Rect> = findDetailed(bitmap, ignoreTopPx, ignoreBottomPx, exclusions).map { it.box }
+
+    /**
+     * Detects balloon regions, in full-resolution page coordinates, each
+     * carrying its interior mask and polarity.
+     *
+     * @param exclusions regions never to report, such as the app's own overlay.
+     */
+    fun findDetailed(
+        bitmap: Bitmap,
+        ignoreTopPx: Int = 0,
+        ignoreBottomPx: Int = 0,
+        exclusions: List<Rect> = emptyList(),
+    ): List<Balloon> {
         val scale = min(1f, WORK_DIM.toFloat() / max(bitmap.width, bitmap.height))
         val w = max(1, (bitmap.width * scale).toInt())
         val h = max(1, (bitmap.height * scale).toInt())
@@ -98,16 +141,18 @@ object BalloonFinder {
 
         val light = BooleanArray(w * h)
         val dark = BooleanArray(w * h)
+        val darkInterior = BooleanArray(w * h)
         for (i in pixels.indices) {
             val p = pixels[i]
             val lum = (Color.red(p) * 299 + Color.green(p) * 587 + Color.blue(p) * 114) / 1000
             light[i] = lum >= LIGHT
             dark[i] = lum < DARK
+            darkInterior[i] = lum <= INVERTED_INTERIOR
         }
 
         val found = sweep(
             light, dark, barrier = null, w, h, scale,
-            bitmap, ignoreTopPx, ignoreBottomPx, exclusions, MIN_FILL,
+            bitmap, ignoreTopPx, ignoreBottomPx, exclusions, MIN_FILL, inverted = false,
         )
 
         // Second pass for burst balloons — the shouted lines whose border is
@@ -120,19 +165,35 @@ object BalloonFinder {
         val sealed = dilate(dark, w, h, BURST_SEAL_RADIUS)
         val burst = sweep(
             light, dark, barrier = sealed, w, h, scale,
-            bitmap, ignoreTopPx, ignoreBottomPx, exclusions, BURST_MIN_FILL,
+            bitmap, ignoreTopPx, ignoreBottomPx, exclusions, BURST_MIN_FILL, inverted = false,
         )
         val out = ArrayList(found)
         for (b in burst) {
-            if (out.none { sameBalloon(it, b) }) out.add(b)
+            if (out.none { sameBalloon(it.box, b.box) }) out.add(b)
+        }
+
+        // Third pass, polarity flipped: the black narration and flashback
+        // boxes whose interior is exactly what the light model calls ink, so
+        // the first two passes cannot see them at all — those boxes simply
+        // went untranslated on every flashback page.
+        val negative = sweep(
+            darkInterior, light, barrier = null, w, h, scale,
+            bitmap, ignoreTopPx, ignoreBottomPx, exclusions, MIN_FILL, inverted = true,
+        )
+        for (b in negative) {
+            if (out.none { sameBalloon(it.box, b.box) }) out.add(b)
         }
         return dropContainers(out)
     }
 
-    /** One connected-component sweep; [barrier] additionally blocks the flood. */
+    /**
+     * One connected-component sweep. [interior] is flooded, [barrier]
+     * additionally blocks the flood, and [lettering] is the opposite polarity
+     * that must appear inside the box in believable quantity.
+     */
     private fun sweep(
-        light: BooleanArray,
-        dark: BooleanArray,
+        interior: BooleanArray,
+        lettering: BooleanArray,
         barrier: BooleanArray?,
         w: Int,
         h: Int,
@@ -142,19 +203,21 @@ object BalloonFinder {
         ignoreBottomPx: Int,
         exclusions: List<Rect>,
         minFill: Float,
-    ): List<Rect> {
-        val open = if (barrier == null) light else BooleanArray(w * h) { light[it] && !barrier[it] }
-        val out = ArrayList<Rect>()
+        inverted: Boolean,
+    ): List<Balloon> {
+        val open = if (barrier == null) interior else BooleanArray(w * h) { interior[it] && !barrier[it] }
+        val out = ArrayList<Balloon>()
         val seen = BooleanArray(w * h)
         val stack = IntArray(w * h)
+        val cells = IntArray(w * h)
         val minArea = (MIN_AREA * w * h).toInt().coerceAtLeast(24)
         val maxArea = (MAX_AREA * w * h).toInt()
 
         for (start in open.indices) {
             if (!open[start] || seen[start]) continue
 
-            // Flood the light region. Iterative: a full-page background
-            // component would blow a recursive stack.
+            // Flood the region. Iterative: a full-page background component
+            // would blow a recursive stack.
             var top = 0
             stack[top++] = start
             seen[start] = true
@@ -169,7 +232,7 @@ object BalloonFinder {
                 val idx = stack[--top]
                 val x = idx % w
                 val y = idx / w
-                count++
+                cells[count++] = idx
                 if (x < minX) minX = x
                 if (x > maxX) maxX = x
                 if (y < minY) minY = y
@@ -182,7 +245,7 @@ object BalloonFinder {
                 if (y < h - 1) push(stack, top, idx + w, open, seen)?.let { top = it }
             }
 
-            // The page background is light, huge, and runs to the edge.
+            // The page background — either polarity — is huge and runs to the edge.
             if (touchesEdge || count < minArea || count > maxArea) continue
 
             val boxW = maxX - minX + 1
@@ -194,12 +257,13 @@ object BalloonFinder {
             val ratio = boxW.toFloat() / boxH
             if (ratio > 12f || ratio < 1f / 12f) continue
 
-            // A balloon holds lettering. A blank highlight does not.
+            // A balloon holds lettering of the opposite polarity. A blank
+            // highlight — or a featureless patch of night sky — does not.
             var ink = 0
             for (y in minY..maxY) {
                 var i = y * w + minX
                 for (x in minX..maxX) {
-                    if (dark[i]) ink++
+                    if (lettering[i]) ink++
                     i++
                 }
             }
@@ -214,7 +278,13 @@ object BalloonFinder {
             )
             if (full.bottom <= ignoreTopPx || full.top >= bitmap.height - ignoreBottomPx) continue
             if (exclusions.any { Rect.intersects(it, full) }) continue
-            out.add(full)
+
+            val mask = BooleanArray(boxW * boxH)
+            for (n in 0 until count) {
+                val cell = cells[n]
+                mask[(cell / w - minY) * boxW + (cell % w - minX)] = true
+            }
+            out.add(Balloon(full, boxW, boxH, mask, inverted))
         }
         return out
     }
@@ -263,10 +333,10 @@ object BalloonFinder {
      * between borders. Left in, it claims the text of everything it contains
      * and merges separate speakers into a single line.
      */
-    private fun dropContainers(found: List<Rect>): List<Rect> {
+    private fun dropContainers(found: List<Balloon>): List<Balloon> {
         if (found.size < 2) return found
         return found.filter { outer ->
-            found.none { inner -> inner !== outer && encloses(outer, inner) }
+            found.none { inner -> inner !== outer && encloses(outer.box, inner.box) }
         }
     }
 
