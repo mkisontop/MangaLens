@@ -303,6 +303,49 @@ class BalloonFinderTest {
         assertTrue("page background reported as a balloon", found.none { it.width() > 880 })
     }
 
+    /**
+     * A pastel balloon — the pink fill romance manhwa favors — whose interior
+     * luminance sits below the white pass's floor. It reads as ink to that
+     * pass and was never found; the tinted pass must catch it without the
+     * white balloons on the same page doubling up.
+     */
+    @Test
+    fun `a pastel balloon is found alongside white ones`() {
+        val w = 900
+        val h = 500
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp)
+        canvas.drawColor(Color.WHITE)
+
+        val pastelBox = Rect(80, 80, 420, 320)
+        val pastel = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(236, 172, 190) }
+        canvas.drawOval(RectF(pastelBox), pastel)
+        canvas.drawOval(RectF(pastelBox), ink)
+        for (r in 0 until 3) {
+            val top = pastelBox.top + 60 + r * 58
+            canvas.drawRect(Rect(pastelBox.left + 70, top, pastelBox.right - 70, top + 18), black)
+        }
+
+        val whiteBox = Rect(520, 120, 840, 340)
+        balloon(canvas, whiteBox, columns = 2, narrowColumn = false)
+
+        val found = BalloonFinder.findDetailed(bmp)
+        writePreview("pastel.png", bmp, found.map { it.box })
+
+        assertTrue(
+            "the pastel balloon at $pastelBox must be detected (found ${found.map { it.box }})",
+            found.any { matches(it.box, pastelBox) },
+        )
+        assertTrue(
+            "the white balloon must be found exactly once beside it",
+            found.count { matches(it.box, whiteBox) } == 1,
+        )
+        assertTrue(
+            "a pastel balloon is a normal balloon, not an inverted one",
+            found.first { matches(it.box, pastelBox) }.let { !it.inverted },
+        )
+    }
+
     @Test
     fun `a balloon OCR could not read still becomes a region`() {
         val (bmp, truth) = page(toned = true)

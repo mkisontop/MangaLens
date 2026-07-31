@@ -14,9 +14,9 @@ Scroll and they vanish; stop and the next page translates itself.
 3. Every time you stop scrolling (~⅓ s), English appears **in** the bubbles —
    the balloon is wiped clean and re-lettered in a comic face, the way a
    scanlation typesets it.
-4. Scroll on — the cards ride the strip with the content, and a balloon
-   scrolled back into view still wears its translation. The chapter reads as
-   if it had been translated from the start.
+4. Scroll on — the overlays clear instantly so the page underneath is never
+   obscured mid-motion, and the next stop translates itself. A balloon you
+   scroll back to re-paints from cache: no re-translation, no extra cost.
 
 A floating **文A** toggle is always available: **tap** = translation on/off
 (with a busy ring while a pass runs), **long-press** = quick menu (translate
@@ -98,7 +98,10 @@ Key details:
   gaps, and the shouted line becomes an ordinary region instead of a balloon
   the app pretends not to see. A third pass flips the polarity for black
   narration and flashback boxes — enclosed dark regions carrying light
-  lettering — whose cards then render light-on-dark to match.
+  lettering — whose cards then render light-on-dark to match. A fourth
+  pass relaxes the interior threshold for tinted balloons — the pink and
+  lavender fills manhwa colorists reach for — which read as neither light
+  nor dark and slipped between the first three.
 - **Balloons are cleaned, not covered**: every detection carries its interior
   mask — the actual flooded shape, tails and curves included — and the card
   paints an opaque fill through it, sampled from the balloon's own paper, with
@@ -106,16 +109,13 @@ Key details:
   use (shorter first and last lines, widest in the middle,
   `ScanlationRenderTest` previews). The original lettering is gone, not
   peeking around a floating patch.
-- **Cards ride the strip**: a manhwa is one tall strip, and the capture loop
-  tracks its scroll offset to the pixel (row-luminance profile matching at
-  ~30 fps, `ScrollTrackerTest`). Translations live in strip coordinates
-  (`StripStore`): they move with the content while you scroll, survive
-  flings by re-locking against the last settled view, and a balloon scrolled
-  back into view still wears its card — no re-translation, no flicker, no
-  cost. Only content that has never been on screen gets translated, because
-  everything already claimed is excluded from OCR and detection. Page-based
-  readers and tap-to-turn apps fall back to the classic clear-and-retranslate
-  loop automatically.
+- **Motion clears, stillness translates**: the moment real motion is seen the
+  overlays vanish, so a translation is never left hovering over content it no
+  longer matches — a stale card painted confidently in the wrong place reads
+  as true, and no card at all is strictly better. When the screen settles the
+  loop re-detects and re-paints from scratch; anything seen before comes
+  straight out of the cache, so scrolling back and forth costs nothing and
+  never re-bills.
 - **A drifting box is never trusted over the page**: an answer the vision
   model returns without a region id carries its own geometry, which drifts —
   far enough to land a shout balloon's line over the chapter title art. Its

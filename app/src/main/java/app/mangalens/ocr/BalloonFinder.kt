@@ -59,6 +59,15 @@ object BalloonFinder {
     /** Luminance at or above this is balloon interior rather than ink or tone. */
     private const val LIGHT = 200
 
+    /**
+     * Interior floor for the tinted pass. Romance manhwa fills balloons with
+     * pastel pinks and blues that sit under [LIGHT] and were invisible to
+     * the white model. The looser floor would also admit the page and every
+     * white balloon, so the pass leans on the same enclosure and shape gates
+     * and on dedup against the earlier passes.
+     */
+    private const val TINTED_INTERIOR = 150
+
     /** Luminance below this counts as lettering. */
     private const val DARK = 128
 
@@ -142,12 +151,14 @@ object BalloonFinder {
         val light = BooleanArray(w * h)
         val dark = BooleanArray(w * h)
         val darkInterior = BooleanArray(w * h)
+        val tinted = BooleanArray(w * h)
         for (i in pixels.indices) {
             val p = pixels[i]
             val lum = (Color.red(p) * 299 + Color.green(p) * 587 + Color.blue(p) * 114) / 1000
             light[i] = lum >= LIGHT
             dark[i] = lum < DARK
             darkInterior[i] = lum <= INVERTED_INTERIOR
+            tinted[i] = lum >= TINTED_INTERIOR
         }
 
         val found = sweep(
@@ -169,6 +180,17 @@ object BalloonFinder {
         )
         val out = ArrayList(found)
         for (b in burst) {
+            if (out.none { sameBalloon(it.box, b.box) }) out.add(b)
+        }
+
+        // Pastel balloons: the interior threshold relaxes to catch pink and
+        // blue fills, every other gate stays, and anything the white pass
+        // already found dedupes away.
+        val pastel = sweep(
+            tinted, dark, barrier = null, w, h, scale,
+            bitmap, ignoreTopPx, ignoreBottomPx, exclusions, MIN_FILL, inverted = false,
+        )
+        for (b in pastel) {
             if (out.none { sameBalloon(it.box, b.box) }) out.add(b)
         }
 

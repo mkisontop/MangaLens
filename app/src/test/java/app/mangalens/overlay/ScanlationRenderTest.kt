@@ -23,8 +23,7 @@ import org.robolectric.annotation.GraphicsMode
  * lettering inside a cleaned balloon must be gone, the English must be inside
  * the balloon, and the balloon's own outline must survive the fill. The
  * original lettering is drawn in a dark red no rendered layer uses, so any
- * pixel still that color is proof the page shows through where it must not —
- * and, after the card layer is shifted away, proof that it may again.
+ * pixel still that color is proof the page shows through where it must not.
  *
  * TypeSet is exercised with a one-unit-per-character measure, where line
  * widths are checkable by eye.
@@ -185,32 +184,6 @@ class ScanlationRenderTest {
         var leftover = 0
         for (c in px) if (isLetteringInk(c)) leftover++
         assertEquals("no original lettering may bleed through the fill", 0, leftover)
-    }
-
-    @Test
-    fun `the card layer rides the shift and placedRects reports it`() {
-        val v = view()
-        v.setBubbles(listOf(bubble("OKAY!!")))
-        assertEquals(listOf(Rect(box)), v.placedRects())
-
-        v.setCardShift(400)
-        assertEquals(
-            listOf(Rect(box.left, box.top + 400, box.right, box.bottom + 400)),
-            v.placedRects(),
-        )
-
-        val out = page()
-        v.draw(Canvas(out))
-        writePreview("shifted.png", out)
-        val px = pixels(out)
-
-        assertTrue(
-            "with the cards shifted away the original lettering shows through again",
-            isLetteringInk(out.getPixel(box.left + 32, box.centerY())),
-        )
-        val below = Rect(box.centerX() - 150, box.centerY() + 400 - 70, box.centerX() + 150, box.centerY() + 400 + 70)
-        val textPixels = darkCount(px, below)
-        assertTrue("the typeset text must ride the shift (found $textPixels dark px)", textPixels > 40)
     }
 
     @Test

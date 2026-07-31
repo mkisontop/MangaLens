@@ -51,8 +51,7 @@ data class RenderBubble(
  * painting over art that was never proved to be a balloon.
  *
  * Mask stamps and layouts are built in [setBubbles]; [onDraw] only stamps
- * what was prepared, because it runs every animation frame while the cards
- * ride a scrolling strip.
+ * what was prepared, so a redraw is never more than blits and text.
  */
 class BubbleOverlayView(context: Context) : View(context) {
 
@@ -81,14 +80,6 @@ class BubbleOverlayView(context: Context) : View(context) {
 
     @Volatile var textScale = 1f
     @Volatile var bgOpacity = 1f
-
-    /**
-     * Vertical offset the capture service applies while the reader scrolls a
-     * tracked strip, so cards ride the page they were typeset for instead of
-     * hovering over whatever slid underneath them. Debug outlines are never
-     * shifted — they describe the current frame, not the painted one.
-     */
-    @Volatile private var cardShiftY: Int = 0
 
     /**
      * Comic Neue is the lettering hand; the platform faces stand in when the
@@ -135,13 +126,6 @@ class BubbleOverlayView(context: Context) : View(context) {
         invalidate()
     }
 
-    fun setCardShift(v: Int) {
-        if (cardShiftY != v) {
-            cardShiftY = v
-            postInvalidateOnAnimation()
-        }
-    }
-
     fun clear() {
         source = emptyList()
         placed = emptyList()
@@ -159,23 +143,20 @@ class BubbleOverlayView(context: Context) : View(context) {
     fun hasBubbles() = placed.isNotEmpty()
 
     /**
-     * Screen rectangles the overlay currently paints, with [cardShiftY]
-     * applied. The capture pipeline masks these out when watching for a page
-     * change and excludes them from detection — they are captured along with
-     * the page, so a rect that understates the painting hides a change and a
-     * stale one blinds the detector to a balloon. For a cleaned balloon this
-     * is the balloon's box (grown by any text overhang), not the text rect.
+     * Screen rectangles the overlay currently paints. The capture pipeline
+     * masks these out when watching for a page change and excludes them from
+     * detection — they are captured along with the page, so a rect that
+     * understates the painting hides a change beneath it. For a cleaned
+     * balloon this is the balloon's box (grown by any text overhang), not
+     * the text rect.
      */
-    fun placedRects(): List<Rect> {
-        val dy = cardShiftY
-        return placed.map {
-            Rect(
-                it.bounds.left.toInt(),
-                it.bounds.top.toInt() + dy,
-                it.bounds.right.toInt(),
-                it.bounds.bottom.toInt() + dy,
-            )
-        }
+    fun placedRects(): List<Rect> = placed.map {
+        Rect(
+            it.bounds.left.toInt(),
+            it.bounds.top.toInt(),
+            it.bounds.right.toInt(),
+            it.bounds.bottom.toInt(),
+        )
     }
 
     private fun dp(v: Float) = v * resources.displayMetrics.density
@@ -359,8 +340,6 @@ class BubbleOverlayView(context: Context) : View(context) {
         val list = placed
         if (list.isEmpty()) return
         val radius = dp(9f)
-        canvas.save()
-        canvas.translate(0f, cardShiftY.toFloat())
         for (i in 0 until list.size) {
             val p = list[i]
             if (p.mask != null && p.maskDst != null) {
@@ -376,6 +355,5 @@ class BubbleOverlayView(context: Context) : View(context) {
             p.layout.draw(canvas)
             canvas.restore()
         }
-        canvas.restore()
     }
 }

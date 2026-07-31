@@ -104,26 +104,6 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         /** Thumb rows of drift (~2% of the screen) that count as scrolling. */
         private const val SLOW_SCROLL_MIN_ROWS = 2
 
-        /**
-         * Sticky scrolling: per-frame pixel displacement below this is a
-         * settled screen; a run of settled frames long enough to satisfy the
-         * reaction-time setting triggers translation of whatever new content
-         * scrolled into view.
-         */
-        private const val SETTLED_DELTA_PX = 3
-
-        /** Trackable displacement per frame pair; beyond this the reader is flinging. */
-        private const val TRACK_WINDOW_FRACTION = 3
-
-        /** Cards move at this cadence while a sticky session is live. */
-        private const val STICKY_FRAME_GAP_MS = 33L
-
-        /** Claimed regions are inflated by this margin before excluding OCR. */
-        private const val CLAIM_MARGIN_PX = 24
-
-        /** Consecutive re-acquired locks that end a coast without a wide match. */
-        private const val COAST_RELOCK_FRAMES = 3
-
         val running = MutableStateFlow(false)
     }
 
@@ -184,53 +164,6 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
     private var slowRefThumb: IntArray? = null
     private var slowRefAt = 0L
 
-    // ---- sticky scrolling ----
-    //
-    // A manhwa is one tall strip. The tracker's offset makes the cards ride
-    // the content between settles; it is never trusted for anything more.
-    // The words of a translation live in the content-keyed caches, and the
-    // position of a card is re-derived from freshly detected balloons at
-    // every settle — so a lost lock, a wild fling, or a swapped chapter can
-    // cost at most one clean re-look at the page, never the session.
-
-    /** Cumulative strip offset in pixels. Written on the capture thread. */
-    @Volatile private var trackOffset = 0
-
-    /** True once the session has cards riding a live tracker lock. */
-    @Volatile private var stickyLive = false
-
-    /** Offset the currently painted cards were laid out for. */
-    @Volatile private var paintedAtOffset = 0
-
-    /** Screen rects of the painted cards, at [paintedAtOffset]. */
-    @Volatile private var paintedRects: List<Rect> = emptyList()
-
-    /** The cards those rects belong to, in [paintedAtOffset] screen space. Main thread only. */
-    private var paintedCards: List<RenderBubble> = emptyList()
-
-    /** Offset of the last completed translation pass, to gate re-passes. */
-    @Volatile private var lastTranslatedOffset = Int.MIN_VALUE
-
-    /** Lost the lock mid-fling; cards hidden until a settle re-locks. */
-    @Volatile private var coasting = false
-
-    /**
-     * The offset is no longer trusted — a fling blinded the tracker for a
-     * few frames. The next settle grabs a clean frame and re-grounds every
-     * card from the page itself: positions come from fresh detection, words
-     * from the content-keyed caches. Nothing depends on the offset being
-     * right, so nothing needs to be reset when it is not.
-     */
-    @Volatile private var needsReground = false
-
-    // Capture thread only.
-    private var prevProfile: IntArray? = null
-    private var settledProfile: IntArray? = null
-    private var settledOffset = 0
-    private var settledRunStart = 0L
-    private var coastLocks = 0
-    private var lastFiredProfile: IntArray? = null
-
     /**
      * Passes in flight, so a cancelled pass's late cleanup can never switch
      * the busy ring off under a newer pass. Main thread only.
@@ -264,10 +197,6 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         scope.launch {
             settingsRepo.flow.collect { s ->
                 settings = s
-                // A live session cannot outlive the setting that allows it.
-                if (stickyLive && (!s.stickyScroll || s.mode != CaptureMode.AUTO)) {
-                    stickyReset()
-                }
                 controller?.bubbleView?.let { v ->
                     v.textScale = s.textScale
                     v.bgOpacity = s.bgOpacity
@@ -387,7 +316,10 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         if (projection == null) return
         val (w, h, _) = displaySize()
         if (w != capW || h != capH) {
-            stickyReset()
+            translateJob?.cancel()
+            state = State.SCANNING
+            shownThumb = null
+            clearCards()
             releaseFrameBuffers()
             setupDisplay()
         }
@@ -408,17 +340,13 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
             val now = SystemClock.uptimeMillis()
             lastFrameAt = now
             // ~12 fps is plenty for a 350 ms stability window; dropping the
-            // rest skips a full-screen copy per display frame. A live sticky
-            // session runs faster so the riding cards keep up with the thumb.
-            val frameGap = if (stickyLive) STICKY_FRAME_GAP_MS else 80L
-            if (now - lastFrameProcessedAt < frameGap) return
+            // rest skips a full-screen copy per display frame.
+            if (now - lastFrameProcessedAt < 80) return
             lastFrameProcessedAt = now
             val bmp = imageToBitmap(image)
             synchronized(frameLock) {
                 latestBitmap = bmp
             }
-            val sticky = settings.stickyScroll && settings.mode == CaptureMode.AUTO && !paused
-            if (sticky && trackFrame(bmp, now)) return
             val thumb = FrameStability.grayThumb(bmp, capW, capH)
             val diff = FrameStability.meanDiff(prevThumb, thumb)
             prevThumb = thumb
@@ -468,177 +396,6 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
     }
 
     /**
-     * Runs the sticky tracker on one frame. Returns true when the sticky
-     * session consumed it; false hands the frame to the classic detectors —
-     * before a session exists, they still own motion and the first translate.
-     * Capture thread only.
-     */
-    private fun trackFrame(bmp: Bitmap, now: Long): Boolean {
-        val prof = ScrollTracker.profile(bmp, shiftedClaimRects(), capW, capH)
-        val prev = prevProfile
-        prevProfile = prof
-        if (!stickyLive && !coasting) {
-            settledProfile = null
-            settledOffset = 0
-        }
-        if (prev == null) return stickyLive
-
-        val lock = ScrollTracker.delta(prev, prof, maxShiftPx = capH / TRACK_WINDOW_FRACTION)
-        if (lock == null) {
-            // A fling too fast to match, or a page swap. Hide the cards but
-            // keep everything learned; what happens at the next stillness
-            // decides which it was.
-            if (!stickyLive) return false
-            if (!coasting) {
-                coasting = true
-                coastLocks = 0
-                scope.launch { hideCardsKeepStore() }
-            }
-            coastLocks = 0
-            lastMotionAt = now
-            settledRunStart = 0L
-            return true
-        }
-
-        // delta is negative when the reader scrolls down (content moves
-        // up) while strip offsets grow scrolling down — hence subtraction.
-        trackOffset -= lock.deltaPx
-        if (lock.deltaPx != 0) lastMotionAt = now
-        if (kotlin.math.abs(lock.deltaPx) >= SETTLED_DELTA_PX) {
-            settledRunStart = 0L
-        } else if (settledRunStart == 0L) {
-            settledRunStart = now
-        }
-        val settled = settledRunStart != 0L && now - settledRunStart >= settings.stabilityMs
-
-        if (coasting) {
-            // A coast never needs to be "recovered" any more: the offset it
-            // smeared only steered the riding animation, and the settle that
-            // follows re-grounds every card from the page pixels. All the
-            // coast decides is when to resume riding.
-            coastLocks++
-            if (coastLocks >= COAST_RELOCK_FRAMES) {
-                coasting = false
-                needsReground = true
-            }
-            if (settled) {
-                settledRunStart = 0L
-                coasting = false
-                needsReground = true
-                settledProfile = prof
-                settledOffset = trackOffset
-                scope.launch { onStickySettled() }
-            }
-            return true
-        }
-
-        if (stickyLive) {
-            scope.launch {
-                // Read both offsets on the main thread at execution time: a
-                // value computed here can be stale by the time the post runs
-                // if a repaint lands in between, jumping every card for a
-                // frame.
-                controller?.bubbleView?.setCardShift(paintedAtOffset - trackOffset)
-            }
-            if (settled) {
-                settledRunStart = 0L
-                // Re-anchoring each settle on an absolute match against the
-                // previous settled view keeps per-frame rounding from random-
-                // walking the offset over a long chapter.
-                val base = settledProfile
-                if (base != null) {
-                    ScrollTracker.delta(
-                        base, prof,
-                        maxShiftPx = capH,
-                        guessPx = settledOffset - trackOffset,
-                    )?.let { trackOffset = settledOffset - it.deltaPx }
-                }
-                settledProfile = prof
-                settledOffset = trackOffset
-                if (state != State.TRANSLATING) {
-                    if (needsReground || trackOffset != lastTranslatedOffset) {
-                        lastFiredProfile = prof
-                        scope.launch { onStickySettled() }
-                    } else if (profilesDiffer(lastFiredProfile, prof)) {
-                        // Same offset, different pixels: a lazy-loaded panel
-                        // popped in under a settled screen. Offset gating
-                        // alone would ignore it forever.
-                        lastFiredProfile = prof
-                        scope.launch { onStickySettled() }
-                    }
-                }
-            }
-            return true
-        }
-        return false
-    }
-
-    /**
-     * Materially different content in two settled profiles of the same
-     * offset. Bands under our own cards are already excluded by the profile;
-     * a modest fraction of the rest moving a real distance is a panel
-     * appearing, not sensor noise.
-     */
-    private fun profilesDiffer(a: IntArray?, b: IntArray?): Boolean {
-        if (a == null || b == null || a.size != b.size) return true
-        var valid = 0
-        var changed = 0
-        for (i in a.indices) {
-            if (a[i] < 0 || b[i] < 0) continue
-            valid++
-            if (kotlin.math.abs(a[i] - b[i]) > 10) changed++
-        }
-        if (valid < a.size / 8) return false
-        return changed.toFloat() / valid > 0.04f
-    }
-
-    /** Screen rects our cards occupy right now, for the tracker to ignore. */
-    private fun shiftedClaimRects(): List<Rect> {
-        val rects = paintedRects
-        if (rects.isEmpty()) return emptyList()
-        val shift = paintedAtOffset - trackOffset
-        return rects.map { Rect(it.left, it.top + shift, it.right, it.bottom + shift) }
-    }
-
-    // Main-thread sticky helpers.
-
-    private fun onStickySettled() {
-        if (projection == null || paused || state == State.TRANSLATING) return
-        startTranslate(auto = true)
-    }
-
-    /**
-     * Coasting: the cards leave the screen, and nothing else needs saving —
-     * the words live in the content-keyed caches, and the positions were
-     * only ever as good as the last look at the page anyway.
-     */
-    private fun hideCardsKeepStore() {
-        controller?.bubbleView?.setCardShift(0)
-        paintCards(emptyList())
-    }
-
-    /**
-     * The strip this session was tracking is gone — a new chapter, another
-     * app, a page-based reader. Forget the geometry (the translation cache
-     * keeps the words) and let the classic loop start over.
-     */
-    private fun stickyReset() {
-        translateJob?.cancel()
-        stickyLive = false
-        coasting = false
-        needsReground = false
-        trackOffset = 0
-        paintedAtOffset = 0
-        paintedRects = emptyList()
-        lastTranslatedOffset = Int.MIN_VALUE
-        state = State.SCANNING
-        shownThumb = null
-        controller?.bubbleView?.setCardShift(0)
-        clearCards()
-        setPill(null)
-    }
-
-    /**
      * Copies the frame into one of two reused buffers (stride-padded width;
      * cropped only when a translation pass actually grabs it).
      */
@@ -668,9 +425,6 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
             prevThumb = null
             slowRefThumb = null
             slowRefAt = 0L
-            prevProfile = null
-            settledProfile = null
-            settledRunStart = 0L
         }
         val handler = captureHandler
         if (handler != null && handler.looper.thread.isAlive &&
@@ -727,39 +481,12 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         view.setBubbles(bubbles)
         val placed = if (bubbles.isEmpty()) emptyList() else view.placedRects()
         overlayMask = if (placed.isEmpty()) null else FrameStability.mask(placed, capW, capH)
-        paintedRects = placed
-        paintedCards = bubbles
-        paintedAtOffset = trackOffset
-    }
-
-    /**
-     * The painted cards rebased from the offset they were laid out at into
-     * the current one, minus whatever has left the screen. This is the only
-     * geometry the session carries between settles — one screen's worth,
-     * refreshed from real detection at every settle, so there is no stored
-     * position old enough to be wrong by more than a scroll segment.
-     */
-    private fun rebasedCards(cards: List<RenderBubble>, fromOffset: Int): List<RenderBubble> {
-        val dy = fromOffset - trackOffset
-        if (cards.isEmpty()) return emptyList()
-        return cards.mapNotNull { c ->
-            val box = Rect(c.box.left, c.box.top + dy, c.box.right, c.box.bottom + dy)
-            if (box.bottom <= 0 || box.top >= capH) return@mapNotNull null
-            c.copy(
-                box = box,
-                balloon = c.balloon?.let { bl ->
-                    bl.copy(box = Rect(bl.box.left, bl.box.top + dy, bl.box.right, bl.box.bottom + dy))
-                },
-            )
-        }
     }
 
     /** Clears cards and the mask that described them. Main thread only. */
     private fun clearCards() {
         controller?.bubbleView?.clear()
         overlayMask = null
-        paintedRects = emptyList()
-        paintedCards = emptyList()
     }
 
     private fun startTicker() {
@@ -782,41 +509,20 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
     private fun startTranslate(auto: Boolean) {
         if (state == State.TRANSLATING) return
         state = State.TRANSLATING
-        val sticky = settings.stickyScroll && settings.mode == CaptureMode.AUTO
         translateJob = scope.launch {
             pushBusy()
             try {
                 // A long enough break since the last translated page means the
                 // next one probably belongs to a different series.
                 works.beginPass(System.currentTimeMillis())
-                // Grounding: an ordinary settle keeps the cards up and only
-                // reads around them, but after a coast — or before a session
-                // exists — the offset is not to be trusted, so the frame is
-                // grabbed clean and every card's position is re-derived from
-                // the page itself. The words come back instantly from the
-                // content-keyed caches; only the geometry is fresh.
-                val ground = sticky && (needsReground || !stickyLive)
-                val live = sticky && stickyLive && !ground
-                if (!live) shownThumb = null
-                val offsetAtCapture = trackOffset
-                val bmp = grabFrame(clearFirst = !live)
+                shownThumb = null
+                val bmp = grabCleanBitmap()
                 if (bmp == null) {
                     state = State.SCANNING
                     return@launch
                 }
                 setPill("translating…")
-                // The painted card can spill past its logical box — width
-                // floors, screen-edge clamping, a minimum type size that
-                // overflows — and a live grab keeps cards up, so the pipeline
-                // must be kept out of the pixels the cards actually cover or
-                // it would read our own English back.
-                val painted = if (live) shiftedClaimRects().map {
-                    Rect(
-                        it.left - CLAIM_MARGIN_PX, it.top - CLAIM_MARGIN_PX,
-                        it.right + CLAIM_MARGIN_PX, it.bottom + CLAIM_MARGIN_PX,
-                    )
-                } else emptyList()
-                val exclusions = (controller?.overlayExclusions() ?: emptyList()) + painted
+                val exclusions = controller?.overlayExclusions() ?: emptyList()
                 val result = try {
                     withContext(Dispatchers.Default) {
                         // Remember the page being translated from the exact
@@ -826,14 +532,11 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                         // first, the baseline then described the new page
                         // while the cards described the old one, and the
                         // mismatch could never be noticed.
-                        if (!live) shownThumb = FrameStability.grayThumbOf(bmp)
-                        val r = pipeline.process(bmp, settings, exclusions) { partial ->
+                        shownThumb = FrameStability.grayThumbOf(bmp)
+                        pipeline.process(bmp, settings, exclusions) { partial ->
                             // Fast path landed — paint it now, AI polish follows.
-                            // A live sticky session skips the draft: the store's
-                            // cards are already up, and swapping them for a
-                            // partial repaint would make the page flicker.
                             withContext(Dispatchers.Main.immediate) {
-                                if (isActive && state == State.TRANSLATING && !live) {
+                                if (isActive && state == State.TRANSLATING) {
                                     lastShown = partial.bubbles
                                     suppressUntil = SystemClock.uptimeMillis() + 600
                                     paintCards(partial.bubbles)
@@ -841,7 +544,6 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                                 }
                             }
                         }
-                        r
                     }
                 } finally {
                     // Cancellation is this loop's steady state — every scroll
@@ -850,60 +552,14 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                     bmp.recycle()
                 }
                 if (!isActive) return@launch
-                // The pass was captured under the sticky setting, but the
-                // user may have flipped it off mid-flight; committing a live
-                // session against an off setting would strand riding cards
-                // with no tracker to move them.
-                val stickyStill = sticky &&
-                    settings.stickyScroll && settings.mode == CaptureMode.AUTO
-                var survivors: List<RenderBubble> = emptyList()
-                if (stickyStill) {
-                    needsReground = false
-                    // The screen is the ground truth. Cards still on it are
-                    // carried over rebased to the current offset; everything
-                    // the pass just detected joins them at the position it
-                    // was detected at — never at a remembered one. A balloon
-                    // straddling the frame edge waits for the settle that
-                    // shows all of it, and a fresh card never doubles a
-                    // survivor it overlaps.
-                    survivors = rebasedCards(paintedCards, paintedAtOffset)
-                    val edge = (capH / 100).coerceAtLeast(8)
-                    val dyFresh = offsetAtCapture - trackOffset
-                    val fresh = result.bubbles.mapNotNull { c ->
-                        val whole = c.balloon?.box ?: c.box
-                        if (whole.top <= edge || whole.bottom >= capH - edge) return@mapNotNull null
-                        val moved = if (dyFresh == 0) c else c.copy(
-                            box = Rect(c.box.left, c.box.top + dyFresh, c.box.right, c.box.bottom + dyFresh),
-                            balloon = c.balloon?.let { bl ->
-                                bl.copy(box = Rect(bl.box.left, bl.box.top + dyFresh, bl.box.right, bl.box.bottom + dyFresh))
-                            },
-                        )
-                        val mBox = moved.balloon?.box ?: moved.box
-                        if (survivors.any { sv ->
-                                val sBox = sv.balloon?.box ?: sv.box
-                                sBox.contains(mBox.centerX(), mBox.centerY()) ||
-                                    mBox.contains(sBox.centerX(), sBox.centerY())
-                            }
-                        ) return@mapNotNull null
-                        moved
-                    }
-                    controller?.bubbleView?.setCardShift(0)
-                    paintCards(survivors + fresh)
-                    lastTranslatedOffset = offsetAtCapture
-                    lastShown = emptyList()
-                    stickyLive = true
-                } else {
-                    lastShown = result.bubbles
-                    suppressUntil = SystemClock.uptimeMillis() + 500
-                    paintCards(result.bubbles)
-                }
+                lastShown = result.bubbles
+                suppressUntil = SystemClock.uptimeMillis() + 500
+                paintCards(result.bubbles)
                 state = State.SHOWING
                 // A page with dialogue keeps the current work alive and feeds it
                 // the names that identify it; a run of pages without any means
-                // the reader has left the story — an index, a cover, a menu. A
-                // sticky settle over a screen of carried cards is the reader
-                // lingering on dialogue, not leaving the story.
-                if (result.bubbles.isNotEmpty() || survivors.isNotEmpty()) {
+                // the reader has left the story — an index, a cover, a menu.
+                if (result.bubbles.isNotEmpty()) {
                     works.noteTranslated(System.currentTimeMillis(), glossary.snapshot().keys)
                 } else {
                     works.noteQuietPass()
@@ -938,19 +594,16 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
     }
 
     /**
-     * Returns a copy of the newest frame. With [clearFirst] our own overlays
-     * are cleared and a fresh frame awaited, so OCR never reads our English;
-     * a live sticky session passes false and relies on claim-rect exclusions
-     * instead.
+     * Returns a copy of the newest frame with our own overlays guaranteed
+     * absent. If overlays are visible they are cleared first and a fresh,
+     * clean frame awaited, so OCR never reads our own English.
      */
-    private suspend fun grabFrame(clearFirst: Boolean): Bitmap? {
-        if (clearFirst) {
-            val hadOverlays = controller?.bubbleView?.hasBubbles() == true
-            if (hadOverlays) {
-                clearCards()
-                suppressUntil = SystemClock.uptimeMillis() + 900
-                delay(280)
-            }
+    private suspend fun grabCleanBitmap(): Bitmap? {
+        val hadOverlays = controller?.bubbleView?.hasBubbles() == true
+        if (hadOverlays) {
+            clearCards()
+            suppressUntil = SystemClock.uptimeMillis() + 900
+            delay(280)
         }
         // Crop away any stride padding here, once per translation pass, and
         // always hand out a private copy so the reused buffers stay ours.
@@ -972,12 +625,6 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
 
     override fun onTranslateNow() {
         if (projection == null || state == State.TRANSLATING) return
-        if (stickyLive && coasting) {
-            // The offset is untrusted mid-coast; storing cards against it
-            // would misplace them for the rest of the session.
-            setPill("hold still a moment…", 1400)
-            return
-        }
         startTranslate(auto = false)
     }
 
@@ -985,7 +632,6 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         // The automatic boundaries — a long gap, or a run of pages with no
         // dialogue — cover switching series the usual way. This is for going
         // straight from one work to the next with neither.
-        stickyReset()
         works.startNewWork()
         setPill("new series · names cleared", 2000)
     }
@@ -993,7 +639,10 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
     override fun onTogglePause() {
         paused = !paused
         if (paused) {
-            stickyReset()
+            translateJob?.cancel()
+            state = State.SCANNING
+            shownThumb = null
+            clearCards()
             setPill("paused", 1600)
         } else {
             setPill("live", 1200)
@@ -1011,23 +660,14 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
     override fun onPeek() {
         if (state != State.SHOWING) return
         val shown = lastShown
-        val savedCards = paintedCards
-        val savedAt = paintedAtOffset
-        if (savedCards.isEmpty() && shown.isEmpty()) return
+        if (shown.isEmpty()) return
         scope.launch {
             clearCards()
             suppressUntil = SystemClock.uptimeMillis() + 900
             delay(4000)
             if (state != State.SHOWING) return@launch
             suppressUntil = SystemClock.uptimeMillis() + 900
-            if (stickyLive) {
-                // Mid-coast the offset is untrusted; the next settle
-                // re-grounds from the page instead.
-                if (!coasting) {
-                    controller?.bubbleView?.setCardShift(0)
-                    paintCards(rebasedCards(savedCards, savedAt))
-                }
-            } else if (lastShown === shown) {
+            if (lastShown === shown) {
                 // A newer pass owns the screen now; resurrecting the list
                 // captured at peek time would paint the previous page's
                 // lines over it — and the mask would then hide the mistake
