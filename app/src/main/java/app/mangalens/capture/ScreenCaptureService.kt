@@ -88,6 +88,21 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
          */
         private const val PAGE_CHANGE_FRACTION = 0.015
 
+        /**
+         * A deliberate slow scroll on a manhwa strip is the motion
+         * [MOTION_THRESHOLD] cannot see: mostly-white content slides over
+         * mostly-white content, so consecutive frames barely differ, while a
+         * new balloon glides in under a card that still shows the previous
+         * balloon's line. Row-profile alignment sees the slide directly, so
+         * frames are also compared for vertical drift — against a reference
+         * this many milliseconds old while scanning, and cumulatively against
+         * the translated page while cards are up.
+         */
+        private const val SLOW_SCROLL_SAMPLE_MS = 420L
+
+        /** Thumb rows of drift (~2% of the screen) that count as scrolling. */
+        private const val SLOW_SCROLL_MIN_ROWS = 2
+
         val running = MutableStateFlow(false)
     }
 
@@ -125,15 +140,28 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
     private var prevThumb: IntArray? = null
 
     /**
-     * The page as it looked when we translated it, plus the cells its overlay
-     * cards cover. While overlays are up, every frame is compared against this
-     * rather than against the frame before it — a tap-to-turn swap produces
-     * one changed frame and then stillness, so frame-to-frame differencing has
-     * a single chance to catch it and cumulative comparison has every frame.
+     * The page as it looked when we translated it — taken from the very
+     * bitmap the pipeline processed, never from a later frame that may
+     * already show something else. While overlays are up, every frame is
+     * compared against this rather than against the frame before it: a
+     * tap-to-turn swap produces one changed frame and then stillness, so
+     * frame-to-frame differencing has a single chance to catch it and
+     * cumulative comparison has every frame.
      */
     @Volatile private var shownThumb: IntArray? = null
-    @Volatile private var shownMask: BooleanArray? = null
-    @Volatile private var needBaseline = false
+
+    /**
+     * The thumb cells our own cards currently cover. Cards are captured along
+     * with the page, so these cells show us, not the reader's content, and
+     * every comparison excludes them. Maintained by [paintCards]/[clearCards]
+     * so it is always the truth about what is on screen — including the fast
+     * draft that paints mid-translation.
+     */
+    @Volatile private var overlayMask: BooleanArray? = null
+
+    // Reference for slow-scroll drift detection (capture thread only).
+    private var slowRefThumb: IntArray? = null
+    private var slowRefAt = 0L
 
     // Reused frame buffers (capture thread only): the display feeds frames at
     // refresh rate, but scroll detection only needs ~12 fps, and allocating a
@@ -276,7 +304,8 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         if (w != capW || h != capH) {
             translateJob?.cancel()
             state = State.SCANNING
-            controller?.bubbleView?.clear()
+            shownThumb = null
+            clearCards()
             releaseFrameBuffers()
             setupDisplay()
         }
@@ -302,17 +331,36 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
             if (now < suppressUntil) return
             if (diff > MOTION_THRESHOLD) {
                 lastMotionAt = now
+                slowRefThumb = null
                 if (state != State.SCANNING) scope.launch { onMotion() }
                 return
             }
+            val mask = overlayMask
+            // Slow scrolls hide from frame differencing, so drift is measured
+            // over a longer baseline: whatever this sampled check misses while
+            // cards are up, the cumulative check below accumulates.
+            val ref = slowRefThumb
+            if (ref == null) {
+                slowRefThumb = thumb
+                slowRefAt = now
+            } else if (now - slowRefAt >= SLOW_SCROLL_SAMPLE_MS) {
+                val drift = FrameStability.verticalShift(ref, thumb, mask)
+                slowRefThumb = thumb
+                slowRefAt = now
+                if (kotlin.math.abs(drift) >= SLOW_SCROLL_MIN_ROWS) {
+                    lastMotionAt = now
+                    if (state != State.SCANNING) scope.launch { onMotion() }
+                    return
+                }
+            }
             if (state == State.SHOWING) {
-                if (needBaseline) {
-                    // First settled frame with the finished cards up: this is
-                    // the page those cards belong to.
-                    shownThumb = thumb
-                    needBaseline = false
-                } else if (
-                    FrameStability.changedFraction(shownThumb, thumb, shownMask) > PAGE_CHANGE_FRACTION
+                // Two ways this page can stop being the page we translated: it
+                // was replaced (tap-to-turn swap — cells change in place), or
+                // it moved (slow scroll — cells shift, and the balloon that
+                // matters most may slide in under a card, changing only masked
+                // cells). Check for both against the translated page itself.
+                if (FrameStability.changedFraction(shownThumb, thumb, mask) > PAGE_CHANGE_FRACTION ||
+                    kotlin.math.abs(FrameStability.verticalShift(shownThumb, thumb, mask)) >= SLOW_SCROLL_MIN_ROWS
                 ) {
                     lastMotionAt = now
                     scope.launch { onMotion() }
@@ -351,6 +399,8 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
             frameA = null
             frameB = null
             prevThumb = null
+            slowRefThumb = null
+            slowRefAt = 0L
         }
         val handler = captureHandler
         if (handler != null && handler.looper.thread.isAlive &&
@@ -367,25 +417,35 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
             State.TRANSLATING -> {
                 translateJob?.cancel()
                 state = State.SCANNING
-                clearPageBaseline()
-                controller?.bubbleView?.clear()
+                shownThumb = null
+                clearCards()
                 setPill(null)
             }
             State.SHOWING -> {
                 state = State.SCANNING
-                clearPageBaseline()
-                controller?.bubbleView?.clear()
+                shownThumb = null
+                clearCards()
                 setPill(null)
             }
             State.SCANNING -> Unit
         }
     }
 
-    /** Drops the translated-page reference so it is never compared to a new page. */
-    private fun clearPageBaseline() {
-        shownThumb = null
-        shownMask = null
-        needBaseline = false
+    /**
+     * Paints cards and records the cells they cover, in one step — the mask
+     * must never describe cards other than the ones actually on screen.
+     * Main thread only.
+     */
+    private fun paintCards(bubbles: List<RenderBubble>) {
+        val view = controller?.bubbleView ?: return
+        view.setBubbles(bubbles)
+        overlayMask = if (bubbles.isEmpty()) null else FrameStability.mask(view.placedRects(), capW, capH)
+    }
+
+    /** Clears cards and the mask that described them. Main thread only. */
+    private fun clearCards() {
+        controller?.bubbleView?.clear()
+        overlayMask = null
     }
 
     private fun startTicker() {
@@ -413,6 +473,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                 // A long enough break since the last translated page means the
                 // next one probably belongs to a different series.
                 works.beginPass(System.currentTimeMillis())
+                shownThumb = null
                 val bmp = grabCleanBitmap()
                 if (bmp == null) {
                     state = State.SCANNING
@@ -420,32 +481,39 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                 }
                 setPill("translating…")
                 val exclusions = controller?.overlayExclusions() ?: emptyList()
-                val result = withContext(Dispatchers.Default) {
-                    pipeline.process(bmp, settings, exclusions) { partial ->
-                        // Fast path landed — paint it now, AI polish follows.
-                        withContext(Dispatchers.Main.immediate) {
-                            if (isActive && state == State.TRANSLATING) {
-                                lastShown = partial.bubbles
-                                suppressUntil = SystemClock.uptimeMillis() + 600
-                                controller?.bubbleView?.setBubbles(partial.bubbles)
-                                setPill("✓ ${partial.bubbles.size} · ${partial.engineLabel} · ✨ upgrading…")
+                val result = try {
+                    withContext(Dispatchers.Default) {
+                        // Remember the page being translated from the exact
+                        // bitmap handed to the pipeline. Waiting for a later
+                        // "settled" frame instead left a hole: a fling inside
+                        // the suppression window put a new page on screen
+                        // first, the baseline then described the new page
+                        // while the cards described the old one, and the
+                        // mismatch could never be noticed.
+                        shownThumb = FrameStability.grayThumbOf(bmp)
+                        pipeline.process(bmp, settings, exclusions) { partial ->
+                            // Fast path landed — paint it now, AI polish follows.
+                            withContext(Dispatchers.Main.immediate) {
+                                if (isActive && state == State.TRANSLATING) {
+                                    lastShown = partial.bubbles
+                                    suppressUntil = SystemClock.uptimeMillis() + 600
+                                    paintCards(partial.bubbles)
+                                    setPill("✓ ${partial.bubbles.size} · ${partial.engineLabel} · ✨ upgrading…")
+                                }
                             }
                         }
                     }
+                } finally {
+                    // Cancellation is this loop's steady state — every scroll
+                    // that interrupts a pass lands here — so the full-screen
+                    // copy is reclaimed on that path too, not only on success.
+                    bmp.recycle()
                 }
-                bmp.recycle()
                 if (!isActive) return@launch
                 lastShown = result.bubbles
                 suppressUntil = SystemClock.uptimeMillis() + 500
-                controller?.bubbleView?.setBubbles(result.bubbles)
+                paintCards(result.bubbles)
                 state = State.SHOWING
-                // Watch this page for a swap that never scrolls. The mask is
-                // taken after the final cards are placed, so it covers where
-                // they actually landed rather than where the draft sat.
-                shownMask = FrameStability.mask(
-                    controller?.bubbleView?.placedRects() ?: emptyList(), capW, capH,
-                )
-                needBaseline = true
                 // A page with dialogue keeps the current work alive and feeds it
                 // the names that identify it; a run of pages without any means
                 // the reader has left the story — an index, a cover, a menu.
@@ -471,11 +539,11 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {
+                // The page still needs watching or a failed pass would sit
+                // here until something scrolls. The baseline from the grabbed
+                // frame (when the grab got that far) and the mask over
+                // whatever draft cards are up are both already in place.
                 state = State.SHOWING
-                // No cards to mask, but the page still needs watching or a
-                // failed pass would sit here until something scrolls.
-                shownMask = null
-                needBaseline = true
                 setPill("⚠ " + (e.message?.take(90) ?: "translation failed"), 4500)
             }
         }
@@ -489,7 +557,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
     private suspend fun grabCleanBitmap(): Bitmap? {
         val hadOverlays = controller?.bubbleView?.hasBubbles() == true
         if (hadOverlays) {
-            controller?.bubbleView?.clear()
+            clearCards()
             suppressUntil = SystemClock.uptimeMillis() + 900
             delay(280)
         }
@@ -529,7 +597,8 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         if (paused) {
             translateJob?.cancel()
             state = State.SCANNING
-            controller?.bubbleView?.clear()
+            shownThumb = null
+            clearCards()
             setPill("paused", 1600)
         } else {
             setPill("live", 1200)
@@ -548,12 +617,12 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         val shown = lastShown
         if (shown.isEmpty() || state != State.SHOWING) return
         scope.launch {
-            controller?.bubbleView?.clear()
+            clearCards()
             suppressUntil = SystemClock.uptimeMillis() + 900
             delay(4000)
             if (state == State.SHOWING) {
                 suppressUntil = SystemClock.uptimeMillis() + 900
-                controller?.bubbleView?.setBubbles(shown)
+                paintCards(shown)
             }
         }
     }

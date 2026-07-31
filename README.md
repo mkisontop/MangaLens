@@ -156,7 +156,21 @@ Key details:
   motion. Measured over a nine-frame turn, no step exceeds a quarter of the
   motion threshold while the accumulated change is twice the page-change
   threshold. Cards are masked out of the comparison, since they are captured
-  along with the page and sit exactly where it changes.
+  along with the page and sit exactly where it changes. The reference is
+  taken from the very bitmap that was translated — never from a later
+  "settled" frame that a fast fling may already have moved.
+- **Slow scrolls can't smuggle a new balloon under an old card**: a gentle
+  manhwa scroll is invisible to both detectors above. Consecutive frames
+  barely differ when mostly-white strip slides over mostly-white strip, and
+  the balloon gliding in beneath a still-displayed card changes only cells
+  the cumulative comparison must mask out — which is exactly how a card ends
+  up showing the previous balloon's line over a new balloon. Scrolled content
+  is still self-similar under translation, though, so the loop also aligns
+  row brightness profiles of the unmasked cells — between frames a few
+  hundred milliseconds apart, and against the translated page itself. Two
+  thumbnail rows of vertical drift count as motion and clear the cards,
+  while still pages, page swaps and brightness changes align nowhere and
+  stay put (`SlowScrollDetectionTest`).
 - **One balloon, one card**: a balloon that already has a card never gets a
   second one, and a free-floating entry is only trusted where the page
   actually shows text. The model sometimes answers a region by id *and*
@@ -182,7 +196,16 @@ Key details:
   white bubbles get white patches, tinted panels get tinted patches, and the text
   auto-shrinks to fit.
 - **Cache**: bubbles and whole vision pages are LRU-cached, so scrolling back
-  or peeking never re-translates (or re-bills) anything.
+  or peeking never re-translates (or re-bills) anything. A cached page is
+  identified by what is on it — each region's OCR text, or a fingerprint of
+  the balloon's own pixels where OCR could read nothing, as stylized manhwa
+  lettering routinely ensures — never by position. A replay realigns its
+  unanchored entries to where the balloons sit now and refuses entirely when
+  the stored layout no longer matches the frame (`PageKeyTest`,
+  `ReplayGeometryTest`). Earlier builds keyed vision pages on OCR text alone,
+  which collapsed to a single key for every OCR-blind scroll stop — so the
+  previous stop's lines were stamped, instantly and confidently, onto
+  whichever balloons had scrolled into those screen positions.
 
 ## Building it yourself
 

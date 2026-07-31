@@ -16,6 +16,8 @@ import app.mangalens.settings.SourceLang
 import app.mangalens.translate.CastBook
 import app.mangalens.translate.GlossaryStore
 import app.mangalens.translate.JunkFilter
+import app.mangalens.translate.PageKey
+import app.mangalens.translate.ReplayGeometry
 import app.mangalens.translate.SfxDict
 import app.mangalens.translate.TranslationCache
 import app.mangalens.translate.TranslationService
@@ -24,6 +26,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import org.json.JSONArray
+import org.json.JSONObject
 
 /**
  * One pass over one stable frame.
@@ -42,6 +45,11 @@ class TranslatePipeline(
     private val glossary: GlossaryStore? = null,
     private val cast: CastBook? = null,
 ) {
+
+    private companion object {
+        /** Vision cache entry schema; older shapes are dropped, never guessed at. */
+        const val VISION_CACHE_VERSION = 2
+    }
 
     data class PageResult(
         val bubbles: List<RenderBubble>,
@@ -140,9 +148,13 @@ class TranslatePipeline(
         val vision = VisionLlmEngine(settings, glossary, cast)
 
         // Straight-to-final when the AI answer is already cached (re-reads,
-        // scroll-backs, peeks): no fast flash, no network.
-        if (useVision) {
-            visionCacheGet(vision.cacheNamespace, ocrResult.lang, bubbles)?.let { cached ->
+        // scroll-backs, peeks): no fast flash, no network. The key is the
+        // page's content — OCR text, or the balloons' own pixels where OCR
+        // read nothing — so a hit can only replay text onto the balloons it
+        // was written for, never onto whatever now sits at the same spot.
+        val pageKey = if (useVision) visionKey(vision.cacheNamespace, ocrResult.lang, bubbles, bitmap) else null
+        if (pageKey != null) {
+            visionCacheGet(pageKey, bubbles, bitmap.width, bitmap.height)?.let { cached ->
                 return PageResult(
                     toRender(bitmap, cached, bubbles, ignoreTop, ignoreBottom, exclusions, balloons),
                     vision.label, null, polished = true,
@@ -192,7 +204,9 @@ class TranslatePipeline(
                             val complete = pageBubbles + gapFill(
                                 bubbles, pageBubbles, ocrResult.lang, settings,
                             )
-                            visionCachePut(vision.cacheNamespace, ocrResult.lang, bubbles, complete)
+                            pageKey?.let {
+                                visionCachePut(it, bubbles, complete, bitmap.width, bitmap.height)
+                            }
                             return@coroutineScope PageResult(
                                 toRender(bitmap, complete, bubbles, ignoreTop, ignoreBottom, exclusions, balloons),
                                 vision.label, null, polished = true,
@@ -411,21 +425,55 @@ class TranslatePipeline(
 
     // ---- vision page cache (scroll-backs cost nothing) ----
 
-    private fun visionKey(ns: String, lang: SourceLang, bubbles: List<Bubble>) =
-        TranslationCache.key(ns, lang.name, bubbles.joinToString("") { it.text })
+    /**
+     * Identity of this page under this engine: per-region content tokens —
+     * OCR text, or a hash of the region's own pixels where OCR read nothing.
+     * Never position alone. The old key joined OCR texts, and manhwa
+     * lettering routinely defeats OCR — every stop with the same number of
+     * unreadable balloons then shared one key, and the previous stop's answer
+     * was replayed onto whichever balloons now sat at those positions.
+     */
+    private fun visionKey(ns: String, lang: SourceLang, bubbles: List<Bubble>, bitmap: Bitmap): String =
+        TranslationCache.key(
+            ns, lang.name,
+            PageKey.of(bubbles.map { b -> PageKey.token(b.text) { PageKey.regionHash(bitmap, b.box) } }),
+        )
+
+    private fun normalized(box: Rect, w: Int, h: Int) = Rect(
+        box.left * 1000 / w, box.top * 1000 / h,
+        box.right * 1000 / w, box.bottom * 1000 / h,
+    )
 
     private fun visionCacheGet(
-        ns: String,
-        lang: SourceLang,
+        key: String,
         bubbles: List<Bubble>,
+        w: Int,
+        h: Int,
     ): List<VisionLlmEngine.VisionBubble>? {
         if (bubbles.isEmpty()) return null
-        val raw = cache.get(visionKey(ns, lang, bubbles)) ?: return null
+        val raw = cache.get(key) ?: return null
         return runCatching {
-            val arr = JSONArray(raw)
-            (0 until arr.length()).map { i ->
+            val obj = JSONObject(raw)
+            // Entries from before the layout check existed are dropped rather
+            // than replayed unverified.
+            if (obj.optInt("v") != VISION_CACHE_VERSION) throw IllegalStateException("stale vision cache entry")
+            val regs = obj.getJSONArray("regions")
+            if (regs.length() != bubbles.size) throw IllegalStateException("region count changed")
+            val stored = (0 until regs.length()).map { i ->
+                val a = regs.getJSONArray(i)
+                Rect(a.getInt(0), a.getInt(1), a.getInt(2), a.getInt(3))
+            }
+            // The same content can sit at a new scroll offset. Find the one
+            // consistent displacement between then and now — or refuse the
+            // replay, because a page that cannot be aligned cannot be
+            // repainted honestly either.
+            val current = bubbles.map { normalized(it.box, w, h) }
+            val shift = ReplayGeometry.shift(stored, current)
+                ?: throw IllegalStateException("layout no longer matches")
+            val arr = obj.getJSONArray("bubbles")
+            val entries = (0 until arr.length()).map { i ->
                 val o = arr.getJSONArray(i)
-                // Entries written before the speaker field existed are dropped
+                // Rows written before the speaker field existed are dropped
                 // rather than read short.
                 if (o.length() != 9) throw IllegalStateException("stale vision cache entry")
                 VisionLlmEngine.VisionBubble(
@@ -433,16 +481,25 @@ class TranslatePipeline(
                     o.getString(5), o.getString(6), o.getInt(7) == 1, o.getString(8),
                 )
             }
+            ReplayGeometry.shiftExtras(entries, shift)
         }.getOrNull()
     }
 
     private fun visionCachePut(
-        ns: String,
-        lang: SourceLang,
+        key: String,
         bubbles: List<Bubble>,
         result: List<VisionLlmEngine.VisionBubble>,
+        w: Int,
+        h: Int,
     ) {
         if (bubbles.isEmpty()) return
+        // The layout the answer was written against, kept so a later replay
+        // can align (or refuse to align) itself with the frame it meets.
+        val regs = JSONArray()
+        for (b in bubbles) {
+            val n = normalized(b.box, w, h)
+            regs.put(JSONArray().put(n.left).put(n.top).put(n.right).put(n.bottom))
+        }
         val arr = JSONArray()
         for (v in result) {
             arr.put(
@@ -450,7 +507,10 @@ class TranslatePipeline(
                     .put(v.src).put(v.en).put(if (v.sfx) 1 else 0).put(v.who)
             )
         }
-        cache.put(visionKey(ns, lang, bubbles), arr.toString())
+        cache.put(
+            key,
+            JSONObject().put("v", VISION_CACHE_VERSION).put("regions", regs).put("bubbles", arr).toString(),
+        )
     }
 
     // ---- shared rendering ----
