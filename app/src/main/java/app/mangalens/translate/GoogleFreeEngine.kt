@@ -90,7 +90,10 @@ class GoogleFreeEngine : TranslationEngine {
     /** One request; returns Google's (translated, original) segment pairs. */
     private suspend fun fetchRows(text: String, lang: SourceLang): List<Pair<String, String>> =
         withContext(Dispatchers.IO) {
-            val sl = when (lang) {
+            // The payload decides, not the setting: raws already translated
+            // once (Spanish, English) reach here carrying no CJK at all, and
+            // pinning them to a CJK source makes Google echo them back.
+            val sl = if (Script.cjkCount(text) == 0) "auto" else when (lang) {
                 SourceLang.KO -> "ko"
                 SourceLang.JA -> "ja"
                 SourceLang.ZH -> "zh-CN"

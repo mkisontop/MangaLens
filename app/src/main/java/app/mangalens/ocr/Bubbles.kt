@@ -86,7 +86,13 @@ object BubbleGrouper {
     ): List<Bubble> {
         val usable = lines.mapNotNull { l ->
             val cleaned = Script.clean(l.text)
-            if (cleaned.isEmpty() || Script.cjkCount(cleaned) == 0) return@mapNotNull null
+            if (cleaned.isEmpty()) return@mapNotNull null
+            // CJK is the expected script, but raws that were already
+            // translated once (Spanish, English) read as Latin — real
+            // dialogue with real geometry, not noise to discard.
+            if (Script.cjkCount(cleaned) == 0 && cleaned.count { it.isLetter() } < 2) {
+                return@mapNotNull null
+            }
             if (l.box.height() < 11) return@mapNotNull null
             if (l.box.bottom <= ignoreTopPx || l.box.top >= screenH - ignoreBottomPx) return@mapNotNull null
             if (exclusions.any { Rect.intersects(it, l.box) }) return@mapNotNull null
@@ -214,12 +220,14 @@ object BubbleGrouper {
         }
 
         val sorted = if (vertical) sortVertical(members) else sortHorizontal(members)
-        val sep = if (lang == SourceLang.KO) " " else ""
+        val cjkTotal = sorted.sumOf { Script.cjkCount(it.text) }
+        // Latin words need the spaces CJK does without; KO keeps them too.
+        val sep = if (lang == SourceLang.KO || cjkTotal == 0) " " else ""
         val text = sorted.joinToString(sep) { it.text.trim() }
             .replace(Regex("\\s+"), " ")
             .trim()
         val cjk = Script.cjkCount(text)
-        if (cjk == 0) return null
+        if (cjk == 0 && text.count { it.isLetter() } < 2) return null
 
         val union = Rect(sorted[0].box)
         for (m in sorted.drop(1)) union.union(m.box)
@@ -236,10 +244,13 @@ object BubbleGrouper {
 
         // SFX: dramatically oversized glyphs, or a short katakana burst drawn
         // well above dialogue size. Tag instead of dropping — engines decide
-        // whether to stylize (THUD) or leave the art alone.
+        // whether to stylize (THUD) or leave the art alone. CJK only: outsized
+        // Latin lettering is a title or a shout, not onomatopoeia to caption.
         val katakanaRatio = if (cjk > 0) Script.katakanaCount(text).toFloat() / cjk else 0f
-        val sfx = (groupStroke > pageStroke * 2.1f && cjk <= 8) ||
-            (katakanaRatio >= 0.8f && cjk <= 4 && groupStroke > pageStroke * 1.45f)
+        val sfx = cjk > 0 && (
+            (groupStroke > pageStroke * 2.1f && cjk <= 8) ||
+                (katakanaRatio >= 0.8f && cjk <= 4 && groupStroke > pageStroke * 1.45f)
+            )
 
         return Bubble(text, union, vertical, if (sfx) BubbleKind.SFX else BubbleKind.DIALOGUE)
     }

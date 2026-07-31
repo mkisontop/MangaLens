@@ -87,6 +87,28 @@ Key details:
   welded into the single line it holds, and a balloon whose vertical lettering
   OCR could not read *at all* still becomes a region for the vision model to
   read off the image.
+
+  Burst (shout) balloons get a second detection pass: their border is a ring
+  of radiating ticks rather than a drawn curve, the flood leaks out through
+  the gaps, and pass one can never enclose them. Thickened ink seals the
+  gaps, and the shouted line becomes an ordinary region instead of a balloon
+  the app pretends not to see.
+- **A drifting box is never trusted over the page**: an answer the vision
+  model returns without a region id carries its own geometry, which drifts —
+  far enough to land a shout balloon's line over the chapter title art. Its
+  position is recovered from the page instead: the entry's source text is
+  matched back to the OCR lines (case- and accent-blind, clustered so a word
+  repeated elsewhere cannot stretch the anchor), then leftover OCR regions,
+  and only then the model's box — and only where a detected balloon or region
+  backs it. No support, no card: a missing translation is recoverable, one
+  painted in the wrong place is read as true.
+- **Raws that were already translated once still work**: aggregator sites
+  routinely serve Spanish or English uploads under a "raw" label. Those lines
+  carry no CJK, and used to be discarded at the OCR layer — leaving nothing
+  to anchor to. Latin-script lines are now kept as regions with real
+  geometry, Google is asked to auto-detect the source when a payload has no
+  CJK, and the AI engines are told the language setting is a guess to be
+  overridden by what the page actually says.
 - **Nothing is silently left untranslated**: a region the vision model skips
   used to render nothing, so a page came back with translated balloons
   interleaved with raw ones and no sign anything was missing. Whatever it
@@ -234,7 +256,9 @@ the AI polish arrives whenever it arrives. Turn on **Data saver** to shrink
 vision uploads, or set AI Vision to **Text only** for requests a few KB big.
 
 **Which languages?** Korean, Japanese (incl. reasonable vertical text), Chinese
-(simplified & traditional) → English.
+(simplified & traditional) → English. Raws that were already translated once
+(Spanish and English uploads are common on aggregator sites) are handled too —
+the pipeline reads whatever is actually on the page.
 
 ## Respect the creators
 

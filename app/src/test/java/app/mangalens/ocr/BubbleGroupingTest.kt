@@ -109,4 +109,42 @@ class BubbleGroupingTest {
         )
         assertEquals("free-floating text should still group, got $bubbles", 1, bubbles.size)
     }
+
+    /** A horizontal Latin line, as OCR reads Spanish or English raws. */
+    private fun latinRow(text: String, top: Int, left: Int = 120, width: Int = 260) =
+        OcrLine(text, Rect(left, top, left + width, top + 34), false)
+
+    @Test
+    fun `latin raws form regions instead of being discarded`() {
+        // Aggregator sites often serve raws already translated once. Those
+        // lines are real dialogue with real geometry; dropping them for
+        // carrying no CJK left such pages with nothing to anchor cards to.
+        val lines = listOf(
+            latinRow("PARECE COMO SI", 140),
+            latinRow("TUVIERAS DOLOR", 184),
+            latinRow("DE CUERPO...", 228),
+        )
+        val balloon = Rect(80, 100, 460, 300)
+        val bubbles = BubbleGrouper.group(
+            lines, 800, 0, 0, SourceLang.AUTO, balloons = listOf(balloon),
+        )
+        assertEquals("the three rows should form one region, got $bubbles", 1, bubbles.size)
+        assertEquals(
+            "rows join top-to-bottom with spaces between words",
+            "PARECE COMO SI TUVIERAS DOLOR DE CUERPO...",
+            bubbles[0].text,
+        )
+        assertEquals(
+            "latin dialogue is dialogue, not sound effects",
+            BubbleKind.DIALOGUE,
+            bubbles[0].kind,
+        )
+    }
+
+    @Test
+    fun `single stray latin letters stay junk`() {
+        val lines = listOf(OcrLine("W", Rect(700, 500, 740, 540), false))
+        val bubbles = BubbleGrouper.group(lines, 800, 0, 0, SourceLang.AUTO)
+        assertEquals("a lone letter is OCR noise, got $bubbles", 0, bubbles.size)
+    }
 }

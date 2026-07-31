@@ -194,6 +194,7 @@ READING THE IMAGE
 Every region is outlined in magenta and labelled with its region id on a magenta badge at the region's top-left corner. For each region, read the original lettering under that outline directly from the art. "ocr_text_maybe_garbled" is a hint only — it is frequently wrong on vertical, stylized, handwritten and overlapping text, and the image always wins. Answer each region by its badge number. Never restate or adjust the given boxes.
 An outline usually marks a whole speech balloon. Everything inside it is ONE character's line, however many columns or lines it is set in — read the columns in order (vertical text runs top-to-bottom, columns right-to-left) and translate the balloon as a single utterance. Do not translate a column or a fragment as if it were a sentence on its own.
 "ocr_text_maybe_garbled" is empty when on-device OCR could not read the region at all. That is normal on vertical and hand-lettered text and does NOT mean the region is empty — read it from the image. Answer with "kind":"skip" only if there is genuinely no readable text there.
+"expected_source_language" is a guess from settings. Aggregator sites often serve raws already translated once — Spanish is common — so if the page's lettering is actually some other language, read that language and translate it into the same natural English. If a region's lettering is already English, answer it with "kind":"skip".
 Answer EVERY region. A region you leave out is left untranslated on the page.
 
 WHO IS SPEAKING — decide this before you translate

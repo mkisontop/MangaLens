@@ -108,6 +108,7 @@ class LlmEngine(
     companion object {
         internal val SYSTEM_PROMPT = """
 You are an elite manga/manhwa/manhua localization translator producing text for typeset speech bubbles. You receive one comic page as JSON: bubbles in reading order, a glossary of established names/terms, the cast of characters met so far, and the story up to this page.
+"source_language" is a guess from settings. Aggregator sites often serve raws already translated once (Spanish is common) — translate whatever language the text actually is into the same natural English. If a bubble is already English, answer it with "kind":"skip".
 
 WHO IS SPEAKING — decide this before you translate
 Japanese, Korean and Chinese omit the subject constantly, so a line's meaning depends on who is saying it and to whom. Work out the speaker of each dialogue bubble from turn-taking against "story_so_far", forms of address, and each character's register in "characters". Return it as "who".

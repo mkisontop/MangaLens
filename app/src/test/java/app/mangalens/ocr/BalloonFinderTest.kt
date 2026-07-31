@@ -243,6 +243,66 @@ class BalloonFinderTest {
         )
     }
 
+    /**
+     * A burst (shout) balloon: a white interior ringed by radiating tick
+     * marks with open gaps between them, lettering inside. There is no drawn
+     * boundary line at all — between the ticks the interior runs straight
+     * into the page background, which is what let the flood leak out and the
+     * balloon go undetected. These are the balloons whose translations then
+     * vanished or floated to wherever a vision model guessed.
+     */
+    private fun burstPage(): Pair<Bitmap, Rect> {
+        val w = 900
+        val h = 500
+        val bmp = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp)
+        canvas.drawColor(Color.WHITE)
+
+        val cx = 450f
+        val cy = 250f
+        val rx = 170f
+        val ry = 110f
+        val tick = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = 4f
+            color = Color.BLACK
+        }
+        var a = 0.0
+        while (a < 2 * Math.PI) {
+            val dx = Math.cos(a)
+            val dy = Math.sin(a)
+            canvas.drawLine(
+                (cx + rx * 0.98 * dx).toFloat(), (cy + ry * 0.98 * dy).toFloat(),
+                (cx + rx * 1.14 * dx).toFloat(), (cy + ry * 1.14 * dy).toFloat(),
+                tick,
+            )
+            // Roughly nine pixels of arc per step: a four-pixel tick, then an
+            // open gap the flood used to escape through.
+            a += 9.0 / (Math.sqrt((rx * rx * dy * dy + ry * ry * dx * dx)) + 1)
+        }
+        // Three rows of lettering, comfortably inside.
+        for (r in 0 until 3) {
+            val top = (cy - 52 + r * 38).toInt()
+            canvas.drawRect(Rect((cx - 110).toInt(), top, (cx + 110).toInt(), top + 14), black)
+        }
+        return bmp to Rect(
+            (cx - rx).toInt(), (cy - ry).toInt(), (cx + rx).toInt(), (cy + ry).toInt(),
+        )
+    }
+
+    @Test
+    fun `a burst balloon with a ticked border is still found`() {
+        val (bmp, truth) = burstPage()
+        val found = BalloonFinder.find(bmp)
+        writePreview("burst.png", bmp, found)
+
+        assertTrue(
+            "the burst balloon at $truth must be detected (found $found)",
+            found.any { matches(it, truth) },
+        )
+        assertTrue("page background reported as a balloon", found.none { it.width() > 880 })
+    }
+
     @Test
     fun `a balloon OCR could not read still becomes a region`() {
         val (bmp, truth) = page(toned = true)

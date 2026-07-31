@@ -60,6 +60,22 @@ object BalloonFinder {
     private const val MAX_INK = 0.55f
 
     /**
+     * Radius (work pixels) the ink is thickened by when hunting burst
+     * balloons. Their border is a ring of radiating ticks, and the flood
+     * leaks out through the gaps between them; thickening the ticks seals
+     * gaps up to twice this radius, which covers the tick spacing shout
+     * balloons are actually drawn with.
+     */
+    private const val BURST_SEAL_RADIUS = 2
+
+    /**
+     * Fill floor for the sealed pass. Sealing eats the component's rim and
+     * fattens the lettering inside it, so a burst balloon's interior reads
+     * thinner than an ordinary balloon's; the ordinary floor would reject it.
+     */
+    private const val BURST_MIN_FILL = 0.38f
+
+    /**
      * Detects balloon regions, in full-resolution page coordinates.
      *
      * @param exclusions regions never to report, such as the app's own overlay.
@@ -89,14 +105,53 @@ object BalloonFinder {
             dark[i] = lum < DARK
         }
 
+        val found = sweep(
+            light, dark, barrier = null, w, h, scale,
+            bitmap, ignoreTopPx, ignoreBottomPx, exclusions, MIN_FILL,
+        )
+
+        // Second pass for burst balloons — the shouted lines whose border is
+        // a ring of radiating ticks rather than a drawn curve. The gaps
+        // between ticks let the flood leak into the page, so the balloon is
+        // never enclosed and pass one cannot see it: exactly the balloons
+        // that then went untranslated or, worse, floated to wherever a model
+        // guessed. Thickened ink seals the gaps and they fall out as
+        // ordinary components.
+        val sealed = dilate(dark, w, h, BURST_SEAL_RADIUS)
+        val burst = sweep(
+            light, dark, barrier = sealed, w, h, scale,
+            bitmap, ignoreTopPx, ignoreBottomPx, exclusions, BURST_MIN_FILL,
+        )
+        val out = ArrayList(found)
+        for (b in burst) {
+            if (out.none { sameBalloon(it, b) }) out.add(b)
+        }
+        return dropContainers(out)
+    }
+
+    /** One connected-component sweep; [barrier] additionally blocks the flood. */
+    private fun sweep(
+        light: BooleanArray,
+        dark: BooleanArray,
+        barrier: BooleanArray?,
+        w: Int,
+        h: Int,
+        scale: Float,
+        bitmap: Bitmap,
+        ignoreTopPx: Int,
+        ignoreBottomPx: Int,
+        exclusions: List<Rect>,
+        minFill: Float,
+    ): List<Rect> {
+        val open = if (barrier == null) light else BooleanArray(w * h) { light[it] && !barrier[it] }
         val out = ArrayList<Rect>()
         val seen = BooleanArray(w * h)
         val stack = IntArray(w * h)
         val minArea = (MIN_AREA * w * h).toInt().coerceAtLeast(24)
         val maxArea = (MAX_AREA * w * h).toInt()
 
-        for (start in light.indices) {
-            if (!light[start] || seen[start]) continue
+        for (start in open.indices) {
+            if (!open[start] || seen[start]) continue
 
             // Flood the light region. Iterative: a full-page background
             // component would blow a recursive stack.
@@ -121,10 +176,10 @@ object BalloonFinder {
                 if (y > maxY) maxY = y
                 if (x == 0 || y == 0 || x == w - 1 || y == h - 1) touchesEdge = true
 
-                if (x > 0) push(stack, top, idx - 1, light, seen)?.let { top = it }
-                if (x < w - 1) push(stack, top, idx + 1, light, seen)?.let { top = it }
-                if (y > 0) push(stack, top, idx - w, light, seen)?.let { top = it }
-                if (y < h - 1) push(stack, top, idx + w, light, seen)?.let { top = it }
+                if (x > 0) push(stack, top, idx - 1, open, seen)?.let { top = it }
+                if (x < w - 1) push(stack, top, idx + 1, open, seen)?.let { top = it }
+                if (y > 0) push(stack, top, idx - w, open, seen)?.let { top = it }
+                if (y < h - 1) push(stack, top, idx + w, open, seen)?.let { top = it }
             }
 
             // The page background is light, huge, and runs to the edge.
@@ -134,7 +189,7 @@ object BalloonFinder {
             val boxH = maxY - minY + 1
             if (boxW < 10 || boxH < 10) continue
             val fill = count.toFloat() / (boxW * boxH)
-            if (fill < MIN_FILL || fill > MAX_FILL) continue
+            if (fill < minFill || fill > MAX_FILL) continue
             // Extreme slivers are panel highlights, not balloons.
             val ratio = boxW.toFloat() / boxH
             if (ratio > 12f || ratio < 1f / 12f) continue
@@ -161,7 +216,43 @@ object BalloonFinder {
             if (exclusions.any { Rect.intersects(it, full) }) continue
             out.add(full)
         }
-        return dropContainers(out)
+        return out
+    }
+
+    /** True when the two detections describe one balloon (sealing shrinks rims). */
+    private fun sameBalloon(a: Rect, b: Rect): Boolean {
+        if (a.contains(b.centerX(), b.centerY()) || b.contains(a.centerX(), a.centerY())) return true
+        val ix = minOf(a.right, b.right) - maxOf(a.left, b.left)
+        val iy = minOf(a.bottom, b.bottom) - maxOf(a.top, b.top)
+        if (ix <= 0 || iy <= 0) return false
+        val inter = ix.toLong() * iy
+        val union = a.width().toLong() * a.height() + b.width().toLong() * b.height() - inter
+        return inter.toFloat() / union > 0.3f
+    }
+
+    /** Box dilation by [r], run as horizontal then vertical passes. */
+    private fun dilate(mask: BooleanArray, w: Int, h: Int, r: Int): BooleanArray {
+        val horiz = BooleanArray(mask.size)
+        for (y in 0 until h) {
+            val row = y * w
+            for (x in 0 until w) {
+                if (!mask[row + x]) continue
+                val from = max(0, x - r)
+                val to = min(w - 1, x + r)
+                for (x2 in from..to) horiz[row + x2] = true
+            }
+        }
+        val out = BooleanArray(mask.size)
+        for (y in 0 until h) {
+            val row = y * w
+            for (x in 0 until w) {
+                if (!horiz[row + x]) continue
+                val from = max(0, y - r)
+                val to = min(h - 1, y + r)
+                for (y2 in from..to) out[y2 * w + x] = true
+            }
+        }
+        return out
     }
 
     /**
@@ -192,15 +283,15 @@ object BalloonFinder {
         return covered > 0.9f && outerArea > innerArea * 1.3f
     }
 
-    /** Pushes a neighbour if it is unvisited light; returns the new stack top. */
+    /** Pushes a neighbour if it is unvisited and open to the flood; returns the new stack top. */
     private fun push(
         stack: IntArray,
         top: Int,
         idx: Int,
-        light: BooleanArray,
+        open: BooleanArray,
         seen: BooleanArray,
     ): Int? {
-        if (!light[idx] || seen[idx]) return null
+        if (!open[idx] || seen[idx]) return null
         seen[idx] = true
         stack[top] = idx
         return top + 1

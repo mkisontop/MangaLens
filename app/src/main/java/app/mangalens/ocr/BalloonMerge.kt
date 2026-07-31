@@ -79,7 +79,9 @@ object BalloonMerge {
         } else {
             members.sortedWith(compareBy({ it.box.top }, { it.box.left }))
         }
-        val sep = if (lang == SourceLang.KO) " " else ""
+        // Latin words need the spaces CJK does without; KO keeps them too.
+        val latin = members.sumOf { Script.cjkCount(it.text) } == 0
+        val sep = if (lang == SourceLang.KO || latin) " " else ""
         val text = ordered.joinToString(sep) { it.text.trim() }
             .replace(Regex("\\s+"), " ")
             .trim()

@@ -8,6 +8,9 @@ import app.mangalens.ocr.Bubble
 import app.mangalens.ocr.BubbleGrouper
 import app.mangalens.ocr.BubbleKind
 import app.mangalens.ocr.OcrEngine
+import app.mangalens.ocr.OcrLine
+import app.mangalens.ocr.Script
+import app.mangalens.ocr.TextAnchor
 import app.mangalens.overlay.RenderBubble
 import app.mangalens.settings.AiVisionMode
 import app.mangalens.settings.AppSettings
@@ -84,6 +87,16 @@ class TranslatePipeline(
             ocrResult.lines, bitmap.height, ignoreTop, ignoreBottom, ocrResult.lang, exclusions,
             balloons, includeEmptyBalloons = useVision,
         )
+        // Raw OCR lines, kept for anchoring the vision model's unanchored
+        // answers by their text — the lines know where the text physically
+        // is even when they never survived into a region.
+        val anchorLines = ocrResult.lines.mapNotNull { l ->
+            val cleaned = Script.clean(l.text)
+            if (cleaned.length < 2) return@mapNotNull null
+            if (l.box.bottom <= ignoreTop || l.box.top >= bitmap.height - ignoreBottom) return@mapNotNull null
+            if (exclusions.any { Rect.intersects(it, l.box) }) return@mapNotNull null
+            OcrLine(cleaned, l.box, l.vertical)
+        }
         // Each count answers a different question when a balloon comes back
         // untranslated: whether OCR read anything, whether the balloon was seen
         // at all, whether it survived into a region, and whether the translator
@@ -107,7 +120,7 @@ class TranslatePipeline(
 
         val result = dispatch(
             bitmap, settings, exclusions, onPartial,
-            ocrResult, bubbles, balloons, ignoreTop, ignoreBottom, useVision,
+            ocrResult, bubbles, balloons, anchorLines, ignoreTop, ignoreBottom, useVision,
         )
         return if (diag == null) result else result.copy(
             diag = "$diag · cards ${result.bubbles.size}",
@@ -124,6 +137,7 @@ class TranslatePipeline(
         ocrResult: OcrEngine.Result,
         bubbles: List<Bubble>,
         balloons: List<Rect>,
+        anchorLines: List<OcrLine>,
         ignoreTop: Int,
         ignoreBottom: Int,
         useVision: Boolean,
@@ -156,7 +170,7 @@ class TranslatePipeline(
         if (pageKey != null) {
             visionCacheGet(pageKey, bubbles, bitmap.width, bitmap.height)?.let { cached ->
                 return PageResult(
-                    toRender(bitmap, cached, bubbles, ignoreTop, ignoreBottom, exclusions, balloons),
+                    toRender(bitmap, cached, bubbles, anchorLines, ignoreTop, ignoreBottom, exclusions, balloons),
                     vision.label, null, polished = true,
                 )
             }
@@ -208,7 +222,7 @@ class TranslatePipeline(
                                 visionCachePut(it, bubbles, complete, bitmap.width, bitmap.height)
                             }
                             return@coroutineScope PageResult(
-                                toRender(bitmap, complete, bubbles, ignoreTop, ignoreBottom, exclusions, balloons),
+                                toRender(bitmap, complete, bubbles, anchorLines, ignoreTop, ignoreBottom, exclusions, balloons),
                                 vision.label, null, polished = true,
                             )
                         }
@@ -334,6 +348,7 @@ class TranslatePipeline(
         bitmap: Bitmap,
         pageBubbles: List<VisionLlmEngine.VisionBubble>,
         ocrBubbles: List<Bubble>,
+        ocrLines: List<OcrLine>,
         ignoreTop: Int,
         ignoreBottom: Int,
         exclusions: List<Rect>,
@@ -357,9 +372,13 @@ class TranslatePipeline(
             )
         }
 
-        // Extras (text OCR missed) use the model's box — snapped to a leftover
-        // OCR region when one clearly matches, dropped when it lands nowhere
-        // sane. The model's geometry is never allowed to cover the page.
+        // Extras — answers with no region id. The model's own box is the
+        // least trustworthy thing about them, so the position is recovered
+        // from the page instead: the entry's source text matched back to the
+        // OCR lines first, a leftover OCR region second. Only then does the
+        // model's box count, and only where a detected balloon or region
+        // backs it — a drifting box with no support paints text over art
+        // nowhere near the balloon it belongs to, and is dropped.
         val extras = pageBubbles.filter { it.id < 0 }.mapNotNull { v ->
             var box = Rect(
                 v.nx * w / 1000,
@@ -369,12 +388,20 @@ class TranslatePipeline(
             )
             var vertical = false
             var original = v.src
-            val match = unclaimed.maxByOrNull { iou(it.box, box) }
-            if (match != null && iou(match.box, box) > 0.18f) {
-                box = Rect(match.box)
-                vertical = match.vertical
-                if (original.isBlank()) original = match.text
-                unclaimed.remove(match)
+            var supported = false
+            val textBox = TextAnchor.locate(v.src, ocrLines)
+            if (textBox != null) {
+                box = textBox
+                supported = true
+            } else {
+                val match = unclaimed.maxByOrNull { iou(it.box, box) }
+                if (match != null && iou(match.box, box) > 0.18f) {
+                    box = Rect(match.box)
+                    vertical = match.vertical
+                    if (original.isBlank()) original = match.text
+                    unclaimed.remove(match)
+                    supported = true
+                }
             }
             if (box.bottom <= ignoreTop || box.top >= h - ignoreBottom) return@mapNotNull null
             if (exclusions.any { Rect.intersects(it, box) }) return@mapNotNull null
@@ -389,15 +416,13 @@ class TranslatePipeline(
             if (takenBoxes.any { overlapping(it, box) }) return@mapNotNull null
             if (!takenText.add(fingerprint(v.en))) return@mapNotNull null
 
-            // An unanchored box is the model's own geometry and is trusted
-            // only where the page actually shows text. Balloon detection knows
-            // where those are; without it, fall back to trusting the box.
-            if (balloons.isNotEmpty() &&
+            if (!supported &&
                 balloons.none { overlapping(it, box) } &&
                 unclaimed.none { overlapping(it.box, box) }
             ) {
                 return@mapNotNull null
             }
+            takenBoxes.add(box)
             renderBubble(
                 bitmap, box, v.en, original, vertical,
                 if (v.sfx) BubbleKind.SFX else BubbleKind.DIALOGUE,

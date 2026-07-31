@@ -89,7 +89,16 @@ class OcrEngine {
         if (best.second < 4) {
             lastWinner = null
             winStreak = 0
-            return@coroutineScope Result(emptyList(), SourceLang.KO)
+            // No CJK signature — but not necessarily no text. Aggregator
+            // sites routinely serve raws already translated once (Spanish and
+            // English are common), and the recognizers read Latin script
+            // fine. Throwing those lines away demoted every such page to
+            // blind vision guesses; keeping them gives the pipeline real
+            // geometry to anchor cards to. Never pinned: the next page may
+            // well be the CJK original again.
+            val fallback = listOf(koText, jaText, zhText)
+                .maxByOrNull { it?.text?.count { c -> c.isLetter() } ?: 0 }
+            return@coroutineScope Result(toLines(fallback), SourceLang.KO)
         }
         if (best.first == lastWinner) winStreak++ else {
             lastWinner = best.first
