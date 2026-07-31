@@ -123,6 +123,9 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         /** Claimed regions are inflated by this margin before excluding OCR. */
         private const val CLAIM_MARGIN_PX = 24
 
+        /** Consecutive re-acquired locks that end a coast without a wide match. */
+        private const val COAST_RELOCK_FRAMES = 3
+
         val running = MutableStateFlow(false)
     }
 
@@ -213,11 +216,22 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
     /** Lost the lock mid-fling; cards hidden until a settle re-locks. */
     @Volatile private var coasting = false
 
+    /** Coast ended on re-acquired locks; the next settle must vote the blind gap away. */
+    @Volatile private var needsReground = false
+
     // Capture thread only.
     private var prevProfile: IntArray? = null
     private var settledProfile: IntArray? = null
     private var settledOffset = 0
     private var settledRunStart = 0L
+    private var coastLocks = 0
+    private var lastFiredProfile: IntArray? = null
+
+    /**
+     * Passes in flight, so a cancelled pass's late cleanup can never switch
+     * the busy ring off under a newer pass. Main thread only.
+     */
+    private var busyDepth = 0
 
     // Reused frame buffers (capture thread only): the display feeds frames at
     // refresh rate, but scroll detection only needs ~12 fps, and allocating a
@@ -353,7 +367,14 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
             vd.resize(w, h, dpi)
             vd.surface = reader.surface
         }
-        imageReader?.close()
+        imageReader?.let { old ->
+            val handler = captureHandler
+            if (handler != null && handler.looper.thread.isAlive) {
+                handler.post { runCatching { old.close() } }
+            } else {
+                runCatching { old.close() }
+            }
+        }
         imageReader = reader
     }
 
@@ -370,7 +391,15 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
 
     /** Runs on the capture HandlerThread. */
     private fun onFrame(reader: ImageReader) {
-        val image = reader.acquireLatestImage() ?: return
+        // Stop and rotation close the reader from the main thread while
+        // frames are still arriving here; a closed reader throws rather than
+        // returning null, and an already-acquired Image's buffer dies under
+        // the copy. Either way the frame is simply over.
+        val image = try {
+            reader.acquireLatestImage()
+        } catch (_: IllegalStateException) {
+            null
+        } ?: return
         try {
             val now = SystemClock.uptimeMillis()
             lastFrameAt = now
@@ -427,8 +456,10 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                     scope.launch { onMotion() }
                 }
             }
+        } catch (_: IllegalStateException) {
+            return
         } finally {
-            image.close()
+            runCatching { image.close() }
         }
     }
 
@@ -451,13 +482,15 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         val lock = ScrollTracker.delta(prev, prof, maxShiftPx = capH / TRACK_WINDOW_FRACTION)
         if (lock == null) {
             // A fling too fast to match, or a page swap. Hide the cards but
-            // keep everything learned; stillness plus a wide re-lock against
-            // the last settled view will tell the two apart.
+            // keep everything learned; what happens at the next stillness
+            // decides which it was.
             if (!stickyLive) return false
             if (!coasting) {
                 coasting = true
+                coastLocks = 0
                 scope.launch { hideCardsKeepStore() }
             }
+            coastLocks = 0
             lastMotionAt = now
             settledRunStart = 0L
             return true
@@ -475,6 +508,13 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         val settled = settledRunStart != 0L && now - settledRunStart >= settings.stabilityMs
 
         if (coasting) {
+            // Per-frame locks resuming mid-coast mean the strip is readable
+            // again and its visible motion is being integrated once more.
+            // Only the frames the fling blinded are unaccounted for; profiles
+            // are one screen tall, so a wide re-lock can recover a short
+            // blind gap, and the strip store's own landmarks vote away a
+            // long one at the next settle.
+            coastLocks++
             if (settled) {
                 settledRunStart = 0L
                 val base = settledProfile
@@ -483,24 +523,41 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                     maxShiftPx = capH * 2,
                     guessPx = settledOffset - trackOffset,
                 )
-                if (wide != null) {
-                    // Same strip, further along: correct the offset from the
-                    // absolute match instead of the drift the fling smeared.
-                    trackOffset = settledOffset - wide.deltaPx
-                    coasting = false
-                    settledProfile = prof
-                    settledOffset = trackOffset
-                    scope.launch { onStickySettled() }
-                } else {
-                    scope.launch { stickyReset() }
+                when {
+                    wide != null -> {
+                        // Same strip, a short hop along: correct the offset
+                        // from the absolute match.
+                        trackOffset = settledOffset - wide.deltaPx
+                        coasting = false
+                        settledProfile = prof
+                        settledOffset = trackOffset
+                        scope.launch { onStickySettled() }
+                    }
+                    coastLocks >= COAST_RELOCK_FRAMES -> {
+                        // Too far for profiles to overlap, but the tracker is
+                        // reading the strip again — carry on and let stored
+                        // balloons re-detected at the settle vote the blind
+                        // gap out of the offset.
+                        coasting = false
+                        needsReground = true
+                        settledProfile = prof
+                        settledOffset = trackOffset
+                        scope.launch { onStickySettled() }
+                    }
+                    else -> scope.launch { stickyReset() }
                 }
             }
             return true
         }
 
         if (stickyLive) {
-            val shift = paintedAtOffset - trackOffset
-            scope.launch { controller?.bubbleView?.setCardShift(shift) }
+            scope.launch {
+                // Read both offsets on the main thread at execution time: a
+                // value computed here can be stale by the time the post runs
+                // if a repaint lands in between, jumping every card for a
+                // frame.
+                controller?.bubbleView?.setCardShift(paintedAtOffset - trackOffset)
+            }
             if (settled) {
                 settledRunStart = 0L
                 // Re-anchoring each settle on an absolute match against the
@@ -516,13 +573,41 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                 }
                 settledProfile = prof
                 settledOffset = trackOffset
-                if (trackOffset != lastTranslatedOffset && state != State.TRANSLATING) {
-                    scope.launch { onStickySettled() }
+                if (state != State.TRANSLATING) {
+                    if (trackOffset != lastTranslatedOffset) {
+                        lastFiredProfile = prof
+                        scope.launch { onStickySettled() }
+                    } else if (profilesDiffer(lastFiredProfile, prof)) {
+                        // Same offset, different pixels: a lazy-loaded panel
+                        // popped in under a settled screen. Offset gating
+                        // alone would ignore it forever.
+                        lastFiredProfile = prof
+                        scope.launch { onStickySettled() }
+                    }
                 }
             }
             return true
         }
         return false
+    }
+
+    /**
+     * Materially different content in two settled profiles of the same
+     * offset. Bands under our own cards are already excluded by the profile;
+     * a modest fraction of the rest moving a real distance is a panel
+     * appearing, not sensor noise.
+     */
+    private fun profilesDiffer(a: IntArray?, b: IntArray?): Boolean {
+        if (a == null || b == null || a.size != b.size) return true
+        var valid = 0
+        var changed = 0
+        for (i in a.indices) {
+            if (a[i] < 0 || b[i] < 0) continue
+            valid++
+            if (kotlin.math.abs(a[i] - b[i]) > 10) changed++
+        }
+        if (valid < a.size / 8) return false
+        return changed.toFloat() / valid > 0.04f
     }
 
     /** Screen rects our cards occupy right now, for the tracker to ignore. */
@@ -544,16 +629,12 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
     private fun hideCardsKeepStore() {
         controller?.bubbleView?.setCardShift(0)
         paintCards(emptyList())
-        paintedRects = emptyList()
     }
 
     /** Repaints the visible slice of the strip store at the current offset. */
     private fun repaintFromStore() {
-        val off = trackOffset
         controller?.bubbleView?.setCardShift(0)
-        paintCards(strip.visible(off, capH))
-        paintedAtOffset = off
-        paintedRects = controller?.bubbleView?.placedRects() ?: emptyList()
+        paintCards(strip.visible(trackOffset, capH))
     }
 
     /**
@@ -566,6 +647,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         strip.clear()
         stickyLive = false
         coasting = false
+        needsReground = false
         trackOffset = 0
         paintedAtOffset = 0
         paintedRects = emptyList()
@@ -640,15 +722,34 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         }
     }
 
+    private fun pushBusy() {
+        busyDepth++
+        controller?.setBusy(true)
+    }
+
+    private fun popBusy() {
+        busyDepth--
+        if (busyDepth <= 0) {
+            busyDepth = 0
+            controller?.setBusy(false)
+        }
+    }
+
     /**
-     * Paints cards and records the cells they cover, in one step — the mask
-     * must never describe cards other than the ones actually on screen.
-     * Main thread only.
+     * Paints cards and records both the cells and the rects they cover, in
+     * one step — the mask and the tracker's exclusions must never describe
+     * cards other than the ones actually on screen. That includes the fast
+     * draft painted mid-pass: left unrecorded, its static pixels anchor the
+     * scroll tracker to zero and any creep during the pass is baked into the
+     * session as a permanent misregistration. Main thread only.
      */
     private fun paintCards(bubbles: List<RenderBubble>) {
         val view = controller?.bubbleView ?: return
         view.setBubbles(bubbles)
-        overlayMask = if (bubbles.isEmpty()) null else FrameStability.mask(view.placedRects(), capW, capH)
+        val placed = if (bubbles.isEmpty()) emptyList() else view.placedRects()
+        overlayMask = if (placed.isEmpty()) null else FrameStability.mask(placed, capW, capH)
+        paintedRects = placed
+        paintedAtOffset = trackOffset
     }
 
     /** Clears cards and the mask that described them. Main thread only. */
@@ -679,7 +780,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         state = State.TRANSLATING
         val sticky = settings.stickyScroll && settings.mode == CaptureMode.AUTO
         translateJob = scope.launch {
-            controller?.setBusy(true)
+            pushBusy()
             try {
                 // A long enough break since the last translated page means the
                 // next one probably belongs to a different series.
@@ -705,7 +806,18 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                         )
                     }
                 } else emptyList()
-                val exclusions = (controller?.overlayExclusions() ?: emptyList()) + claims
+                // The painted card can spill past its logical claim — width
+                // floors, screen-edge clamping, a minimum type size that
+                // overflows the box — and a live grab keeps cards up, so the
+                // pipeline must also be kept out of the pixels the cards
+                // actually cover or it would read our own English back.
+                val painted = if (live) shiftedClaimRects().map {
+                    Rect(
+                        it.left - CLAIM_MARGIN_PX, it.top - CLAIM_MARGIN_PX,
+                        it.right + CLAIM_MARGIN_PX, it.bottom + CLAIM_MARGIN_PX,
+                    )
+                } else emptyList()
+                val exclusions = (controller?.overlayExclusions() ?: emptyList()) + claims + painted
                 var hashes: List<Long> = emptyList()
                 val result = try {
                     withContext(Dispatchers.Default) {
@@ -743,9 +855,55 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                     bmp.recycle()
                 }
                 if (!isActive) return@launch
-                if (sticky) {
-                    strip.add(result.bubbles, hashes, offsetAtCapture)
-                    lastTranslatedOffset = offsetAtCapture
+                // The pass was captured under the sticky setting, but the
+                // user may have flipped it off mid-flight; committing a live
+                // session against an off setting would strand riding cards
+                // with no tracker to move them.
+                val stickyStill = sticky &&
+                    settings.stickyScroll && settings.mode == CaptureMode.AUTO
+                if (stickyStill) {
+                    var offsetForAdd = offsetAtCapture
+                    if (needsReground) {
+                        // A coast ended on re-acquired locks alone, so the
+                        // blind gap is still in the offset. Stored balloons
+                        // re-detected just now are landmarks: their votes
+                        // relocate the strip; none of them with the store
+                        // insisting cards belong on this screen means this
+                        // is not the strip the session knows.
+                        val corrected = strip.reground(
+                            result.bubbles.mapIndexed { i, b -> b.box to hashes[i] },
+                            offsetAtCapture,
+                        )
+                        when {
+                            corrected != null && kotlin.math.abs(corrected - offsetAtCapture) <= capH * 4 -> {
+                                val fix = corrected - offsetAtCapture
+                                offsetForAdd = corrected
+                                trackOffset += fix
+                                needsReground = false
+                            }
+                            claims.isEmpty() -> needsReground = false
+                            else -> {
+                                stickyReset()
+                                return@launch
+                            }
+                        }
+                    }
+                    // A balloon straddling the frame edge was read in part;
+                    // storing the fragment would claim the whole balloon
+                    // against ever being translated whole. Leave it for the
+                    // settle that shows all of it.
+                    val edge = (capH / 100).coerceAtLeast(8)
+                    val keep = ArrayList<RenderBubble>(result.bubbles.size)
+                    val keepHashes = ArrayList<Long>(hashes.size)
+                    result.bubbles.forEachIndexed { i, b ->
+                        val whole = b.balloon?.box ?: b.box
+                        if (whole.top > edge && whole.bottom < capH - edge) {
+                            keep.add(b)
+                            keepHashes.add(hashes[i])
+                        }
+                    }
+                    strip.add(keep, keepHashes, offsetForAdd)
+                    lastTranslatedOffset = offsetForAdd
                     stickyLive = true
                     lastShown = emptyList()
                     repaintFromStore()
@@ -777,7 +935,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                 } else {
                     val mark = if (result.polished) "✨" else "✓"
                     val extra = result.note?.let { " · $it" } ?: ""
-                    val total = if (sticky && strip.size() > result.bubbles.size) {
+                    val total = if (stickyStill && strip.size() > result.bubbles.size) {
                         " · ${strip.size()} on strip"
                     } else ""
                     setPill("$mark ${result.bubbles.size} · ${result.engineLabel}$extra$total", 2400)
@@ -792,7 +950,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                 state = State.SHOWING
                 setPill("⚠ " + (e.message?.take(90) ?: "translation failed"), 4500)
             } finally {
-                controller?.setBusy(false)
+                popBusy()
             }
         }
     }
@@ -832,6 +990,12 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
 
     override fun onTranslateNow() {
         if (projection == null || state == State.TRANSLATING) return
+        if (stickyLive && coasting) {
+            // The offset is untrusted mid-coast; storing cards against it
+            // would misplace them for the rest of the session.
+            setPill("hold still a moment…", 1400)
+            return
+        }
         startTranslate(auto = false)
     }
 
@@ -870,9 +1034,17 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
             clearCards()
             suppressUntil = SystemClock.uptimeMillis() + 900
             delay(4000)
-            if (state == State.SHOWING) {
-                suppressUntil = SystemClock.uptimeMillis() + 900
-                if (stickyLive) repaintFromStore() else paintCards(shown)
+            if (state != State.SHOWING) return@launch
+            suppressUntil = SystemClock.uptimeMillis() + 900
+            if (stickyLive) {
+                // Mid-coast the offset is untrusted; the settle repaints.
+                if (!coasting) repaintFromStore()
+            } else if (lastShown === shown) {
+                // A newer pass owns the screen now; resurrecting the list
+                // captured at peek time would paint the previous page's
+                // lines over it — and the mask would then hide the mistake
+                // from every detector.
+                paintCards(shown)
             }
         }
     }

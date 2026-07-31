@@ -177,7 +177,7 @@ private fun StatusCard(
             Spacer(Modifier.height(8.dp))
             Text(
                 "Then open Brave and read. When you stop scrolling, bubbles are translated in place. " +
-                    "Tap the floating 文A button to force a pass; long-press it for the quick menu.",
+                    "Tap the floating 文A button to switch translation on or off; long-press it for the quick menu (translate now, peek, settings).",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )

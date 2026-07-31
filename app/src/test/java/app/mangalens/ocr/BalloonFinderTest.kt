@@ -401,6 +401,22 @@ class BalloonFinderTest {
             "an ellipse fills its box partially, not fully, got $filled",
             filled > 0.55f && filled < 0.95f,
         )
+
+        // The flood never enters the lettering, so the raw component has
+        // letter-shaped holes — and a cleaning fill painted through them
+        // would spare exactly the text it exists to erase. The finder must
+        // hand the mask over with those holes filled: sample the center of
+        // each drawn lettering bar and demand it is claimed as interior.
+        val scaleX = b.maskW.toFloat() / b.box.width()
+        val scaleY = b.maskH.toFloat() / b.box.height()
+        for (r in 0 until 3) {
+            val cx = ((450 - b.box.left) * scaleX).toInt().coerceIn(0, b.maskW - 1)
+            val cy = ((205 + r * 40 - b.box.top) * scaleY).toInt().coerceIn(0, b.maskH - 1)
+            assertTrue(
+                "lettering row $r must be inside the cleaned interior",
+                b.mask[cy * b.maskW + cx],
+            )
+        }
     }
 
     /**

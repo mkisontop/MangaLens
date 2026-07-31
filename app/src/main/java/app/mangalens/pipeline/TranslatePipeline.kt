@@ -123,10 +123,19 @@ class TranslatePipeline(
             }
         }
 
-        val result = dispatch(
-            bitmap, settings, exclusions, onPartial,
+        // One balloon, one cleaning: two cards bound to the same detection
+        // would each stamp it opaque, and whichever draws later erases the
+        // other's text. The better-contained card keeps the balloon; the
+        // rest fall back to plain cards over their own boxes.
+        val wrapped = onPartial?.let { emit ->
+            val f: suspend (PageResult) -> Unit = { pr -> emit(pr.copy(bubbles = soleClaimants(pr.bubbles))) }
+            f
+        }
+        val raw = dispatch(
+            bitmap, settings, exclusions, wrapped,
             ocrResult, bubbles, detected, anchorLines, ignoreTop, ignoreBottom, useVision,
         )
+        val result = raw.copy(bubbles = soleClaimants(raw.bubbles))
         return if (diag == null) result else result.copy(
             diag = "$diag · cards ${result.bubbles.size}",
             balloons = balloons,
@@ -575,6 +584,29 @@ class TranslatePipeline(
             kind = kind,
             balloon = balloon,
         )
+    }
+
+    /**
+     * Resolves double claims on one balloon. Association is per-card and can
+     * legitimately bind two cards to one detection — an anchored region plus
+     * the empty balloon region it was not welded into, or an extra snapped
+     * nearby. Only the best-contained card may clean the balloon.
+     */
+    private fun soleClaimants(bubbles: List<RenderBubble>): List<RenderBubble> {
+        val claims = java.util.IdentityHashMap<Balloon, MutableList<Int>>()
+        bubbles.forEachIndexed { i, b ->
+            b.balloon?.let { claims.getOrPut(it) { mutableListOf() }.add(i) }
+        }
+        if (claims.values.none { it.size > 1 }) return bubbles
+        val out = bubbles.toMutableList()
+        for ((balloon, idxs) in claims) {
+            if (idxs.size < 2) continue
+            val keep = idxs.maxBy { containedShare(bubbles[it].box, balloon.box) }
+            for (i in idxs) {
+                if (i != keep) out[i] = out[i].copy(balloon = null)
+            }
+        }
+        return out
     }
 
     /**

@@ -284,6 +284,13 @@ object BalloonFinder {
                 val cell = cells[n]
                 mask[(cell / w - minY) * boxW + (cell % w - minX)] = true
             }
+            // The flood only ever enters interior-colored cells, so the mask
+            // arrives with letter-shaped holes exactly where the lettering
+            // is — and a cleaning fill painted through it would spare the
+            // very text it exists to erase. Anything enclosed by interior is
+            // interior: flood the complement from the box border and claim
+            // whatever it cannot reach.
+            fillHoles(mask, boxW, boxH)
             out.add(Balloon(full, boxW, boxH, mask, inverted))
         }
         return out
@@ -298,6 +305,45 @@ object BalloonFinder {
         val inter = ix.toLong() * iy
         val union = a.width().toLong() * a.height() + b.width().toLong() * b.height() - inter
         return inter.toFloat() / union > 0.3f
+    }
+
+    /**
+     * Marks every false cell not reachable from the box border as interior.
+     * The lettering (and, for burst balloons, the sealed halo around it) is
+     * enclosed by flooded cells on all sides; the true outside always touches
+     * the bounding box edge.
+     */
+    private fun fillHoles(mask: BooleanArray, w: Int, h: Int) {
+        val outside = BooleanArray(mask.size)
+        val stack = IntArray(mask.size)
+        var top = 0
+
+        fun seed(idx: Int) {
+            if (!mask[idx] && !outside[idx]) {
+                outside[idx] = true
+                stack[top++] = idx
+            }
+        }
+        for (x in 0 until w) {
+            seed(x)
+            seed((h - 1) * w + x)
+        }
+        for (y in 0 until h) {
+            seed(y * w)
+            seed(y * w + w - 1)
+        }
+        while (top > 0) {
+            val idx = stack[--top]
+            val x = idx % w
+            val y = idx / w
+            if (x > 0) seed(idx - 1)
+            if (x < w - 1) seed(idx + 1)
+            if (y > 0) seed(idx - w)
+            if (y < h - 1) seed(idx + w)
+        }
+        for (i in mask.indices) {
+            if (!mask[i] && !outside[i]) mask[i] = true
+        }
     }
 
     /** Box dilation by [r], run as horizontal then vertical passes. */
