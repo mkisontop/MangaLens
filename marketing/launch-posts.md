@@ -19,7 +19,7 @@ posting anywhere:
 Links to use:
 - Download: https://github.com/mkisontop/mangalens/releases/latest
 - Source: https://github.com/mkisontop/mangalens
-- Site: https://mkisontop.github.io/mangalens/
+- Site: https://mkisontop.github.io/MangaLens/
 
 ---
 

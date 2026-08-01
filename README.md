@@ -12,7 +12,7 @@ natural English, and paints clean patches right over the bubbles — hands-free.
 Scroll and they vanish; stop and the next page translates itself.
 
 **[⤓ Download the latest APK](https://github.com/mkisontop/mangalens/releases/latest/download/MangaLens.apk)**
-· [website](https://mkisontop.github.io/mangalens/)
+· [website](https://mkisontop.github.io/MangaLens/)
 · [all releases](https://github.com/mkisontop/mangalens/releases)
 · [changelog](CHANGELOG.md)
 
