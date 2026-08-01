@@ -34,6 +34,7 @@ import app.mangalens.ocr.OcrEngine
 import app.mangalens.overlay.OverlayController
 import app.mangalens.overlay.RenderBubble
 import app.mangalens.pipeline.TranslatePipeline
+import app.mangalens.pipeline.UpgradeMerge
 import app.mangalens.settings.AppSettings
 import app.mangalens.settings.CaptureMode
 import app.mangalens.settings.SettingsRepository
@@ -381,7 +382,21 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                 // it moved (slow scroll — cells shift, and the balloon that
                 // matters most may slide in under a card, changing only masked
                 // cells). Check for both against the translated page itself.
-                if (FrameStability.changedFraction(shownThumb, thumb, mask) > PAGE_CHANGE_FRACTION ||
+                //
+                // The threshold adapts to how much of the page our own cards
+                // hide. On a dense page the cards cover most of the text — the
+                // very cells a page swap changes hardest — so the comparison
+                // runs over gutters and margins, where a real swap moves far
+                // fewer cells. Demanding the full fraction there is how a
+                // tap-to-turn under blanket coverage went unnoticed while the
+                // old page's cards sat on the new page.
+                val cov = FrameStability.coverage(mask)
+                val pageBar = PAGE_CHANGE_FRACTION * when {
+                    cov > 0.60 -> 0.30
+                    cov > 0.35 -> 0.60
+                    else -> 1.0
+                }
+                if (FrameStability.changedFraction(shownThumb, thumb, mask) > pageBar ||
                     kotlin.math.abs(FrameStability.verticalShift(shownThumb, thumb, mask)) >= SLOW_SCROLL_MIN_ROWS
                 ) {
                     lastMotionAt = now
@@ -523,6 +538,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                 }
                 setPill("translating…")
                 val exclusions = controller?.overlayExclusions() ?: emptyList()
+                var draftShown: List<RenderBubble> = emptyList()
                 val result = try {
                     withContext(Dispatchers.Default) {
                         // Remember the page being translated from the exact
@@ -537,6 +553,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                             // Fast path landed — paint it now, AI polish follows.
                             withContext(Dispatchers.Main.immediate) {
                                 if (isActive && state == State.TRANSLATING) {
+                                    draftShown = partial.bubbles
                                     lastShown = partial.bubbles
                                     suppressUntil = SystemClock.uptimeMillis() + 600
                                     paintCards(partial.bubbles)
@@ -552,14 +569,18 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                     bmp.recycle()
                 }
                 if (!isActive) return@launch
-                lastShown = result.bubbles
+                // The polish replaces what it answered and never erases what
+                // it didn't: an empty or partial upgrade keeps the draft cards
+                // the reader is already reading.
+                val shown = UpgradeMerge.merge(draftShown, result.bubbles)
+                lastShown = shown
                 suppressUntil = SystemClock.uptimeMillis() + 500
-                paintCards(result.bubbles)
+                paintCards(shown)
                 state = State.SHOWING
                 // A page with dialogue keeps the current work alive and feeds it
                 // the names that identify it; a run of pages without any means
                 // the reader has left the story — an index, a cover, a menu.
-                if (result.bubbles.isNotEmpty()) {
+                if (shown.isNotEmpty()) {
                     works.noteTranslated(System.currentTimeMillis(), glossary.snapshot().keys)
                 } else {
                     works.noteQuietPass()
@@ -571,12 +592,13 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                 // came back wrong, and a pill that vanishes is no use for that.
                 if (result.diag != null) {
                     setPill("${result.engineLabel.ifBlank { "—" }} · ${result.diag} · ${works.describe()}")
-                } else if (result.bubbles.isEmpty()) {
+                } else if (shown.isEmpty()) {
                     setPill(if (auto) null else "no text found", 1800)
                 } else {
-                    val mark = if (result.polished) "✨" else "✓"
+                    val mark = if (result.polished && result.bubbles.isNotEmpty()) "✨" else "✓"
+                    val kept = if (shown.size > result.bubbles.size) " · draft kept" else ""
                     val extra = result.note?.let { " · $it" } ?: ""
-                    setPill("$mark ${result.bubbles.size} · ${result.engineLabel}$extra", 2400)
+                    setPill("$mark ${shown.size} · ${result.engineLabel}$extra$kept", 2400)
                 }
             } catch (e: CancellationException) {
                 throw e

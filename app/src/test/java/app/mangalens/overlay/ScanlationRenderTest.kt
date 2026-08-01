@@ -225,6 +225,118 @@ class ScanlationRenderTest {
         assertTrue(!v.hasBubbles())
     }
 
+    /**
+     * The night-scene failure: a card whose sampled fill is near-black
+     * arriving with near-black text painted an invisible translation onto a
+     * black panel. The fill must paint effectively solid, and the lettering
+     * must be light on a dark fill no matter what color upstream chose.
+     */
+    @Test
+    fun `a dark card on a dark panel stays readable`() {
+        val v = view()
+        v.bgOpacity = 0.6f
+        v.setBubbles(
+            listOf(
+                RenderBubble(
+                    box = Rect(200, 600, 460, 700),
+                    translated = "IT IS PITCH DARK IN HERE",
+                    original = "여긴 너무 어두워",
+                    bgColor = Color.rgb(12, 12, 16),
+                    textColor = Color.rgb(20, 20, 24),
+                    vertical = false,
+                )
+            )
+        )
+        val out = Bitmap.createBitmap(pageW, pageH, Bitmap.Config.ARGB_8888)
+        Canvas(out).drawColor(Color.BLACK)
+        v.draw(Canvas(out))
+        writePreview("dark-card.png", out)
+
+        val card = v.placedRects().single()
+        var light = 0
+        for (y in card.top until card.bottom) {
+            for (x in card.left until card.right) {
+                if (luminance(out.getPixel(x, y)) > 170) light++
+            }
+        }
+        assertTrue("light lettering must exist on the dark card (found $light px)", light > 60)
+    }
+
+    /**
+     * The dense-page failure: a tall on-art narration column used to demand
+     * a card its own height and nearly the screen's width, and a page of
+     * columns vanished under its own translations. The column treatment
+     * wipes the narrow column and floats a compact card instead.
+     */
+    @Test
+    fun `a tall vertical column gets a wipe and a compact card, not a blanket`() {
+        val v = view()
+        val column = Rect(560, 120, 640, 780)
+        val page = Bitmap.createBitmap(pageW, pageH, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(page)
+        canvas.drawColor(Color.WHITE)
+        val ink = Paint().apply { color = letteringInk }
+        for (y in column.top + 10 until column.bottom - 10 step 40) {
+            canvas.drawRect(Rect(column.left + 14, y, column.right - 14, y + 24), ink)
+        }
+        v.setBubbles(
+            listOf(
+                RenderBubble(
+                    box = Rect(column),
+                    translated = "AS THE YEARS WENT BY HE GREW INTO AN ACTIVE FIGURE WHOSE NAME EVERYONE KNEW",
+                    original = "縦書きの長い語り",
+                    bgColor = Color.WHITE,
+                    textColor = Color.BLACK,
+                    vertical = true,
+                )
+            )
+        )
+        v.draw(canvas)
+        writePreview("column.png", page)
+
+        var leftover = 0
+        val px = pixels(page)
+        for (c in px) if (isLetteringInk(c)) leftover++
+        assertEquals("the column's original lettering must be wiped", 0, leftover)
+
+        val covered = v.placedRects().single()
+        val pageArea = pageW.toLong() * pageH
+        val coveredArea = covered.width().toLong() * covered.height()
+        assertTrue(
+            "column translation must not blanket the page (covered $coveredArea of $pageArea)",
+            coveredArea * 100 < pageArea * 45,
+        )
+    }
+
+    /** Two bubbles sharing a center must not stack their cards into a slab. */
+    @Test
+    fun `overlapping cards nudge apart`() {
+        val v = view()
+        val boxA = Rect(220, 500, 480, 580)
+        val boxB = Rect(240, 510, 500, 590)
+        v.setBubbles(
+            listOf(
+                RenderBubble(boxA, "FIRST LINE OF DIALOGUE", "一", Color.WHITE, Color.BLACK, false),
+                RenderBubble(boxB, "SECOND LINE OF DIALOGUE", "二", Color.WHITE, Color.BLACK, false),
+            )
+        )
+        val rects = v.placedRects()
+        assertEquals(2, rects.size)
+        val a = rects[0]
+        val b = rects[1]
+        val inter = Rect()
+        val overlap = if (inter.setIntersect(a, b)) {
+            inter.width().toLong() * inter.height()
+        } else {
+            0L
+        }
+        val smaller = minOf(a.width().toLong() * a.height(), b.width().toLong() * b.height())
+        assertTrue(
+            "cards must not majority-overlap (overlap $overlap of $smaller)",
+            overlap * 100 < smaller * 35,
+        )
+    }
+
     // ---- TypeSet: pure shaping over a 1-unit-per-character measure ----
 
     private val unitMeasure: (String) -> Float = { it.length.toFloat() }

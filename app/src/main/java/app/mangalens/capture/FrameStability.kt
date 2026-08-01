@@ -205,9 +205,23 @@ object FrameStability {
             considered++
             if (abs(a[i] - b[i]) > cellDelta) changed++
         }
-        // Too little of the page left to judge by.
-        if (considered < a.size / 8) return 0.0
+        // Nearly nothing left to judge by. This floor used to be an eighth of
+        // the page, which made a densely-carded page (cards over every text
+        // block) formally blind: a tap-to-turn swap under blanket coverage
+        // returned 0.0 forever and stale cards sat on the new page. The
+        // fraction is already normalized to the cells actually considered, so
+        // even a thin remainder of gutters is worth reading — only a truly
+        // empty remainder is indistinguishable from silence.
+        if (considered < a.size / 32) return 0.0
         return changed.toDouble() / considered
+    }
+
+    /** Fraction of thumbnail cells hidden by overlay cards. */
+    fun coverage(mask: BooleanArray?): Double {
+        if (mask == null || mask.isEmpty()) return 0.0
+        var n = 0
+        for (m in mask) if (m) n++
+        return n.toDouble() / mask.size
     }
 
     /**

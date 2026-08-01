@@ -529,12 +529,6 @@ private fun ReadingCard(settings: AppSettings, repo: SettingsRepository) {
                 { "${(it * 100).toInt()}%" },
             ) { scope.launch { repo.setTextScale(it) } }
             LabeledSlider(
-                "Floating card opacity (cleaned balloons stay solid)",
-                settings.bgOpacity,
-                0.6f..1.0f,
-                { "${(it * 100).toInt()}%" },
-            ) { scope.launch { repo.setBgOpacity(it) } }
-            LabeledSlider(
                 "Ignore top of screen (browser bar)",
                 settings.ignoreTopPct,
                 0f..0.15f,

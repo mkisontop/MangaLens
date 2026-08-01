@@ -1,5 +1,31 @@
 # Changelog
 
+## 0.9.2
+
+Four fixes from the first real field test, all in the direction of "the
+translation is always readable and never stale".
+
+- **Readable on black panels.** Floating cards now paint effectively solid,
+  pick lettering that contrasts with their actual fill (light text on dark
+  cards), and wear a hairline edge that shows against same-colored art. A
+  night scene can no longer swallow its own translation.
+- **The AI polish can't erase the page.** When "✨ upgrading…" comes back
+  empty or partial, the draft cards you were reading stay up — the polish
+  replaces exactly what it answered and nothing more. The pill says
+  "draft kept" when that happens.
+- **Instant page-turns are noticed under heavy coverage.** Tap-to-turn
+  readers swap the page in one frame; with cards over most of the old page
+  the comparison used to go blind and stale translations sat on the new
+  page. The detector now reads whatever remains uncovered and lowers its
+  threshold as coverage grows.
+- **Dense pages stay visible.** Tall on-art narration columns no longer
+  demand panel-sized cards: the narrow column is wiped clean and a compact
+  card floats over it, cards cap at half a screen, and overlapping cards
+  nudge apart instead of stacking into a slab.
+
+The card-opacity slider is retired — dialogue is always solid, and the
+peek gesture (long-press → peek) is the way to see the original art.
+
 ## 0.9.1
 
 First release from MangaLens's own repository.

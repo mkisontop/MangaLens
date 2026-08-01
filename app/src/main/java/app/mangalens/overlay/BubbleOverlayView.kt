@@ -65,6 +65,12 @@ class BubbleOverlayView(context: Context) : View(context) {
         val mask: Bitmap? = null,
         val maskDst: RectF? = null,
         val tint: PorterDuffColorFilter? = null,
+        /**
+         * Rectangle wiped to the sampled page color before the card paints —
+         * the original lettering of an on-art vertical column, hidden without
+         * demanding a card the column's own height.
+         */
+        val wipe: RectF? = null,
     )
 
     private var placed: List<Placed> = emptyList()
@@ -117,8 +123,24 @@ class BubbleOverlayView(context: Context) : View(context) {
 
     fun setBubbles(bubbles: List<RenderBubble>) {
         source = bubbles
-        placed = bubbles.mapNotNull { place(it) }
+        placed = placeAll(bubbles)
         invalidate()
+    }
+
+    /**
+     * Places bubbles in order, letting each card see the space already
+     * claimed: on a dense page, cards centered on neighbouring columns land
+     * on the same spot, and a stack of cards reads as one unreadable slab.
+     */
+    private fun placeAll(bubbles: List<RenderBubble>): List<Placed> {
+        val out = ArrayList<Placed>(bubbles.size)
+        val occupied = ArrayList<RectF>(bubbles.size)
+        for (b in bubbles) {
+            val p = place(b, occupied) ?: continue
+            out.add(p)
+            occupied.add(p.bounds)
+        }
+        return out
     }
 
     fun setDebugBalloons(rects: List<Rect>) {
@@ -136,7 +158,7 @@ class BubbleOverlayView(context: Context) : View(context) {
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
         if (source.isEmpty()) return
-        placed = source.mapNotNull { place(it) }
+        placed = placeAll(source)
         invalidate()
     }
 
@@ -161,14 +183,33 @@ class BubbleOverlayView(context: Context) : View(context) {
 
     private fun dp(v: Float) = v * resources.displayMetrics.density
 
-    private fun place(b: RenderBubble): Placed? {
+    private fun place(b: RenderBubble, occupied: List<RectF>): Placed? {
         if (b.translated.isBlank()) return null
         val balloon = b.balloon
         if (balloon != null) {
             val stamp = erodedStamp(balloon)
             if (stamp != null) return placeClean(b, balloon, stamp)
         }
-        return placeCard(b)
+        return placeCard(b, occupied)
+    }
+
+    /**
+     * The text color a fill can actually carry. The pipeline's colors are
+     * sampled from the page, and a card whose sampled fill is near-black can
+     * arrive paired with near-black text — invisible on the very panels
+     * (night scenes, flashbacks) where cards appear most. This is the last
+     * gate: whatever upstream decided, dark fills get light lettering and
+     * light fills get dark, keeping the preferred color when it already
+     * contrasts.
+     */
+    private fun readableText(bg: Int, preferred: Int): Int {
+        val bgLum = (Color.red(bg) * 299 + Color.green(bg) * 587 + Color.blue(bg) * 114) / 1000
+        val prefLum = (Color.red(preferred) * 299 + Color.green(preferred) * 587 + Color.blue(preferred) * 114) / 1000
+        return if (bgLum < 140) {
+            if (prefLum > 170) preferred else Color.rgb(244, 245, 248)
+        } else {
+            if (prefLum < 100) preferred else 0xFF17181C.toInt()
+        }
     }
 
     /**
@@ -216,7 +257,7 @@ class BubbleOverlayView(context: Context) : View(context) {
         val maxTextH = box.height() * 0.80f
 
         val tp = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-            color = b.textColor
+            color = readableText(b.bgColor, b.textColor)
             typeface = if (sfx) sfxFace else dialogueFace
         }
         var size = (box.height() * 0.24f / resources.displayMetrics.density)
@@ -266,22 +307,47 @@ class BubbleOverlayView(context: Context) : View(context) {
         )
     }
 
-    private fun placeCard(b: RenderBubble): Placed? {
+    private fun placeCard(b: RenderBubble, occupied: List<RectF>): Placed? {
         val sfx = b.kind == BubbleKind.SFX
         val screenW = (if (width > 0) width else resources.displayMetrics.widthPixels).toFloat()
         val screenH = (if (height > 0) height else resources.displayMetrics.heightPixels).toFloat()
         val pad = if (sfx) dp(4f) else dp(7f)
 
+        // A tall on-art column gets the column treatment: the narrow column
+        // itself is wiped to the sampled page color, and the English sits in
+        // a compact horizontal card over it. The old rule — widen the card to
+        // the column's height and grow it to bury the column — turned every
+        // narration column into a card the size of the panel; a dense page
+        // disappeared under its own translations.
+        val column = !sfx && b.vertical &&
+            b.box.height() > b.box.width() * 2.2f && b.box.height() > dp(120f)
+
         var boxW = b.box.width().toFloat()
-        if (b.vertical) boxW = maxOf(boxW, b.box.height() * 0.85f)
+        if (column) {
+            boxW = screenW * 0.56f
+        } else if (b.vertical) {
+            boxW = maxOf(boxW, b.box.height() * 0.85f)
+        }
         boxW = boxW.coerceAtLeast(if (sfx) dp(48f) else dp(88f)).coerceAtMost(screenW * 0.92f)
-        val maxH = maxOf(b.box.height() + dp(26f), dp(64f))
+        val maxH = if (column) screenH * 0.38f else maxOf(b.box.height() + dp(26f), dp(64f))
+
+        // Colors first: the text color depends on the fill it will sit on.
+        // Dialogue cards paint effectively solid whatever the legacy opacity
+        // slider saved — a see-through card over black art is how both
+        // languages vanish at once — and SFX keep their dark caption style.
+        val bg = if (sfx) {
+            Color.argb(200, 24, 25, 40)
+        } else {
+            val alpha = (255 * bgOpacity).toInt().coerceIn(235, 255)
+            Color.argb(alpha, Color.red(b.bgColor), Color.green(b.bgColor), Color.blue(b.bgColor))
+        }
+        val ink = if (sfx) Color.WHITE else readableText(bg, b.textColor)
 
         var layout: StaticLayout? = null
         var size = (if (sfx) 12f else 18f) * textScale
         while (size >= 9f) {
             val tp = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
-                color = if (sfx) Color.WHITE else b.textColor
+                color = ink
                 textSize = dp(size)
                 typeface = if (sfx) sfxFace else dialogueFace
             }
@@ -300,14 +366,17 @@ class BubbleOverlayView(context: Context) : View(context) {
         var maxLine = 0f
         for (i in 0 until chosen.lineCount) maxLine = maxOf(maxLine, chosen.getLineWidth(i))
         val w = (maxLine + pad * 2).coerceAtLeast(dp(40f)).coerceAtMost(boxW + pad * 2)
-        // A dialogue card must bury the whole original block, not just sit
-        // behind the English: CJK runs taller than its translation, and a
-        // card sized to the text leaves the source lines peeking above and
-        // below it. SFX captions stay compact by design.
-        val h = if (sfx) {
-            chosen.height + pad * 2
-        } else {
-            maxOf(chosen.height + pad * 2, b.box.height() + dp(6f))
+        // A dialogue card must bury the original block it floats on — CJK
+        // runs taller than its translation, and a card sized to the text
+        // leaves source lines peeking out. But burying is capped at half the
+        // screen: past that the card is no longer covering a block, it is
+        // covering the page. Columns don't bury at all — their wipe does it.
+        val h = when {
+            sfx || column -> chosen.height + pad * 2
+            else -> maxOf(
+                chosen.height + pad * 2,
+                minOf(b.box.height() + dp(6f), screenH * 0.5f),
+            )
         }
 
         var left = b.box.centerX() - w / 2f
@@ -315,23 +384,57 @@ class BubbleOverlayView(context: Context) : View(context) {
         left = left.coerceAtMost(screenW - w - dp(2f)).coerceAtLeast(dp(2f))
         top = top.coerceAtMost(screenH - h - dp(2f)).coerceAtLeast(dp(2f))
 
-        // SFX render as compact dark captions floating on the art, not as
-        // page-colored patches — closer to how scanlators letter small SFX.
-        val bg = if (sfx) {
-            Color.argb(200, 24, 25, 40)
-        } else {
-            val alpha = (255 * bgOpacity).toInt().coerceIn(70, 255)
-            Color.argb(alpha, Color.red(b.bgColor), Color.green(b.bgColor), Color.blue(b.bgColor))
-        }
         val rect = RectF(left, top, left + w, top + h)
+        nudgeClear(rect, occupied, screenH)
+
+        val wipe = if (column) {
+            RectF(b.box).apply { inset(-dp(2f), -dp(2f)) }
+        } else {
+            null
+        }
+        val bounds = RectF(rect)
+        if (wipe != null) bounds.union(wipe)
         return Placed(
-            bounds = rect,
+            bounds = bounds,
             layout = chosen,
             textX = rect.centerX() - chosen.width / 2f,
             textY = rect.centerY() - chosen.height / 2f,
             bg = bg,
             card = rect,
+            wipe = wipe,
         )
+    }
+
+    /**
+     * Shifts a card off cards already placed. Only meaningful overlap moves
+     * it (over a third of the card's own area) — cards on a comic page brush
+     * against each other constantly, and jittering every card for a grazing
+     * corner would tear placements away from their balloons for nothing.
+     */
+    private fun nudgeClear(rect: RectF, occupied: List<RectF>, screenH: Float) {
+        for (attempt in 0 until 3) {
+            val hit = occupied.firstOrNull { other ->
+                RectF.intersects(other, rect) && overlapShare(other, rect) > 0.35f
+            } ?: return
+            val below = hit.bottom + dp(4f)
+            val above = hit.top - rect.height() - dp(4f)
+            val top = when {
+                rect.centerY() >= hit.centerY() && below + rect.height() <= screenH - dp(2f) -> below
+                above >= dp(2f) -> above
+                below + rect.height() <= screenH - dp(2f) -> below
+                else -> return
+            }
+            rect.offsetTo(rect.left, top)
+        }
+    }
+
+    /** Intersection area as a share of [self]'s area. */
+    private fun overlapShare(other: RectF, self: RectF): Float {
+        val ix = minOf(other.right, self.right) - maxOf(other.left, self.left)
+        val iy = minOf(other.bottom, self.bottom) - maxOf(other.top, self.top)
+        if (ix <= 0f || iy <= 0f) return 0f
+        val area = self.width() * self.height()
+        return if (area <= 0f) 0f else (ix * iy) / area
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -346,8 +449,18 @@ class BubbleOverlayView(context: Context) : View(context) {
                 maskPaint.colorFilter = p.tint
                 canvas.drawBitmap(p.mask, null, p.maskDst, maskPaint)
             } else if (p.card != null) {
+                p.wipe?.let { wipe ->
+                    bgPaint.color = Color.argb(
+                        255, Color.red(p.bg), Color.green(p.bg), Color.blue(p.bg)
+                    )
+                    canvas.drawRoundRect(wipe, dp(3f), dp(3f), bgPaint)
+                }
                 bgPaint.color = p.bg
                 canvas.drawRoundRect(p.card, radius, radius, bgPaint)
+                // The hairline must contrast with the fill it outlines, or a
+                // page-black card on a black panel has no edge at all.
+                val lum = (Color.red(p.bg) * 299 + Color.green(p.bg) * 587 + Color.blue(p.bg) * 114) / 1000
+                strokePaint.color = if (lum < 140) 0x59FFFFFF else 0x2E000000
                 canvas.drawRoundRect(p.card, radius, radius, strokePaint)
             }
             canvas.save()
