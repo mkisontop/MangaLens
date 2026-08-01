@@ -1,0 +1,65 @@
+name: release
+
+# Pushing a tag like v0.9.1 builds, signs and publishes that version.
+# The permanent link to the newest APK never changes:
+#   https://github.com/mkisontop/mangalens/releases/latest/download/MangaLens.apk
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Prepare signing
+        env:
+          KS_B64: ${{ secrets.RELEASE_KEYSTORE_B64 }}
+          KS_PASS: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -n "$KS_B64" ]; then
+            echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/release.keystore"
+            {
+              echo "MANGALENS_KEYSTORE=$RUNNER_TEMP/release.keystore"
+              echo "MANGALENS_KEYSTORE_PASSWORD=$KS_PASS"
+            } >> "$GITHUB_ENV"
+            echo "Signing with the private release key."
+          else
+            echo "::warning::RELEASE_KEYSTORE_B64 secret is not set — this release is signed with the public debug key. Add the secrets from the signing kit before announcing the app."
+          fi
+
+      - name: Unit tests
+        run: ./gradlew --no-daemon :app:testDebugUnitTest
+
+      - name: Build release APK
+        run: ./gradlew --no-daemon :app:assembleRelease
+
+      - name: Stage assets
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          echo "VER=$VER" >> "$GITHUB_ENV"
+          cp app/build/outputs/apk/release/app-release.apk "MangaLens-$VER.apk"
+          cp "MangaLens-$VER.apk" MangaLens.apk
+          sha256sum "MangaLens-$VER.apk" MangaLens.apk > checksums.txt
+          # Release notes = the top section of the changelog.
+          awk '/^## /{n++} n==1' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
+          [ -s "$RUNNER_TEMP/notes.md" ] || echo "MangaLens $VER" > "$RUNNER_TEMP/notes.md"
+
+      - name: Publish release
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            "MangaLens-$VER.apk" MangaLens.apk checksums.txt \
+            --title "MangaLens $VER" \
+            --notes-file "$RUNNER_TEMP/notes.md"
