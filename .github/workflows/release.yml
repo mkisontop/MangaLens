@@ -1,12 +1,20 @@
 name: release
 
-# Pushing a tag like v0.9.1 builds, signs and publishes that version.
+# Two ways to cut a release, same result either way:
+#   - push a tag like v0.9.1, or
+#   - run this workflow manually with the tag as input (the release step
+#     creates the tag on the release commit).
 # The permanent link to the newest APK never changes:
 #   https://github.com/mkisontop/mangalens/releases/latest/download/MangaLens.apk
 
 on:
   push:
     tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, e.g. v0.9.1"
+        required: true
 
 permissions:
   contents: write
@@ -47,9 +55,15 @@ jobs:
         run: ./gradlew --no-daemon :app:assembleRelease
 
       - name: Stage assets
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
-          VER="${GITHUB_REF_NAME#v}"
-          echo "VER=$VER" >> "$GITHUB_ENV"
+          TAG="${INPUT_TAG:-$GITHUB_REF_NAME}"
+          VER="${TAG#v}"
+          {
+            echo "TAG=$TAG"
+            echo "VER=$VER"
+          } >> "$GITHUB_ENV"
           cp app/build/outputs/apk/release/app-release.apk "MangaLens-$VER.apk"
           cp "MangaLens-$VER.apk" MangaLens.apk
           sha256sum "MangaLens-$VER.apk" MangaLens.apk > checksums.txt
@@ -59,7 +73,8 @@ jobs:
 
       - name: Publish release
         run: |
-          gh release create "$GITHUB_REF_NAME" \
+          gh release create "$TAG" \
             "MangaLens-$VER.apk" MangaLens.apk checksums.txt \
+            --target "$GITHUB_SHA" \
             --title "MangaLens $VER" \
             --notes-file "$RUNNER_TEMP/notes.md"
