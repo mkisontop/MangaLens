@@ -1,0 +1,48 @@
+name: signing-check
+
+# Answers one question without exposing anything: are the two release
+# signing secrets present, correctly named, and do they actually open the
+# keystore? Green = releases will be signed with the private key.
+# Red = the annotations say exactly which piece is missing or wrong.
+
+on:
+  push:
+    branches: [main]
+    paths: [".github/workflows/signing-check.yml"]
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    env:
+      KS_B64: ${{ secrets.RELEASE_KEYSTORE_B64 }}
+      KS_PASS: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+    steps:
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Verify release signing secrets
+        run: |
+          ok=1
+          if [ -z "$KS_B64" ]; then
+            echo "::error::Secret RELEASE_KEYSTORE_B64 is missing. Create a repository secret with exactly that name; its value is the single long line from SIGNING-KIT.txt."
+            ok=0
+          fi
+          if [ -z "$KS_PASS" ]; then
+            echo "::error::Secret RELEASE_KEYSTORE_PASSWORD is missing. Create a repository secret with exactly that name; its value is the password from SIGNING-KIT.txt."
+            ok=0
+          fi
+          [ "$ok" = 1 ] || exit 1
+          if ! printf '%s' "$KS_B64" | base64 -d > "$RUNNER_TEMP/ks" 2>/dev/null; then
+            echo "::error::RELEASE_KEYSTORE_B64 exists but is not valid base64 — re-paste the long line from SIGNING-KIT.txt, whole and unmodified."
+            exit 1
+          fi
+          if ! keytool -list -keystore "$RUNNER_TEMP/ks" -storepass "$KS_PASS" > /dev/null 2>&1; then
+            echo "::error::The keystore decodes but the password does not open it — re-paste RELEASE_KEYSTORE_PASSWORD exactly as written in SIGNING-KIT.txt."
+            exit 1
+          fi
+          echo "Both secrets are present and correct: the keystore opens. Releases will be signed with the private key."
