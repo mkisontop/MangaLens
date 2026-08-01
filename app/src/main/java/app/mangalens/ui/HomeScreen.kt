@@ -60,6 +60,8 @@ import app.mangalens.settings.SourceLang
 import app.mangalens.translate.GoogleFreeEngine
 import app.mangalens.translate.LlmEngine
 import app.mangalens.translate.MlKitEngine
+import app.mangalens.translate.ModelCatalog
+import app.mangalens.update.UpdateChecker
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
@@ -85,6 +87,14 @@ fun HomeScreen(
         }
     }
 
+    var update by remember { mutableStateOf<UpdateChecker.Update?>(null) }
+    LaunchedEffect(Unit) {
+        val installed = runCatching {
+            context.packageManager.getPackageInfo(context.packageName, 0).versionName
+        }.getOrNull()
+        if (installed != null) update = UpdateChecker.check(installed)
+    }
+
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
         Column(
             modifier = Modifier
@@ -96,6 +106,10 @@ fun HomeScreen(
             Spacer(Modifier.height(18.dp))
             StatusCard(running, overlayGranted, onStart, onStop, onGrantOverlay)
             Spacer(Modifier.height(14.dp))
+            update?.let {
+                UpdateCard(it)
+                Spacer(Modifier.height(14.dp))
+            }
             EngineCard(settings, repo)
             Spacer(Modifier.height(14.dp))
             ReadingCard(settings, repo)
@@ -280,6 +294,13 @@ private fun EngineCard(settings: AppSettings, repo: SettingsRepository) {
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
+                if (settings.provider == LlmProvider.GEMINI) {
+                    Spacer(Modifier.height(6.dp))
+                    GeminiModelRow(apiKey = settings.apiKey) { picked ->
+                        model = picked
+                        scope.launch { repo.setModel(picked) }
+                    }
+                }
                 if (settings.provider == LlmProvider.CUSTOM) {
                     Spacer(Modifier.height(8.dp))
                     var url by remember { mutableStateOf(settings.customUrl) }
@@ -520,6 +541,100 @@ private fun ReadingCard(settings: AppSettings, repo: SettingsRepository) {
                 { "${(it * 100).toInt()}%" },
             ) { scope.launch { repo.setIgnoreTopPct(it) } }
         }
+    }
+}
+
+/**
+ * Quiet update banner for a sideloaded app: one anonymous check per app open,
+ * a card only when a newer release exists, and a button that opens the
+ * release page — nothing downloads or installs on its own.
+ */
+@Composable
+private fun UpdateCard(update: UpdateChecker.Update) {
+    val uriHandler = LocalUriHandler.current
+    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
+        Row(
+            Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 16.dp, vertical = 12.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(Modifier.weight(1f)) {
+                Text("Update available", fontWeight = FontWeight.SemiBold)
+                Text(
+                    "MangaLens ${update.version} is out.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+            Spacer(Modifier.width(10.dp))
+            Button(onClick = { uriHandler.openUri(update.url) }) { Text("Get it") }
+        }
+    }
+}
+
+/**
+ * Fetches Google's live model list on demand and offers it as a menu — the
+ * newest Flash first — so the picker shows models released long after this
+ * build shipped. Manual typing in the field above always stays available.
+ */
+@Composable
+private fun GeminiModelRow(apiKey: String, onPick: (String) -> Unit) {
+    val scope = rememberCoroutineScope()
+    var open by remember { mutableStateOf(false) }
+    var loading by remember { mutableStateOf(false) }
+    var error by remember { mutableStateOf<String?>(null) }
+    var models by remember { mutableStateOf<List<ModelCatalog.LiveModel>>(emptyList()) }
+    Box {
+        OutlinedButton(
+            enabled = !loading,
+            onClick = {
+                if (apiKey.isBlank()) {
+                    error = "Paste your API key first — the list comes from your account."
+                    return@OutlinedButton
+                }
+                error = null
+                if (models.isNotEmpty()) {
+                    open = true
+                    return@OutlinedButton
+                }
+                loading = true
+                scope.launch {
+                    try {
+                        models = ModelCatalog.gemini(apiKey)
+                        open = models.isNotEmpty()
+                        if (models.isEmpty()) error = "Google returned no usable models."
+                    } catch (e: Exception) {
+                        error = "Couldn't fetch models: " + (e.message ?: "network error")
+                    } finally {
+                        loading = false
+                    }
+                }
+            }
+        ) { Text(if (loading) "Fetching live model list…" else "Choose from Google's live model list ▾") }
+        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
+            models.forEach { m ->
+                DropdownMenuItem(
+                    text = {
+                        Column {
+                            Text(m.label)
+                            Text(
+                                m.id,
+                                style = MaterialTheme.typography.bodySmall,
+                                color = MaterialTheme.colorScheme.onSurfaceVariant
+                            )
+                        }
+                    },
+                    onClick = {
+                        open = false
+                        onPick(m.id)
+                    }
+                )
+            }
+        }
+    }
+    error?.let {
+        Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
     }
 }
 
