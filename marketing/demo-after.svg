@@ -1,0 +1,15 @@
+<svg viewBox="0 0 420 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="The same panel with the bubbles re-lettered in English">
+          <rect width="420" height="300" fill="#f5f2ec"/>
+          <rect x="8" y="8" width="404" height="284" fill="none" stroke="#17181c" stroke-width="4"/>
+          <circle cx="140" cy="210" r="46" fill="#e8dccb"/>
+          <path d="M96 300 q44 -70 88 0 z" fill="#3b4252"/>
+          <path d="M104 190 q36 -52 72 0 q-10 -14 -36 -14 q-26 0 -36 14 z" fill="#17181c"/>
+          <ellipse cx="255" cy="82" rx="118" ry="52" fill="#fff" stroke="#17181c" stroke-width="4"/>
+          <path d="M195 124 l-26 30 l44 -16 z" fill="#fff" stroke="#17181c" stroke-width="4" stroke-linejoin="round"/>
+          <rect x="193" y="118" width="52" height="12" fill="#fff"/>
+          <text x="255" y="72" text-anchor="middle" font-family="'Comic Sans MS','Comic Neue',cursive" font-size="19" font-weight="700" fill="#17181c">IT'S OKAY.</text>
+          <text x="255" y="100" text-anchor="middle" font-family="'Comic Sans MS','Comic Neue',cursive" font-size="19" font-weight="700" fill="#17181c">I'LL PROTECT YOU.</text>
+          <ellipse cx="320" cy="222" rx="74" ry="38" fill="#fff" stroke="#17181c" stroke-width="4"/>
+          <text x="320" y="216" text-anchor="middle" font-family="'Comic Sans MS','Comic Neue',cursive" font-size="15" font-weight="700" fill="#17181c">…THANKS,</text>
+          <text x="320" y="238" text-anchor="middle" font-family="'Comic Sans MS','Comic Neue',cursive" font-size="15" font-weight="700" fill="#17181c">HYUNG.</text>
+        </svg>

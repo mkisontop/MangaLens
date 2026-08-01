@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MangaLens — live manhwa &amp; manga translation on Android</title>
+<meta name="description" content="MangaLens watches your screen, finds the speech bubbles, and re-letters them in English — like a human scanlation, live, in any app.">
+<style>
+  :root {
+    --bg: #0e0f13;
+    --panel: #16181f;
+    --panel-2: #1c1f28;
+    --ink: #e9eaf0;
+    --muted: #9aa0b0;
+    --accent: #ff5c7a;
+    --accent-2: #6ea8ff;
+    --line: #2a2e3a;
+  }
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    line-height: 1.6;
+  }
+  a { color: var(--accent-2); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .wrap { max-width: 980px; margin: 0 auto; padding: 0 20px; }
+
+  header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 18px 0;
+  }
+  .logo { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px; color: var(--ink); }
+  .logo .badge {
+    width: 38px; height: 38px; border-radius: 50%;
+    background: var(--accent);
+    display: grid; place-items: center;
+    color: #fff; font-size: 15px; font-weight: 800;
+  }
+  nav a { color: var(--muted); margin-left: 18px; font-size: 14px; }
+
+  .hero { text-align: center; padding: 44px 0 10px; }
+  .hero h1 {
+    font-size: clamp(30px, 5.4vw, 52px);
+    line-height: 1.12; letter-spacing: -0.02em;
+    margin-bottom: 14px;
+  }
+  .hero h1 em { font-style: normal; color: var(--accent); }
+  .hero p.sub {
+    color: var(--muted); font-size: clamp(15px, 2.2vw, 18px);
+    max-width: 640px; margin: 0 auto 26px;
+  }
+  .cta { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-bottom: 8px; }
+  .btn {
+    display: inline-block; padding: 13px 26px; border-radius: 12px;
+    font-weight: 700; font-size: 15px;
+  }
+  .btn.primary { background: var(--accent); color: #fff; }
+  .btn.primary:hover { text-decoration: none; filter: brightness(1.08); }
+  .btn.ghost { border: 1px solid var(--line); color: var(--ink); }
+  .btn.ghost:hover { text-decoration: none; border-color: var(--muted); }
+  .cta-note { color: var(--muted); font-size: 13px; margin-bottom: 8px; }
+
+  .demo {
+    display: grid; grid-template-columns: 1fr 1fr; gap: 18px;
+    align-items: center; margin: 34px 0 8px;
+  }
+  .demo figure { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 14px; }
+  .demo figcaption { color: var(--muted); font-size: 13px; padding-top: 10px; text-align: center; }
+  .demo svg { width: 100%; height: auto; display: block; border-radius: 8px; }
+  @media (max-width: 640px) { .demo { grid-template-columns: 1fr; } }
+
+  section { padding: 44px 0 6px; }
+  h2 { font-size: 24px; margin-bottom: 18px; letter-spacing: -0.01em; }
+  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
+  @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
+  .card {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 14px; padding: 18px;
+  }
+  .card h3 { font-size: 15.5px; margin-bottom: 6px; }
+  .card p { color: var(--muted); font-size: 14px; }
+  .card .k { color: var(--accent); font-weight: 800; margin-right: 6px; }
+
+  ol.steps { counter-reset: s; list-style: none; display: grid; gap: 12px; }
+  ol.steps li {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
+    padding: 16px 18px 16px 58px; position: relative; color: var(--muted); font-size: 14.5px;
+  }
+  ol.steps li strong { color: var(--ink); }
+  ol.steps li::before {
+    counter-increment: s; content: counter(s);
+    position: absolute; left: 16px; top: 50%; transform: translateY(-50%);
+    width: 28px; height: 28px; border-radius: 50%;
+    background: var(--panel-2); border: 1px solid var(--line);
+    display: grid; place-items: center; font-weight: 700; font-size: 13px; color: var(--accent);
+  }
+
+  details {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: 12px; padding: 14px 18px; margin-bottom: 10px;
+  }
+  details summary { cursor: pointer; font-weight: 600; font-size: 14.5px; }
+  details p { color: var(--muted); font-size: 14px; padding-top: 8px; }
+
+  footer {
+    border-top: 1px solid var(--line); margin-top: 54px;
+    padding: 26px 0 40px; color: var(--muted); font-size: 13.5px;
+  }
+  footer .heart { color: var(--accent); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="logo"><span class="badge">文A</span> MangaLens</div>
+    <nav>
+      <a href="#how">How it works</a>
+      <a href="#install">Install</a>
+      <a href="#faq">FAQ</a>
+      <a href="https://github.com/mkisontop/mangalens">GitHub</a>
+    </nav>
+  </header>
+
+  <div class="hero">
+    <h1>Read raws like they were<br><em>translated all along.</em></h1>
+    <p class="sub">
+      MangaLens watches your screen while you read manhwa, manga or manhua in any
+      app, finds the speech bubbles, wipes them clean and re-letters them in
+      English — live, hands-free, like a human scanlation.
+    </p>
+    <div class="cta">
+      <a class="btn primary" href="https://github.com/mkisontop/mangalens/releases/latest/download/MangaLens.apk">⤓ Download for Android</a>
+      <a class="btn ghost" href="https://github.com/mkisontop/mangalens/releases/latest">All releases &amp; checksums</a>
+    </div>
+    <div class="cta-note">Free &amp; open source · Android 8.0+ · no account, no ads, no tracking</div>
+
+    <div class="demo">
+      <figure>
+        <svg viewBox="0 0 420 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A manhwa panel with Korean speech bubbles">
+          <rect width="420" height="300" fill="#f5f2ec"/>
+          <rect x="8" y="8" width="404" height="284" fill="none" stroke="#17181c" stroke-width="4"/>
+          <circle cx="140" cy="210" r="46" fill="#e8dccb"/>
+          <path d="M96 300 q44 -70 88 0 z" fill="#3b4252"/>
+          <path d="M104 190 q36 -52 72 0 q-10 -14 -36 -14 q-26 0 -36 14 z" fill="#17181c"/>
+          <ellipse cx="255" cy="82" rx="118" ry="52" fill="#fff" stroke="#17181c" stroke-width="4"/>
+          <path d="M195 124 l-26 30 l44 -16 z" fill="#fff" stroke="#17181c" stroke-width="4" stroke-linejoin="round"/>
+          <rect x="193" y="118" width="52" height="12" fill="#fff"/>
+          <text x="255" y="76" text-anchor="middle" font-family="'Noto Sans KR','Malgun Gothic',sans-serif" font-size="26" font-weight="700" fill="#17181c">괜찮아.</text>
+          <text x="255" y="106" text-anchor="middle" font-family="'Noto Sans KR','Malgun Gothic',sans-serif" font-size="26" font-weight="700" fill="#17181c">내가 지켜줄게.</text>
+          <ellipse cx="320" cy="222" rx="74" ry="38" fill="#fff" stroke="#17181c" stroke-width="4"/>
+          <text x="320" y="218" text-anchor="middle" font-family="'Noto Sans KR','Malgun Gothic',sans-serif" font-size="22" font-weight="700" fill="#17181c">…형.</text>
+          <text x="320" y="242" text-anchor="middle" font-family="'Noto Sans KR','Malgun Gothic',sans-serif" font-size="22" font-weight="700" fill="#17181c">고마워.</text>
+        </svg>
+        <figcaption>What's on screen</figcaption>
+      </figure>
+      <figure>
+        <svg viewBox="0 0 420 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="The same panel with the bubbles re-lettered in English">
+          <rect width="420" height="300" fill="#f5f2ec"/>
+          <rect x="8" y="8" width="404" height="284" fill="none" stroke="#17181c" stroke-width="4"/>
+          <circle cx="140" cy="210" r="46" fill="#e8dccb"/>
+          <path d="M96 300 q44 -70 88 0 z" fill="#3b4252"/>
+          <path d="M104 190 q36 -52 72 0 q-10 -14 -36 -14 q-26 0 -36 14 z" fill="#17181c"/>
+          <ellipse cx="255" cy="82" rx="118" ry="52" fill="#fff" stroke="#17181c" stroke-width="4"/>
+          <path d="M195 124 l-26 30 l44 -16 z" fill="#fff" stroke="#17181c" stroke-width="4" stroke-linejoin="round"/>
+          <rect x="193" y="118" width="52" height="12" fill="#fff"/>
+          <text x="255" y="72" text-anchor="middle" font-family="'Comic Sans MS','Comic Neue',cursive" font-size="19" font-weight="700" fill="#17181c">IT'S OKAY.</text>
+          <text x="255" y="100" text-anchor="middle" font-family="'Comic Sans MS','Comic Neue',cursive" font-size="19" font-weight="700" fill="#17181c">I'LL PROTECT YOU.</text>
+          <ellipse cx="320" cy="222" rx="74" ry="38" fill="#fff" stroke="#17181c" stroke-width="4"/>
+          <text x="320" y="216" text-anchor="middle" font-family="'Comic Sans MS','Comic Neue',cursive" font-size="15" font-weight="700" fill="#17181c">…THANKS,</text>
+          <text x="320" y="238" text-anchor="middle" font-family="'Comic Sans MS','Comic Neue',cursive" font-size="15" font-weight="700" fill="#17181c">HYUNG.</text>
+        </svg>
+        <figcaption>What you read — cleaned and re-lettered, live</figcaption>
+      </figure>
+    </div>
+  </div>
+
+  <section id="how">
+    <h2>How it works</h2>
+    <ol class="steps">
+      <li><strong>Start MangaLens</strong> and allow screen capture. A small floating 文A button appears — tap it any time to toggle translation.</li>
+      <li><strong>Read normally</strong> in Brave, Chrome, or any reader app. When you stop scrolling for a third of a second, MangaLens finds the speech bubbles <em>in the pixels</em> — round ones, spiky shout bubbles, black narration boxes, tinted pastel ones.</li>
+      <li><strong>The bubbles become English.</strong> Each balloon is wiped to its own paper color through its exact detected shape and re-lettered in comic type with a letterer's line taper. Scroll on and overlays clear instantly; pages you've read re-paint from cache at no cost.</li>
+    </ol>
+  </section>
+
+  <section>
+    <h2>Why it feels different</h2>
+    <div class="grid">
+      <div class="card"><h3><span class="k">◐</span>Cleaned, not covered</h3><p>No translucent boxes floating over text. The original lettering is gone — wiped through the balloon's own detected mask — and the English is typeset in its place.</p></div>
+      <div class="card"><h3><span class="k">⚡</span>Live &amp; hands-free</h3><p>No screenshotting, no share-menu, no cropping. Stop scrolling and the page translates itself; scroll and it gets out of your way.</p></div>
+      <div class="card"><h3><span class="k">🔒</span>Private by default</h3><p>Capture and OCR run entirely on your device. The free engine sends only bubble text. Optional AI Vision sends the page image — only to the provider you chose.</p></div>
+      <div class="card"><h3><span class="k">✨</span>AI Pro, your key</h3><p>Bring a free Google AI Studio key and the AI reads whole pages with story memory, a persistent name glossary, honorifics and natural tone. A live model picker always offers Google's newest Flash models.</p></div>
+      <div class="card"><h3><span class="k">🧠</span>Remembers the story</h3><p>Character names, pronouns and running jokes stay consistent across pages, chapters and restarts — scoped per series, so stories never contaminate each other.</p></div>
+      <div class="card"><h3><span class="k">🌏</span>KO · JA · ZH → EN</h3><p>Korean webtoons, vertical Japanese, simplified and traditional Chinese — plus raws that are secretly Spanish or English uploads. It reads what's actually on the page.</p></div>
+    </div>
+  </section>
+
+  <section id="install">
+    <h2>Install in two minutes</h2>
+    <ol class="steps">
+      <li><strong>Download <a href="https://github.com/mkisontop/mangalens/releases/latest/download/MangaLens.apk">MangaLens.apk</a></strong> on your Android phone or tablet.</li>
+      <li><strong>Open the file.</strong> Android will ask you to allow installs from your browser — that's the standard prompt for any app outside the Play Store. MangaLens is open source; you can read every line <a href="https://github.com/mkisontop/mangalens">on GitHub</a> or verify the download against the release checksums.</li>
+      <li><strong>Open MangaLens</strong> → grant "Display over other apps" → Start translating. The app checks for new versions by itself and offers them in-app.</li>
+    </ol>
+  </section>
+
+  <section id="faq">
+    <h2>FAQ</h2>
+    <details><summary>Is it really free?</summary><p>Yes. The default Google engine and the offline engine cost nothing and need no account. AI Pro mode uses your own API key — Google AI Studio keys have a free tier that's plenty for reading.</p></details>
+    <details><summary>Does my reading leave my device?</summary><p>Screen capture and OCR are 100% on-device. The free engine sends bubble text only; AI Vision mode sends the page image to the AI provider you picked, and nowhere else. No analytics, no tracking, no account.</p></details>
+    <details><summary>Which apps does it work with?</summary><p>Any app that shows a page — browsers, reader apps, galleries. Private/incognito tabs block screen capture by design (the capture shows black), so use a normal tab.</p></details>
+    <details><summary>Overlays don't appear?</summary><p>Check that "Display over other apps" is granted, and that you're not in a private tab. The in-app Diagnostics toggle shows exactly what was detected if something looks off.</p></details>
+    <details><summary>Battery?</summary><p>Use "Tap to translate" mode — capture idles until you tap the floating button.</p></details>
+  </section>
+
+  <footer>
+    <p>MangaLens is a reading-accessibility tool for content you already have access to.
+    When an official English release exists, buy it — translators and artists deserve it. <span class="heart">♥</span></p>
+    <p style="margin-top:10px">
+      <a href="https://github.com/mkisontop/mangalens">Source (MIT)</a> ·
+      <a href="https://github.com/mkisontop/mangalens/releases">Releases</a> ·
+      <a href="https://github.com/mkisontop/mangalens/issues">Report a problem</a>
+    </p>
+  </footer>
+
+</div>
+</body>
+</html>

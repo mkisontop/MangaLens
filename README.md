@@ -1,11 +1,20 @@
 # MangaLens 文A
 
+[![build](https://github.com/mkisontop/mangalens/actions/workflows/build.yml/badge.svg)](https://github.com/mkisontop/mangalens/actions/workflows/build.yml)
+[![release](https://img.shields.io/github/v/release/mkisontop/mangalens?label=release)](https://github.com/mkisontop/mangalens/releases/latest)
+[![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+
 **Live on-screen translation for raw manhwa, manga and manhua on Android.**
 
 Read raws in Brave (or any app). MangaLens watches your screen, finds the speech
 bubbles, OCRs the Korean / Japanese / Chinese text on-device, translates it to
 natural English, and paints clean patches right over the bubbles — hands-free.
 Scroll and they vanish; stop and the next page translates itself.
+
+**[⤓ Download the latest APK](https://github.com/mkisontop/mangalens/releases/latest/download/MangaLens.apk)**
+· [website](https://mkisontop.github.io/mangalens/)
+· [all releases](https://github.com/mkisontop/mangalens/releases)
+· [changelog](CHANGELOG.md)
 
 ## How it feels
 
@@ -24,17 +33,23 @@ now, pause, peek at the original art, tap-to-translate mode, settings, stop).
 
 ## Install
 
-1. Grab the APK: from the repo's **Releases** page, from the newest **build**
-   run under the Actions tab, or from `dist/MangaLens-debug.apk` if committed.
-2. Open it on your tablet → allow installing from unknown sources.
+1. Download **[MangaLens.apk](https://github.com/mkisontop/mangalens/releases/latest/download/MangaLens.apk)**
+   — that link always serves the newest release. Every release ships a
+   `checksums.txt` if you want to verify the download.
+2. Open it on your phone or tablet → allow installing from unknown sources
+   (Android's standard prompt for apps outside the Play Store).
 3. Open MangaLens → grant "Display over other apps" → Start.
+
+Updating is automatic-ish: the app makes one anonymous check against this
+repository's latest release when you open it, and shows a small banner when a
+newer version exists. Nothing downloads without your tap.
 
 ## Translation engines
 
 | Engine | Quality | Speed | Setup | Notes |
 |---|---|---|---|---|
 | **Free · Google** *(default)* | ★★★☆ | fast | none | Whole page in one batched request for cross-line context; junk-gated so OCR noise is never rendered. |
-| **AI Pro ✨** | ★★★★★ | instant draft, polish in ~2–5 s | API key | The scanlation-grade mode. A fast draft paints immediately, then the AI result replaces it in place — slow internet never blocks reading. **AI Vision** sends the raw page image so the model reads vertical Japanese and stylized lettering itself (Auto: only where on-device OCR struggles; Korean webtoons use tiny text-only requests). Rolling story context + a **persistent glossary** keep names, honorifics and running jokes consistent forever. Claude (Anthropic) recommended; OpenAI, Gemini, OpenRouter and any OpenAI-compatible endpoint work. **Gemini has a free tier** (aistudio.google.com/apikey — the app links you there). Falls back to Google automatically. |
+| **AI Pro ✨** | ★★★★★ | instant draft, polish in ~2–5 s | API key | The scanlation-grade mode. A fast draft paints immediately, then the AI result replaces it in place — slow internet never blocks reading. **AI Vision** sends the raw page image so the model reads vertical Japanese and stylized lettering itself (Auto: only where on-device OCR struggles; Korean webtoons use tiny text-only requests). Rolling story context + a **persistent glossary** keep names, honorifics and running jokes consistent forever. Claude (Anthropic) recommended; OpenAI, Gemini, OpenRouter and any OpenAI-compatible endpoint work. **Gemini has a free tier** (aistudio.google.com/apikey — the app links you there), and a one-tap picker fetches Google's **live model list** so the newest Flash models are always offered, no app update needed. Falls back to Google automatically. |
 | **Offline** | ★★☆☆ | fast | one-time ~30 MB model per language | ML Kit on-device translation. Works with zero network. |
 
 Privacy: in AI **text** mode only bubble text leaves the device; in AI
@@ -260,8 +275,15 @@ Key details:
 ```
 
 Requirements: JDK 17+, Android SDK 35. The committed `signing/debug.keystore`
-is intentional — it keeps sideloaded updates signature-compatible. It signs
-nothing distributed through any store; don't reuse it for anything real.
+is intentional — it keeps *debug* sideloads signature-compatible between
+builds. It signs nothing official; don't reuse it for anything real.
+
+Official releases are built by [the release workflow](.github/workflows/release.yml)
+when a `v*` tag is pushed, and signed with a private key that lives only in
+the repository's Actions secrets (`RELEASE_KEYSTORE_B64`,
+`RELEASE_KEYSTORE_PASSWORD`). A local `assembleRelease` without those
+environment variables falls back to the debug key, so anyone can still build
+and install every variant from source.
 
 ## FAQ
 
@@ -291,4 +313,5 @@ eat too.
 
 ## License
 
-[MIT](LICENSE)
+[MIT](LICENSE). The bundled Comic Neue fonts are under the
+[SIL Open Font License](FONTS-LICENSE-OFL.txt).
