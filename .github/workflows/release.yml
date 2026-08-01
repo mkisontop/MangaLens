@@ -1,12 +1,23 @@
 name: release
 
-# Pushing a tag like v0.9.1 builds, signs and publishes that version.
-# The permanent link to the newest APK never changes:
+# Three ways to cut a release, same result each way:
+#   - push a tag like v0.9.1,
+#   - push a branch named release/v0.9.1 (deleted again after publishing), or
+#   - run this workflow manually with the tag as input.
+# Whichever door is used, the release step creates the tag on the release
+# commit if it doesn't already exist. The permanent link to the newest APK
+# never changes:
 #   https://github.com/mkisontop/mangalens/releases/latest/download/MangaLens.apk
 
 on:
   push:
     tags: ["v*"]
+    branches: ["release/v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Release tag, e.g. v0.9.1"
+        required: true
 
 permissions:
   contents: write
@@ -47,9 +58,19 @@ jobs:
         run: ./gradlew --no-daemon :app:assembleRelease
 
       - name: Stage assets
+        env:
+          INPUT_TAG: ${{ inputs.tag }}
         run: |
-          VER="${GITHUB_REF_NAME#v}"
-          echo "VER=$VER" >> "$GITHUB_ENV"
+          if [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"
+          else
+            TAG="${GITHUB_REF_NAME#release/}"
+          fi
+          VER="${TAG#v}"
+          {
+            echo "TAG=$TAG"
+            echo "VER=$VER"
+          } >> "$GITHUB_ENV"
           cp app/build/outputs/apk/release/app-release.apk "MangaLens-$VER.apk"
           cp "MangaLens-$VER.apk" MangaLens.apk
           sha256sum "MangaLens-$VER.apk" MangaLens.apk > checksums.txt
@@ -59,7 +80,12 @@ jobs:
 
       - name: Publish release
         run: |
-          gh release create "$GITHUB_REF_NAME" \
+          gh release create "$TAG" \
             "MangaLens-$VER.apk" MangaLens.apk checksums.txt \
+            --target "$GITHUB_SHA" \
             --title "MangaLens $VER" \
             --notes-file "$RUNNER_TEMP/notes.md"
+
+      - name: Clean up release branch
+        if: startsWith(github.ref, 'refs/heads/release/')
+        run: git push origin --delete "$GITHUB_REF_NAME" || true
