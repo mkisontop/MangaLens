@@ -1,15 +1,18 @@
 name: release
 
-# Two ways to cut a release, same result either way:
-#   - push a tag like v0.9.1, or
-#   - run this workflow manually with the tag as input (the release step
-#     creates the tag on the release commit).
-# The permanent link to the newest APK never changes:
+# Three ways to cut a release, same result each way:
+#   - push a tag like v0.9.1,
+#   - push a branch named release/v0.9.1 (deleted again after publishing), or
+#   - run this workflow manually with the tag as input.
+# Whichever door is used, the release step creates the tag on the release
+# commit if it doesn't already exist. The permanent link to the newest APK
+# never changes:
 #   https://github.com/mkisontop/mangalens/releases/latest/download/MangaLens.apk
 
 on:
   push:
     tags: ["v*"]
+    branches: ["release/v*"]
   workflow_dispatch:
     inputs:
       tag:
@@ -58,7 +61,11 @@ jobs:
         env:
           INPUT_TAG: ${{ inputs.tag }}
         run: |
-          TAG="${INPUT_TAG:-$GITHUB_REF_NAME}"
+          if [ -n "$INPUT_TAG" ]; then
+            TAG="$INPUT_TAG"
+          else
+            TAG="${GITHUB_REF_NAME#release/}"
+          fi
           VER="${TAG#v}"
           {
             echo "TAG=$TAG"
@@ -78,3 +85,7 @@ jobs:
             --target "$GITHUB_SHA" \
             --title "MangaLens $VER" \
             --notes-file "$RUNNER_TEMP/notes.md"
+
+      - name: Clean up release branch
+        if: startsWith(github.ref, 'refs/heads/release/')
+        run: git push origin --delete "$GITHUB_REF_NAME" || true
