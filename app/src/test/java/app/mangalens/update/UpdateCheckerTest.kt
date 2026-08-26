@@ -50,4 +50,91 @@ class UpdateCheckerTest {
         assertFalse(UpdateChecker.isNewer("0.9.2", ""))
         assertFalse(UpdateChecker.isNewer("a.b.c", "0.9.1"))
     }
+
+    @Test
+    fun `private-signed installs download the primary apk directly`() {
+        val update = updateFor("0.9.2", 35, UpdateChecker.SigningTrack.RELEASE)!!
+
+        assertEquals("0.9.3", update.version)
+        assertEquals("https://download/primary", update.url)
+        assertFalse(update.legacyBridge)
+        assertFalse(update.requiresReinstall)
+    }
+
+    @Test
+    fun `debug-signed installs use the rotation bridge on Android 9 and newer`() {
+        val update = updateFor("0.9.1", 28, UpdateChecker.SigningTrack.LEGACY_DEBUG)!!
+
+        assertEquals("https://download/bridge", update.url)
+        assertTrue(update.legacyBridge)
+        assertFalse(update.requiresReinstall)
+    }
+
+    @Test
+    fun `debug-signed installs explain the Android 8 reinstall boundary`() {
+        val update = updateFor("0.9.1", 27, UpdateChecker.SigningTrack.LEGACY_DEBUG)!!
+
+        assertEquals("https://download/primary", update.url)
+        assertFalse(update.legacyBridge)
+        assertTrue(update.requiresReinstall)
+    }
+
+    @Test
+    fun `missing apk asset falls back to the release page`() {
+        val update = updateFor(
+            "0.9.2",
+            35,
+            UpdateChecker.SigningTrack.RELEASE,
+            emptyMap(),
+        )!!
+
+        assertEquals("https://github/release", update.url)
+    }
+
+    @Test
+    fun `debug signing track wins over a release-like version name`() {
+        val update = updateFor("9.9.8", 35, UpdateChecker.SigningTrack.LEGACY_DEBUG, latest = "9.9.9")!!
+
+        assertTrue(update.legacyBridge)
+        assertEquals("https://download/bridge", update.url)
+    }
+
+    @Test
+    fun `unknown signer never claims update compatibility`() {
+        val update = updateFor("0.9.2", 35, UpdateChecker.SigningTrack.UNKNOWN)!!
+
+        assertTrue(update.requiresReinstall)
+        assertFalse(update.legacyBridge)
+    }
+
+    @Test
+    fun `pinned certificate digests select their signing tracks`() {
+        assertEquals(
+            UpdateChecker.SigningTrack.RELEASE,
+            UpdateChecker.signingTrack("6BDE3720DC055D1F233970E4C038CB5955D816A6353C557AA59689742AB75AB6"),
+        )
+        assertEquals(
+            UpdateChecker.SigningTrack.LEGACY_DEBUG,
+            UpdateChecker.signingTrack("df0e8ef059da2b1bb121e49252a07c55e468fb4453a4fbb7d90263d3c7b7a344"),
+        )
+        assertEquals(UpdateChecker.SigningTrack.UNKNOWN, UpdateChecker.signingTrack("other"))
+    }
+
+    private fun updateFor(
+        currentVersion: String,
+        sdkInt: Int,
+        signingTrack: UpdateChecker.SigningTrack,
+        assets: Map<String, String> = mapOf(
+            "MangaLens.apk" to "https://download/primary",
+            "MangaLens-legacy-update.apk" to "https://download/bridge",
+        ),
+        latest: String = "0.9.3",
+    ) = UpdateChecker.updateForAssets(
+        latest = latest,
+        releaseUrl = "https://github/release",
+        currentVersion = currentVersion,
+        sdkInt = sdkInt,
+        signingTrack = signingTrack,
+        assets = assets,
+    )
 }

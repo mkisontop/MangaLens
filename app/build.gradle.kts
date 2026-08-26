@@ -12,8 +12,8 @@ android {
         applicationId = "app.mangalens"
         minSdk = 26
         targetSdk = 35
-        versionCode = 22
-        versionName = "0.9.2"
+        versionCode = 23
+        versionName = "0.9.3"
 
         ndk {
             // Every modern tablet is arm64; dropping the other ABIs takes the
@@ -31,23 +31,6 @@ android {
             keyAlias = "mangalens"
             keyPassword = "mangalens"
         }
-        // The private release key arrives via environment (CI decodes it from
-        // a repository secret). Without it, a local assembleRelease falls back
-        // to the debug key so development installs stay updatable.
-        create("release") {
-            val ks = System.getenv("MANGALENS_KEYSTORE")
-            if (ks != null) {
-                storeFile = file(ks)
-                storePassword = System.getenv("MANGALENS_KEYSTORE_PASSWORD")
-                keyAlias = System.getenv("MANGALENS_KEY_ALIAS") ?: "mangalens"
-                keyPassword = System.getenv("MANGALENS_KEYSTORE_PASSWORD")
-            } else {
-                storeFile = rootProject.file("signing/debug.keystore")
-                storePassword = "mangalens"
-                keyAlias = "mangalens"
-                keyPassword = "mangalens"
-            }
-        }
     }
 
     buildTypes {
@@ -56,7 +39,9 @@ android {
         }
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("release")
+            // Always leave this artifact unsigned. The release workflow
+            // validates the private keystore, zipaligns the APK, and signs it
+            // explicitly; a bare checkout can never impersonate a release.
         }
     }
 

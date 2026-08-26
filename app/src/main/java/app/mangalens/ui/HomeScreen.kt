@@ -1,5 +1,7 @@
 package app.mangalens.ui
 
+import android.os.Build
+
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -92,7 +94,13 @@ fun HomeScreen(
         val installed = runCatching {
             context.packageManager.getPackageInfo(context.packageName, 0).versionName
         }.getOrNull()
-        if (installed != null) update = UpdateChecker.check(installed)
+        if (installed != null) {
+            update = UpdateChecker.check(
+                currentVersion = installed,
+                sdkInt = Build.VERSION.SDK_INT,
+                signingTrack = UpdateChecker.installedSigningTrack(context),
+            )
+        }
     }
 
     Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
@@ -227,6 +235,29 @@ private fun EngineCard(settings: AppSettings, repo: SettingsRepository) {
     val scope = rememberCoroutineScope()
     var testResult by remember { mutableStateOf<String?>(null) }
     var testing by remember { mutableStateOf(false) }
+    var keyDraft by remember(settings.provider) { mutableStateOf(settings.apiKey) }
+    var keyEdited by remember(settings.provider) { mutableStateOf(false) }
+    var modelDraft by remember(settings.provider) { mutableStateOf(settings.model) }
+    var modelEdited by remember(settings.provider) { mutableStateOf(false) }
+    var customUrlDraft by remember { mutableStateOf(settings.customUrl) }
+    var customUrlEdited by remember { mutableStateOf(false) }
+
+    LaunchedEffect(settings.provider, settings.apiKey) {
+        // collectAsState starts with defaults. Accept the first real DataStore
+        // value, but never echo an older write over text being typed.
+        if (!keyEdited) keyDraft = settings.apiKey
+    }
+    LaunchedEffect(settings.provider, settings.model) {
+        if (!modelEdited) modelDraft = settings.model
+    }
+    LaunchedEffect(settings.customUrl) {
+        if (!customUrlEdited) customUrlDraft = settings.customUrl
+    }
+    val draftSettings = settings.copy(
+        apiKey = keyDraft.trim(),
+        model = modelDraft.trim(),
+        customUrl = customUrlDraft.trim(),
+    )
 
     Card(elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)) {
         Column(Modifier.padding(16.dp)) {
@@ -258,15 +289,16 @@ private fun EngineCard(settings: AppSettings, repo: SettingsRepository) {
                 Spacer(Modifier.height(12.dp))
                 ProviderPicker(settings, repo)
                 Spacer(Modifier.height(10.dp))
-                var key by remember(settings.provider) { mutableStateOf(settings.apiKey) }
-                var showKey by remember { mutableStateOf(false) }
+                var showKey by remember(settings.provider) { mutableStateOf(false) }
                 OutlinedTextField(
-                    value = key,
+                    value = keyDraft,
                     onValueChange = {
-                        key = it
-                        scope.launch { repo.setApiKey(it.trim()) }
+                        keyDraft = it
+                        keyEdited = true
+                        val provider = settings.provider
+                        scope.launch { repo.setApiKey(provider, it.trim()) }
                     },
-                    label = { Text("API key") },
+                    label = { Text(apiKeyLabel(settings.provider)) },
                     singleLine = true,
                     visualTransformation = if (showKey) VisualTransformation.None else PasswordVisualTransformation(),
                     keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
@@ -283,31 +315,34 @@ private fun EngineCard(settings: AppSettings, repo: SettingsRepository) {
                     modifier = Modifier.fillMaxWidth()
                 )
                 Spacer(Modifier.height(8.dp))
-                var model by remember(settings.provider) { mutableStateOf(settings.model) }
                 OutlinedTextField(
-                    value = model,
+                    value = modelDraft,
                     onValueChange = {
-                        model = it
-                        scope.launch { repo.setModel(it.trim()) }
+                        modelDraft = it
+                        modelEdited = true
+                        val provider = settings.provider
+                        scope.launch { repo.setModel(provider, it.trim()) }
                     },
-                    label = { Text("Model (blank = ${settings.copy(model = "").effectiveModel()})") },
+                    label = { Text("Model (blank = ${draftSettings.copy(model = "").effectiveModel()})") },
                     singleLine = true,
                     modifier = Modifier.fillMaxWidth()
                 )
                 if (settings.provider == LlmProvider.GEMINI) {
                     Spacer(Modifier.height(6.dp))
-                    GeminiModelRow(apiKey = settings.apiKey) { picked ->
-                        model = picked
-                        scope.launch { repo.setModel(picked) }
+                    GeminiModelRow(apiKey = keyDraft.trim()) { picked ->
+                        modelDraft = picked
+                        modelEdited = true
+                        val provider = settings.provider
+                        scope.launch { repo.setModel(provider, picked) }
                     }
                 }
                 if (settings.provider == LlmProvider.CUSTOM) {
                     Spacer(Modifier.height(8.dp))
-                    var url by remember { mutableStateOf(settings.customUrl) }
                     OutlinedTextField(
-                        value = url,
+                        value = customUrlDraft,
                         onValueChange = {
-                            url = it
+                            customUrlDraft = it
+                            customUrlEdited = true
                             scope.launch { repo.setCustomUrl(it.trim()) }
                         },
                         label = { Text("Chat-completions endpoint URL") },
@@ -357,26 +392,21 @@ private fun EngineCard(settings: AppSettings, repo: SettingsRepository) {
                 )
                 Spacer(Modifier.height(10.dp))
                 val uriHandler = LocalUriHandler.current
-                if (settings.provider == LlmProvider.GEMINI) {
+                val keyHelp = providerKeyHelp(settings.provider)
+                Text(
+                    keyHelp.message,
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                keyHelp.url?.let { url ->
                     Text(
-                        "Gemini is FREE (no card needed): create a key at aistudio.google.com/apikey, paste it above. Takes ~2 minutes.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                    Text(
-                        "Open aistudio.google.com/apikey →",
+                        keyHelp.linkLabel,
                         modifier = Modifier
-                            .clickable { uriHandler.openUri("https://aistudio.google.com/apikey") }
+                            .clickable { uriHandler.openUri(url) }
                             .padding(vertical = 4.dp),
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.primary,
                         fontWeight = FontWeight.SemiBold
-                    )
-                } else {
-                    Text(
-                        "Claude key → console.anthropic.com · No key yet? Pick Google Gemini — it has a free tier.",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
                     )
                 }
             }
@@ -392,7 +422,7 @@ private fun EngineCard(settings: AppSettings, repo: SettingsRepository) {
                             testResult = try {
                                 val sample = listOf("괜찮아. 내가 지켜줄게.")
                                 val out = when (settings.engine) {
-                                    EngineKind.LLM -> LlmEngine(settings).translate(sample, SourceLang.KO)
+                                    EngineKind.LLM -> LlmEngine(draftSettings).translate(sample, SourceLang.KO)
                                     EngineKind.MLKIT -> MlKitEngine().translate(sample, SourceLang.KO)
                                     EngineKind.GOOGLE -> GoogleFreeEngine().translate(sample, SourceLang.KO)
                                 }
@@ -540,8 +570,9 @@ private fun ReadingCard(settings: AppSettings, repo: SettingsRepository) {
 
 /**
  * Quiet update banner for a sideloaded app: one anonymous check per app open,
- * a card only when a newer release exists, and a button that opens the
- * release page — nothing downloads or installs on its own.
+ * a card only when a newer release exists, and a button that opens the exact
+ * APK asset for this install's signing history. The browser still owns the
+ * download and Android still asks the user before installing it.
  */
 @Composable
 private fun UpdateCard(update: UpdateChecker.Update) {
@@ -556,15 +587,59 @@ private fun UpdateCard(update: UpdateChecker.Update) {
             Column(Modifier.weight(1f)) {
                 Text("Update available", fontWeight = FontWeight.SemiBold)
                 Text(
-                    "MangaLens ${update.version} is out.",
+                    when {
+                        update.requiresReinstall ->
+                            "MangaLens ${update.version} is out, but this installation cannot join the official signing key in place. Record any API keys, download the APK, uninstall MangaLens, then install it. API keys will be cleared."
+                        update.legacyBridge ->
+                            "MangaLens ${update.version} is out. This one-time compatible APK keeps your data while moving 0.9.1 to the private release key."
+                        else -> "MangaLens ${update.version} is out."
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )
             }
             Spacer(Modifier.width(10.dp))
-            Button(onClick = { uriHandler.openUri(update.url) }) { Text("Get it") }
+            Button(onClick = { uriHandler.openUri(update.url) }) {
+                Text(if (update.requiresReinstall) "Download" else "Download APK")
+            }
         }
     }
+}
+
+private data class ProviderKeyHelp(val message: String, val linkLabel: String = "", val url: String? = null)
+
+private fun apiKeyLabel(provider: LlmProvider): String = when (provider) {
+    LlmProvider.ANTHROPIC -> "Anthropic API key"
+    LlmProvider.OPENAI -> "OpenAI API key"
+    LlmProvider.GEMINI -> "Gemini API key"
+    LlmProvider.OPENROUTER -> "OpenRouter API key"
+    LlmProvider.CUSTOM -> "Bearer token (optional)"
+}
+
+private fun providerKeyHelp(provider: LlmProvider): ProviderKeyHelp = when (provider) {
+    LlmProvider.ANTHROPIC -> ProviderKeyHelp(
+        "This key is saved only for Anthropic.",
+        "Create an Anthropic key →",
+        "https://console.anthropic.com/settings/keys",
+    )
+    LlmProvider.OPENAI -> ProviderKeyHelp(
+        "This key is saved only for OpenAI.",
+        "Create an OpenAI key →",
+        "https://platform.openai.com/api-keys",
+    )
+    LlmProvider.GEMINI -> ProviderKeyHelp(
+        "Gemini has a free tier (no card needed). This key is saved only for Gemini.",
+        "Create a Gemini key →",
+        "https://aistudio.google.com/apikey",
+    )
+    LlmProvider.OPENROUTER -> ProviderKeyHelp(
+        "Paste your OpenRouter key here. It stays separate from your Anthropic, OpenAI and Gemini keys.",
+        "Create or choose an OpenRouter key →",
+        "https://openrouter.ai/settings/keys",
+    )
+    LlmProvider.CUSTOM -> ProviderKeyHelp(
+        "Optional bearer token for this custom endpoint. For safety, old shared keys are not migrated here; enter the token intended for this URL.",
+    )
 }
 
 /**

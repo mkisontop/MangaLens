@@ -16,6 +16,9 @@ Scroll and they vanish; stop and the next page translates itself.
 · [all releases](https://github.com/mkisontop/mangalens/releases)
 · [changelog](CHANGELOG.md)
 
+Still on 0.9.1? Follow the [one-time update instructions](#one-time-update-from-091)
+instead of using the normal APK.
+
 ## How it feels
 
 1. Tap **Start translating** → allow screen capture.
@@ -44,6 +47,27 @@ Updating is automatic-ish: the app makes one anonymous check against this
 repository's latest release when you open it, and shows a small banner when a
 newer version exists. Nothing downloads without your tap.
 
+### One-time update from 0.9.1
+
+The published 0.9.1 APK was accidentally signed with the project's public
+debug key; 0.9.2 and normal releases use the private release key. Android
+correctly refuses to replace an installed app with one carrying an unrelated
+signature.
+
+- **Android 9 or newer, with 0.9.1 installed:** install
+  **[MangaLens-legacy-update.apk](https://github.com/mkisontop/mangalens/releases/latest/download/MangaLens-legacy-update.apk)**
+  once. It carries Android's signed debug→release key lineage, updates in
+  place without clearing MangaLens data, and moves the installation onto the
+  private release key. Use the normal `MangaLens.apk` for every update after
+  that.
+- **Already on 0.9.2 or newer:** use the normal `MangaLens.apk`; do not use the
+  legacy bridge.
+- **Android 8 or 8.1:** key rotation is unavailable. Record any API key or
+  settings you need, uninstall MangaLens, then install the normal
+  `MangaLens.apk`. Do not use the legacy bridge: Android 8 may accept its old
+  signature, but cannot move the installation onto the private key. This one
+  reinstall is required to join the private-key update line.
+
 ## Translation engines
 
 | Engine | Quality | Speed | Setup | Notes |
@@ -55,7 +79,12 @@ newer version exists. Nothing downloads without your tap.
 Privacy: in AI **text** mode only bubble text leaves the device; in AI
 **Vision** mode the page image goes to the provider you chose — and nowhere
 else. The free and offline engines never send an image anywhere. Screen
-capture and OCR always run on-device.
+capture and OCR always run on-device. Each AI provider has its own API-key and
+model setting; switching providers never reuses one provider's credential with
+another. OpenRouter has a dedicated key field and an in-app link to
+`openrouter.ai/settings/keys`. API keys live in Android's no-backup storage;
+ordinary preferences can transfer to a new device, but credentials must be
+entered again.
 
 ## How it works
 
@@ -281,9 +310,14 @@ builds. It signs nothing official; don't reuse it for anything real.
 Official releases are built by [the release workflow](.github/workflows/release.yml)
 when a `v*` tag is pushed, and signed with a private key that lives only in
 the repository's Actions secrets (`RELEASE_KEYSTORE_B64`,
-`RELEASE_KEYSTORE_PASSWORD`). A local `assembleRelease` without those
-environment variables falls back to the debug key, so anyone can still build
-and install every variant from source.
+`RELEASE_KEYSTORE_PASSWORD`). The workflow refuses to publish if the secrets,
+keystore password, key alias, or pinned release certificate do not match.
+
+A local `./gradlew :app:assembleRelease` deliberately creates
+`app-release-unsigned.apk`. Use `assembleDebug` for a directly installable
+development build; official APKs can only be signed in CI. The separately
+named `MangaLens-legacy-update.apk` is a one-time Android 9+ migration artifact,
+not the normal download.
 
 ## FAQ
 

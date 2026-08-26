@@ -1,13 +1,13 @@
 name: release
 
 # Three ways to cut a release, same result each way:
-#   - push a tag like v0.9.1,
-#   - push a branch named release/v0.9.1 (deleted again after publishing), or
+#   - push a tag like v0.9.3,
+#   - push a branch named release/v0.9.3 (deleted again after publishing), or
 #   - run this workflow manually with the tag as input.
 # Whichever door is used, the release step creates the tag on the release
-# commit if it doesn't already exist. The permanent link to the newest APK
-# never changes:
+# commit if it doesn't already exist. The permanent links are:
 #   https://github.com/mkisontop/mangalens/releases/latest/download/MangaLens.apk
+#   https://github.com/mkisontop/mangalens/releases/latest/download/MangaLens-legacy-update.apk
 
 on:
   push:
@@ -16,7 +16,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: "Release tag, e.g. v0.9.1"
+        description: "Release tag, e.g. v0.9.3"
         required: true
 
 permissions:
@@ -26,38 +26,21 @@ jobs:
   release:
     runs-on: ubuntu-latest
     env:
-      GH_TOKEN: ${{ github.token }}
+      RELEASE_KEY_ALIAS: mangalens
+      RELEASE_CERT_SHA256: 6bde3720dc055d1f233970e4c038cb5955d816a6353c557aa59689742ab75ab6
+      DEBUG_CERT_SHA256: df0e8ef059da2b1bb121e49252a07c55e468fb4453a4fbb7d90263d3c7b7a344
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
 
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      - name: Prepare signing
-        env:
-          KS_B64: ${{ secrets.RELEASE_KEYSTORE_B64 }}
-          KS_PASS: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
-        run: |
-          if [ -n "$KS_B64" ]; then
-            echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/release.keystore"
-            {
-              echo "MANGALENS_KEYSTORE=$RUNNER_TEMP/release.keystore"
-              echo "MANGALENS_KEYSTORE_PASSWORD=$KS_PASS"
-            } >> "$GITHUB_ENV"
-            echo "Signing with the private release key."
-          else
-            echo "::warning::RELEASE_KEYSTORE_B64 secret is not set — this release is signed with the public debug key. Add the secrets from the signing kit before announcing the app."
-          fi
-
-      - name: Unit tests
-        run: ./gradlew --no-daemon :app:testDebugUnitTest
-
-      - name: Build release APK
-        run: ./gradlew --no-daemon :app:assembleRelease
-
-      - name: Stage assets
+      - name: Resolve release metadata
         env:
           INPUT_TAG: ${{ inputs.tag }}
         run: |
@@ -66,26 +49,257 @@ jobs:
           else
             TAG="${GITHUB_REF_NAME#release/}"
           fi
+          if [[ ! "$TAG" =~ ^v[0-9]+(\.[0-9]+)+$ ]]; then
+            echo "::error::Release tag '$TAG' must look like v0.9.3."
+            exit 1
+          fi
           VER="${TAG#v}"
           {
             echo "TAG=$TAG"
             echo "VER=$VER"
           } >> "$GITHUB_ENV"
-          cp app/build/outputs/apk/release/app-release.apk "MangaLens-$VER.apk"
-          cp "MangaLens-$VER.apk" MangaLens.apk
-          sha256sum "MangaLens-$VER.apk" MangaLens.apk > checksums.txt
+          if git show-ref --verify --quiet "refs/tags/$TAG"; then
+            tagged_commit="$(git rev-list -n 1 "$TAG")"
+            if [ "$tagged_commit" != "$GITHUB_SHA" ]; then
+              echo "::error::Tag $TAG points to $tagged_commit, but this run checked out $GITHUB_SHA."
+              exit 1
+            fi
+          fi
+
+      - name: Unit tests
+        run: ./gradlew --no-daemon :app:testDebugUnitTest
+
+      - name: Build unsigned release APK
+        run: ./gradlew --no-daemon :app:assembleRelease
+
+      # Repository-controlled Gradle code runs before private key material is
+      # exposed to the runner. No build/test task runs after this step.
+      - name: Validate private signing key
+        env:
+          KS_B64: ${{ secrets.RELEASE_KEYSTORE_B64 }}
+          KS_PASS: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+        run: |
+          if [ -z "$KS_B64" ]; then
+            echo "::error::RELEASE_KEYSTORE_B64 is missing; refusing to create a release."
+            exit 1
+          fi
+          if [ -z "$KS_PASS" ]; then
+            echo "::error::RELEASE_KEYSTORE_PASSWORD is missing; refusing to create a release."
+            exit 1
+          fi
+          if ! printf '%s' "$KS_B64" | base64 --decode > "$RUNNER_TEMP/release.keystore"; then
+            echo "::error::RELEASE_KEYSTORE_B64 is not valid base64."
+            exit 1
+          fi
+          chmod 600 "$RUNNER_TEMP/release.keystore"
+          if ! keytool -list \
+            -keystore "$RUNNER_TEMP/release.keystore" \
+            -storepass "$KS_PASS" \
+            -alias "$RELEASE_KEY_ALIAS" > /dev/null 2>&1; then
+            echo "::error::The private keystore, password, or '$RELEASE_KEY_ALIAS' alias is invalid."
+            exit 1
+          fi
+          actual_cert="$({ keytool -exportcert \
+            -keystore "$RUNNER_TEMP/release.keystore" \
+            -storepass "$KS_PASS" \
+            -alias "$RELEASE_KEY_ALIAS" 2> /dev/null; } | sha256sum | awk '{print $1}')"
+          if [ "$actual_cert" != "$RELEASE_CERT_SHA256" ]; then
+            echo "::error::Private signing certificate changed: expected $RELEASE_CERT_SHA256, got $actual_cert."
+            exit 1
+          fi
+
+          debug_cert="$({ keytool -exportcert \
+            -keystore signing/debug.keystore \
+            -storepass mangalens \
+            -alias mangalens 2> /dev/null; } | sha256sum | awk '{print $1}')"
+          if [ "$debug_cert" != "$DEBUG_CERT_SHA256" ]; then
+            echo "::error::Legacy debug certificate changed: expected $DEBUG_CERT_SHA256, got $debug_cert."
+            exit 1
+          fi
+
+      - name: Align, sign, and verify release APKs
+        env:
+          KS_PASS: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
+        run: |
+          metadata="app/build/outputs/apk/release/output-metadata.json"
+          if [ ! -f "$metadata" ]; then
+            echo "::error::Gradle did not produce release output metadata."
+            exit 1
+          fi
+          built_version="$(jq -r '.elements[0].versionName' "$metadata")"
+          built_code="$(jq -r '.elements[0].versionCode' "$metadata")"
+          if [ "$built_version" != "$VER" ]; then
+            echo "::error::Tag $TAG does not match app version $built_version."
+            exit 1
+          fi
+          if [[ ! "$built_code" =~ ^[0-9]+$ ]]; then
+            echo "::error::Gradle produced an invalid version code: $built_code."
+            exit 1
+          fi
+          output_file="$(jq -r '.elements[0].outputFile' "$metadata")"
+          unsigned="app/build/outputs/apk/release/$output_file"
+          if [ ! -f "$unsigned" ]; then
+            echo "::error::Unsigned release APK is missing: $unsigned"
+            exit 1
+          fi
+
+          build_tools="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d -print | sort -V | tail -n 1)"
+          apksigner="$build_tools/apksigner"
+          aapt="$build_tools/aapt"
+          zipalign="$build_tools/zipalign"
+          if [ ! -x "$apksigner" ] || [ ! -x "$aapt" ] || [ ! -x "$zipalign" ]; then
+            echo "::error::Android SDK build tools are unavailable under $ANDROID_HOME/build-tools."
+            exit 1
+          fi
+
+          previous="$RUNNER_TEMP/previous-release.apk"
+          if ! curl --fail --location --silent --show-error \
+            "https://github.com/mkisontop/mangalens/releases/latest/download/MangaLens.apk" \
+            --output "$previous"; then
+            echo "::error::Could not download the previous stable APK to validate versionCode."
+            exit 1
+          fi
+          previous_code="$("$aapt" dump badging "$previous" | sed -n "s/.*versionCode='\([0-9][0-9]*\)'.*/\1/p" | head -n 1)"
+          if [[ ! "$previous_code" =~ ^[0-9]+$ ]]; then
+            echo "::error::Could not read versionCode from the previous stable APK."
+            exit 1
+          fi
+          if [ "$built_code" -le "$previous_code" ]; then
+            echo "::error::versionCode must increase: previous=$previous_code, candidate=$built_code."
+            exit 1
+          fi
+          if "$apksigner" verify "$unsigned" > /dev/null 2>&1; then
+            echo "::error::Gradle release output was unexpectedly signed."
+            exit 1
+          fi
+
+          aligned="$RUNNER_TEMP/MangaLens-aligned.apk"
+          "$zipalign" -P 16 -f 4 "$unsigned" "$aligned"
+          "$zipalign" -c -P 16 -v 4 "$aligned"
+
+          primary="MangaLens-$VER.apk"
+          "$apksigner" sign \
+            --ks "$RUNNER_TEMP/release.keystore" \
+            --ks-key-alias "$RELEASE_KEY_ALIAS" \
+            --ks-pass env:KS_PASS \
+            --key-pass env:KS_PASS \
+            --v4-signing-enabled false \
+            --out "$primary" \
+            "$aligned"
+          primary_report="$("$apksigner" verify --verbose --print-certs "$primary")"
+          printf '%s\n' "$primary_report"
+          primary_cert="$(printf '%s\n' "$primary_report" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n 1 | tr 'A-F' 'a-f')"
+          if [ "$primary_cert" != "$RELEASE_CERT_SHA256" ]; then
+            echo "::error::Primary APK signer mismatch: expected $RELEASE_CERT_SHA256, got $primary_cert."
+            exit 1
+          fi
+
+          lineage="$RUNNER_TEMP/debug-to-release.lineage"
+          "$apksigner" rotate \
+            --out "$lineage" \
+            --old-signer \
+            --ks signing/debug.keystore \
+            --ks-key-alias mangalens \
+            --ks-pass pass:mangalens \
+            --key-pass pass:mangalens \
+            --set-installed-data true \
+            --set-shared-uid false \
+            --set-permission false \
+            --set-rollback false \
+            --set-auth false \
+            --new-signer \
+            --ks "$RUNNER_TEMP/release.keystore" \
+            --ks-key-alias "$RELEASE_KEY_ALIAS" \
+            --ks-pass env:KS_PASS \
+            --key-pass env:KS_PASS
+
+          legacy="MangaLens-$VER-legacy-update-android9plus.apk"
+          "$apksigner" sign \
+            --ks signing/debug.keystore \
+            --ks-key-alias mangalens \
+            --ks-pass pass:mangalens \
+            --key-pass pass:mangalens \
+            --next-signer \
+            --ks "$RUNNER_TEMP/release.keystore" \
+            --ks-key-alias "$RELEASE_KEY_ALIAS" \
+            --ks-pass env:KS_PASS \
+            --key-pass env:KS_PASS \
+            --lineage "$lineage" \
+            --rotation-min-sdk-version 28 \
+            --v4-signing-enabled false \
+            --out "$legacy" \
+            "$aligned"
+          legacy_old_report="$("$apksigner" verify \
+            --min-sdk-version 26 \
+            --max-sdk-version 27 \
+            --verbose \
+            --print-certs \
+            "$legacy")"
+          printf '%s\n' "$legacy_old_report"
+          legacy_old_cert="$(printf '%s\n' "$legacy_old_report" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n 1 | tr 'A-F' 'a-f')"
+          if [ "$legacy_old_cert" != "$DEBUG_CERT_SHA256" ]; then
+            echo "::error::Legacy bridge pre-rotation signer mismatch: expected $DEBUG_CERT_SHA256, got $legacy_old_cert."
+            exit 1
+          fi
+
+          legacy_new_report="$("$apksigner" verify \
+            --min-sdk-version 28 \
+            --verbose \
+            --print-certs \
+            "$legacy")"
+          printf '%s\n' "$legacy_new_report"
+          legacy_new_cert="$(printf '%s\n' "$legacy_new_report" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n 1 | tr 'A-F' 'a-f')"
+          if [ "$legacy_new_cert" != "$RELEASE_CERT_SHA256" ]; then
+            echo "::error::Legacy bridge rotated signer mismatch: expected $RELEASE_CERT_SHA256, got $legacy_new_cert."
+            exit 1
+          fi
+
+          lineage_report="$("$apksigner" lineage --in "$legacy" --print-certs -v)"
+          printf '%s\n' "$lineage_report"
+          lineage_old_cert="$(printf '%s\n' "$lineage_report" | sed -n 's/^Signer #1 in lineage certificate SHA-256 digest: //p')"
+          lineage_new_cert="$(printf '%s\n' "$lineage_report" | sed -n 's/^Signer #2 in lineage certificate SHA-256 digest: //p')"
+          if [ "$lineage_old_cert" != "$DEBUG_CERT_SHA256" ] || [ "$lineage_new_cert" != "$RELEASE_CERT_SHA256" ]; then
+            echo "::error::Legacy bridge does not contain the pinned debug-to-release lineage."
+            exit 1
+          fi
+          old_capabilities="$(printf '%s\n' "$lineage_report" | sed -n '/^Signer #1 in lineage /,/^Signer #2 in lineage /p')"
+          if ! printf '%s\n' "$old_capabilities" | grep -Eq '^Has installed data capability:[[:space:]]+true$' ||
+             ! printf '%s\n' "$old_capabilities" | grep -Eq '^Has shared UID capability[[:space:]]+:[[:space:]]+false$' ||
+             ! printf '%s\n' "$old_capabilities" | grep -Eq '^Has permission capability[[:space:]]+:[[:space:]]+false$' ||
+             ! printf '%s\n' "$old_capabilities" | grep -Eq '^Has rollback capability[[:space:]]+:[[:space:]]+false$' ||
+             ! printf '%s\n' "$old_capabilities" | grep -Eq '^Has auth capability[[:space:]]+:[[:space:]]+false$'; then
+            echo "::error::Legacy bridge lineage capabilities are unsafe or would not preserve installed data."
+            exit 1
+          fi
+
+          cp "$primary" MangaLens.apk
+          cp "$legacy" MangaLens-legacy-update.apk
+          sha256sum \
+            "$primary" \
+            MangaLens.apk \
+            "$legacy" \
+            MangaLens-legacy-update.apk > checksums.txt
+
           # Release notes = the top section of the changelog.
           awk '/^## /{n++} n==1' CHANGELOG.md > "$RUNNER_TEMP/notes.md"
           [ -s "$RUNNER_TEMP/notes.md" ] || echo "MangaLens $VER" > "$RUNNER_TEMP/notes.md"
 
       - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$TAG" \
-            "MangaLens-$VER.apk" MangaLens.apk checksums.txt \
+            "MangaLens-$VER.apk" \
+            MangaLens.apk \
+            "MangaLens-$VER-legacy-update-android9plus.apk" \
+            MangaLens-legacy-update.apk \
+            checksums.txt \
             --target "$GITHUB_SHA" \
             --title "MangaLens $VER" \
             --notes-file "$RUNNER_TEMP/notes.md"
 
       - name: Clean up release branch
         if: startsWith(github.ref, 'refs/heads/release/')
-        run: git push origin --delete "$GITHUB_REF_NAME" || true
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/heads/$GITHUB_REF_NAME" || true
