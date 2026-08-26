@@ -188,7 +188,7 @@ jobs:
             "$aligned"
           primary_report="$("$apksigner" verify --verbose --print-certs "$primary")"
           printf '%s\n' "$primary_report"
-          primary_cert="$(printf '%s\n' "$primary_report" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n 1 | tr 'A-F' 'a-f')"
+          primary_cert="$(printf '%s\n' "$primary_report" | sed -n 's/^.*certificate SHA-256 digest: //p' | tr 'A-F' 'a-f' | sort -u)"
           if [ "$primary_cert" != "$RELEASE_CERT_SHA256" ]; then
             echo "::error::Primary APK signer mismatch: expected $RELEASE_CERT_SHA256, got $primary_cert."
             exit 1
@@ -236,7 +236,7 @@ jobs:
             --print-certs \
             "$legacy")"
           printf '%s\n' "$legacy_old_report"
-          legacy_old_cert="$(printf '%s\n' "$legacy_old_report" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n 1 | tr 'A-F' 'a-f')"
+          legacy_old_cert="$(printf '%s\n' "$legacy_old_report" | sed -n 's/^.*certificate SHA-256 digest: //p' | tr 'A-F' 'a-f' | sort -u)"
           if [ "$legacy_old_cert" != "$DEBUG_CERT_SHA256" ]; then
             echo "::error::Legacy bridge pre-rotation signer mismatch: expected $DEBUG_CERT_SHA256, got $legacy_old_cert."
             exit 1
@@ -248,7 +248,7 @@ jobs:
             --print-certs \
             "$legacy")"
           printf '%s\n' "$legacy_new_report"
-          legacy_new_cert="$(printf '%s\n' "$legacy_new_report" | sed -n 's/^Signer #1 certificate SHA-256 digest: //p' | head -n 1 | tr 'A-F' 'a-f')"
+          legacy_new_cert="$(printf '%s\n' "$legacy_new_report" | sed -n 's/^.*certificate SHA-256 digest: //p' | tr 'A-F' 'a-f' | sort -u)"
           if [ "$legacy_new_cert" != "$RELEASE_CERT_SHA256" ]; then
             echo "::error::Legacy bridge rotated signer mismatch: expected $RELEASE_CERT_SHA256, got $legacy_new_cert."
             exit 1
@@ -256,8 +256,8 @@ jobs:
 
           lineage_report="$("$apksigner" lineage --in "$legacy" --print-certs -v)"
           printf '%s\n' "$lineage_report"
-          lineage_old_cert="$(printf '%s\n' "$lineage_report" | sed -n 's/^Signer #1 in lineage certificate SHA-256 digest: //p')"
-          lineage_new_cert="$(printf '%s\n' "$lineage_report" | sed -n 's/^Signer #2 in lineage certificate SHA-256 digest: //p')"
+          lineage_old_cert="$(printf '%s\n' "$lineage_report" | sed -n 's/^.*Signer #1 in lineage.*certificate SHA-256 digest: //p')"
+          lineage_new_cert="$(printf '%s\n' "$lineage_report" | sed -n 's/^.*Signer #2 in lineage.*certificate SHA-256 digest: //p')"
           if [ "$lineage_old_cert" != "$DEBUG_CERT_SHA256" ] || [ "$lineage_new_cert" != "$RELEASE_CERT_SHA256" ]; then
             echo "::error::Legacy bridge does not contain the pinned debug-to-release lineage."
             exit 1
