@@ -1,15 +1,22 @@
 # MangaLens preview build
 
-`MangaLens-realtime.apk` is the debug build of branch
-`claude/manga-lens-realtime-translation-bv8riz` at commit 0787e11
-(read-ahead analysis, streamed AI polish, resolution-robust balloon
-detection, panel-aware order, shape-aware typesetting, inpainted fills).
+Debug builds of branch `claude/manga-lens-realtime-translation-bv8riz`
+at commit 0787e11 (read-ahead analysis, streamed AI polish,
+resolution-robust balloon detection, panel-aware order, shape-aware
+typesetting, inpainted fills).
 
-Direct download:
-https://github.com/mkisontop/MangaLens/raw/apk-preview/MangaLens-realtime.apk
+Direct downloads:
 
-It is signed with the public debug key, so it cannot update a
+- Standard build, 41 MB:
+  https://raw.githubusercontent.com/mkisontop/MangaLens/apk-preview/MangaLens-realtime.apk
+- The same build inside a zip, 24 MB (open the zip, then install the APK):
+  https://raw.githubusercontent.com/mkisontop/MangaLens/apk-preview/MangaLens-realtime.zip
+- Compact build, 19 MB (code shrinker on, native libraries compressed;
+  same source, shrinking not covered by the test run):
+  https://raw.githubusercontent.com/mkisontop/MangaLens/apk-preview/MangaLens-realtime-compact.apk
+
+All are signed with the public debug key, so they cannot update a
 release-signed install: uninstall 0.9.3 first. Version name is still 0.9.3.
 
-This branch holds only this file. Delete it when the build is no longer
-needed and it leaves the repository's history.
+This branch holds only these files. Delete it when the build is no longer
+needed and they leave the repository's history.
