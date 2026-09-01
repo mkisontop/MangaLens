@@ -27,8 +27,13 @@ import app.mangalens.translate.TranslationCache
 import app.mangalens.translate.TranslationService
 import app.mangalens.translate.VisionLlmEngine
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -50,11 +55,6 @@ class TranslatePipeline(
     private val cast: CastBook? = null,
 ) {
 
-    private companion object {
-        /** Vision cache entry schema; older shapes are dropped, never guessed at. */
-        const val VISION_CACHE_VERSION = 2
-    }
-
     data class PageResult(
         val bubbles: List<RenderBubble>,
         val engineLabel: String,
@@ -64,15 +64,61 @@ class TranslatePipeline(
         val diag: String? = null,
         /** Balloons found in the page, outlined on screen when diagnostics are on. */
         val balloons: List<Rect> = emptyList(),
+        /** Panels read off the page, likewise. */
+        val panels: List<Rect> = emptyList(),
     )
+
+    /**
+     * Everything read off one frame before any translation happens: the
+     * OCR lines, the balloons and panels found in the pixels, and the
+     * regions they resolve into. Analysis has no side effects beyond the
+     * OCR engine's language pin, so it can run ahead of the moment the
+     * reader is known to have stopped — and be thrown away if they had not.
+     */
+    class Analysis internal constructor(
+        val bitmap: Bitmap,
+        internal val ocr: OcrEngine.Result,
+        internal val detected: List<Balloon>,
+        val panels: List<Rect>,
+        internal val bubbles: List<Bubble>,
+        internal val anchorLines: List<OcrLine>,
+        internal val ignoreTop: Int,
+        internal val ignoreBottom: Int,
+        internal val exclusions: List<Rect>,
+        internal val useVision: Boolean,
+        internal val diag: String?,
+    ) {
+        val balloons: List<Rect> get() = detected.map { it.box }
+    }
+
+    private companion object {
+        /** Vision cache entry schema; older shapes are dropped, never guessed at. */
+        const val VISION_CACHE_VERSION = 2
+
+        /** Balloons OCR read nothing in that get a second, enlarged look. */
+        const val MAX_REREAD = 6
+
+        /** Short side, in pixels, a re-read crop is enlarged toward. */
+        const val REREAD_SHORT_SIDE = 320f
+    }
 
     suspend fun process(
         bitmap: Bitmap,
         settings: AppSettings,
         exclusions: List<Rect> = emptyList(),
         onPartial: (suspend (PageResult) -> Unit)? = null,
-    ): PageResult {
-        val ocrResult = ocr.recognize(bitmap, settings.sourceLang)
+    ): PageResult = translate(analyze(bitmap, settings, exclusions), settings, onPartial)
+
+    /**
+     * Reads the page: balloons and panels from the pixels, lines from OCR,
+     * both at once since neither needs the other, then a second enlarged
+     * look at any balloon OCR read nothing in.
+     */
+    suspend fun analyze(
+        bitmap: Bitmap,
+        settings: AppSettings,
+        exclusions: List<Rect> = emptyList(),
+    ): Analysis = coroutineScope {
         val ignoreTop = (bitmap.height * settings.ignoreTopPct).toInt()
         val ignoreBottom = (bitmap.height * settings.ignoreBottomPct).toInt()
 
@@ -85,12 +131,34 @@ class TranslatePipeline(
         // page shows one — not because OCR happened to read something in it.
         // The detailed detections carry each balloon's interior mask, which
         // is what lets a card wipe the balloon clean instead of floating a
-        // patch over it.
-        val detected = BalloonFinder.findDetailed(bitmap, ignoreTop, ignoreBottom, exclusions)
+        // patch over it. Detection and OCR read the same frame and neither
+        // waits on the other, so they run side by side.
+        val scanJob = async(Dispatchers.Default) {
+            BalloonFinder.analyze(bitmap, ignoreTop, ignoreBottom, exclusions)
+        }
+        val firstPass = ocr.recognize(bitmap, settings.sourceLang)
+        val scan = scanJob.await()
+
+        // ML Kit misses small and stylized lettering it would read fine at
+        // twice the size. A balloon it read nothing in is cropped from the
+        // full-resolution frame, enlarged, and read again on its own.
+        val rereads = reread(bitmap, scan.balloons, firstPass, settings)
+        val lines = if (rereads.isEmpty()) firstPass.lines else firstPass.lines + rereads
+        val ocrResult = OcrEngine.Result(lines, firstPass.lang)
+
+        // A balloon the frame edge cuts through is only trusted where OCR
+        // actually read lettering inside it: the visible part of a panel
+        // can pass every shape test, and an empty partial region would be
+        // handed to the vision model as a balloon to read.
+        val detected = scan.balloons.filter { b ->
+            !b.partial || lines.any { l ->
+                Script.clean(l.text).length >= 2 && b.box.contains(l.box.centerX(), l.box.centerY())
+            }
+        }
         val balloons = detected.map { it.box }
         val bubbles = BubbleGrouper.group(
             ocrResult.lines, bitmap.height, ignoreTop, ignoreBottom, ocrResult.lang, exclusions,
-            balloons, includeEmptyBalloons = useVision,
+            balloons, includeEmptyBalloons = useVision, panels = scan.panels,
         )
         // Raw OCR lines, kept for anchoring the vision model's unanchored
         // answers by their text — the lines know where the text physically
@@ -107,7 +175,96 @@ class TranslatePipeline(
         // at all, whether it survived into a region, and whether the translator
         // answered for it.
         val diag = if (!settings.diagnostics) null else
-            "ocr ${ocrResult.lines.size} · balloons ${balloons.size} · regions ${bubbles.size}"
+            "ocr ${firstPass.lines.size}+${rereads.size} · balloons ${balloons.size} · panels ${scan.panels.size} · regions ${bubbles.size}"
+
+        Analysis(
+            bitmap, ocrResult, detected, scan.panels, bubbles, anchorLines,
+            ignoreTop, ignoreBottom, exclusions, useVision, diag,
+        )
+    }
+
+    /**
+     * OCRs the balloons the page pass read nothing in, each cropped from the
+     * full-resolution frame and enlarged. Concurrent and capped: a page is
+     * rarely more than a few balloons short, and the enlarged crops are
+     * small.
+     */
+    private suspend fun reread(
+        bitmap: Bitmap,
+        balloons: List<Balloon>,
+        first: OcrEngine.Result,
+        settings: AppSettings,
+    ): List<OcrLine> = coroutineScope {
+        val unread = balloons.filter { b ->
+            first.lines.none { l ->
+                Script.clean(l.text).length >= 2 && b.box.contains(l.box.centerX(), l.box.centerY())
+            }
+        }.sortedByDescending { it.box.width().toLong() * it.box.height() }.take(MAX_REREAD)
+        if (unread.isEmpty()) return@coroutineScope emptyList()
+        val lang: SourceLang? = when {
+            settings.sourceLang != SourceLang.AUTO -> settings.sourceLang
+            first.lines.any { Script.cjkCount(it.text) > 0 } -> first.lang
+            else -> null
+        }
+        unread.map { b -> async(Dispatchers.Default) { rereadOne(bitmap, b, lang) } }.awaitAll().flatten()
+    }
+
+    private suspend fun rereadOne(bitmap: Bitmap, b: Balloon, lang: SourceLang?): List<OcrLine> {
+        val pad = (maxOf(b.box.width(), b.box.height()) * 0.06f).toInt().coerceAtLeast(4)
+        val crop = Rect(
+            (b.box.left - pad).coerceAtLeast(0),
+            (b.box.top - pad).coerceAtLeast(0),
+            (b.box.right + pad).coerceAtMost(bitmap.width),
+            (b.box.bottom + pad).coerceAtMost(bitmap.height),
+        )
+        if (crop.width() < 16 || crop.height() < 16) return emptyList()
+        val scale = (REREAD_SHORT_SIDE / minOf(crop.width(), crop.height())).coerceIn(1.5f, 3f)
+        val w = (crop.width() * scale).toInt()
+        val h = (crop.height() * scale).toInt()
+        val src = Bitmap.createBitmap(bitmap, crop.left, crop.top, crop.width(), crop.height())
+        val scaled = Bitmap.createScaledBitmap(src, w, h, true)
+        if (scaled !== src) src.recycle()
+        // Light lettering on a dark box reads far better with the polarity
+        // flipped back to what the recognizers expect.
+        val input = if (b.inverted) invert(scaled) else scaled
+        return try {
+            ocr.recognizeRegion(input, lang).mapNotNull { l ->
+                val box = Rect(
+                    crop.left + (l.box.left / scale).toInt(),
+                    crop.top + (l.box.top / scale).toInt(),
+                    crop.left + (l.box.right / scale).toInt(),
+                    crop.top + (l.box.bottom / scale).toInt(),
+                )
+                if (box.width() < 2 || box.height() < 2) null else OcrLine(l.text, box, l.vertical)
+            }
+        } finally {
+            if (input !== scaled) input.recycle()
+            scaled.recycle()
+        }
+    }
+
+    private fun invert(src: Bitmap): Bitmap {
+        val w = src.width
+        val h = src.height
+        val px = IntArray(w * h)
+        src.getPixels(px, 0, w, 0, 0, w, h)
+        for (i in px.indices) px[i] = px[i] xor 0x00FFFFFF
+        return Bitmap.createBitmap(px, w, h, Bitmap.Config.ARGB_8888)
+    }
+
+    /** Translates an analysed page and resolves it into cards. */
+    suspend fun translate(
+        analysis: Analysis,
+        settings: AppSettings,
+        onPartial: (suspend (PageResult) -> Unit)? = null,
+    ): PageResult {
+        val bitmap = analysis.bitmap
+        val ocrResult = analysis.ocr
+        val detected = analysis.detected
+        val balloons = analysis.balloons
+        val bubbles = analysis.bubbles
+        val diag = analysis.diag
+        val useVision = analysis.useVision
 
         if (bubbles.isEmpty()) {
             // Nothing was resolved into a region — but a page can plainly carry
@@ -119,7 +276,10 @@ class TranslatePipeline(
             // page coming back untouched.
             val worthALook = useVision && (ocrResult.lines.isNotEmpty() || balloons.isNotEmpty())
             if (!worthALook) {
-                return PageResult(emptyList(), "", null, diag = diag?.plus(" · cards 0"), balloons = balloons)
+                return PageResult(
+                    emptyList(), "", null, diag = diag?.plus(" · cards 0"),
+                    balloons = balloons, panels = analysis.panels,
+                )
             }
         }
 
@@ -132,13 +292,14 @@ class TranslatePipeline(
             f
         }
         val raw = dispatch(
-            bitmap, settings, exclusions, wrapped,
-            ocrResult, bubbles, detected, anchorLines, ignoreTop, ignoreBottom, useVision,
+            bitmap, settings, analysis.exclusions, wrapped,
+            ocrResult, bubbles, detected, analysis.anchorLines, analysis.ignoreTop, analysis.ignoreBottom, useVision,
         )
         val result = raw.copy(bubbles = soleClaimants(raw.bubbles))
         return if (diag == null) result else result.copy(
             diag = "$diag · cards ${result.bubbles.size}",
             balloons = balloons,
+            panels = analysis.panels,
         )
     }
 
@@ -200,22 +361,47 @@ class TranslatePipeline(
         // Fast draft and AI request race concurrently: the draft paints in
         // ~1 s, and the AI round-trip starts immediately rather than queuing
         // behind it. If the AI finishes first the draft is skipped entirely.
+        //
+        // The AI answer streams, and every balloon it finishes is painted
+        // as it lands: each partial paint is the polish so far laid over
+        // the draft, so the page fills in balloon by balloon in reading
+        // order instead of arriving all at once when the last one closes.
         return coroutineScope {
             var aiFinished = false
-            val fastJob = onPartial?.let { emit ->
+            val gate = Mutex()
+            var draft: List<RenderBubble> = emptyList()
+            var polish: List<RenderBubble> = emptyList()
+            suspend fun paint(label: String) {
+                val emit = onPartial ?: return
+                val merged = gate.withLock { UpgradeMerge.merge(draft, polish) }
+                if (merged.isNotEmpty()) emit(PageResult(merged, label, "upgrading"))
+            }
+            val fastJob = onPartial?.let {
                 launch {
                     val fast = runCatching {
                         machineTranslate(bitmap, bubbles, ocrResult.lang, settings, detected, forceGoogle = true)
                     }.getOrNull()
                     if (fast != null && fast.bubbles.isNotEmpty() && !aiFinished) {
-                        emit(fast.copy(note = "upgrading"))
+                        gate.withLock { draft = fast.bubbles }
+                        paint(fast.engineLabel)
                     }
                 }
             }
             try {
                 if (useVision) {
                     try {
-                        val pageBubbles = vision.translatePage(bitmap, ocrResult.lang, bubbles)
+                        val streamed = ArrayList<VisionLlmEngine.VisionBubble>()
+                        val onBubble: (suspend (VisionLlmEngine.VisionBubble) -> Unit)? = onPartial?.let {
+                            { vb ->
+                                streamed.add(vb)
+                                val rendered = toRender(
+                                    bitmap, streamed.toList(), bubbles, anchorLines, ignoreTop, ignoreBottom, exclusions, detected,
+                                )
+                                gate.withLock { polish = rendered }
+                                paint(vision.label)
+                            }
+                        }
+                        val pageBubbles = vision.translatePage(bitmap, ocrResult.lang, bubbles, onBubble)
                         // The upgrade must never look worse than the draft:
                         // accept the vision result only if it covered most of
                         // the dialogue regions we know exist. Otherwise fall
@@ -247,7 +433,13 @@ class TranslatePipeline(
                         // fall through to the text path
                     }
                 }
-                aiTextTranslate(bitmap, bubbles, ocrResult.lang, settings, detected)
+                val onProgress: (suspend (List<RenderBubble>) -> Unit)? = onPartial?.let {
+                    { rendered ->
+                        gate.withLock { polish = rendered }
+                        paint(vision.label)
+                    }
+                }
+                aiTextTranslate(bitmap, bubbles, ocrResult.lang, settings, detected, onProgress)
             } finally {
                 aiFinished = true
                 fastJob?.cancel()
@@ -298,6 +490,7 @@ class TranslatePipeline(
         lang: SourceLang,
         settings: AppSettings,
         detected: List<Balloon>,
+        onProgress: (suspend (List<RenderBubble>) -> Unit)? = null,
     ): PageResult {
         // Text-only requests can say nothing about a balloon OCR could not
         // read, so those regions are left out rather than sent as blanks.
@@ -309,6 +502,19 @@ class TranslatePipeline(
             kinds = idx.map { bubbles[it].kind },
             runs = idx.map { bubbles[it].runId },
             parts = idx.map { bubbles[it].runPart },
+            onProgress = onProgress?.let { emit ->
+                { texts ->
+                    // Streamed answers only ever come from the AI engine.
+                    emit(
+                        texts.entries.sortedBy { it.key }.mapNotNull { (k, en) ->
+                            val b = bubbles[idx[k]]
+                            val gated = JunkFilter.accept(b.text, en, lang, fromAi = true)
+                                ?: return@mapNotNull null
+                            renderBubble(bitmap, b.box, gated, b.text, b.vertical, b.kind, detected)
+                        }
+                    )
+                }
+            },
         )
         val fromAi = outcome.engineLabel != "Google"
         val rendered = idx.mapIndexedNotNull { k, i ->
@@ -574,6 +780,9 @@ class TranslatePipeline(
             luminance(bg) < 140 -> Color.WHITE
             else -> 0xFF17181C.toInt()
         }
+        // A gradient or textured balloon is cleaned with its own paper
+        // continued under the lettering, not with a flat patch of the average.
+        val fill = balloon?.let { BalloonFill.build(bitmap, it) }
         return RenderBubble(
             box = Rect(box),
             translated = translated,
@@ -583,6 +792,7 @@ class TranslatePipeline(
             vertical = vertical,
             kind = kind,
             balloon = balloon,
+            fill = fill,
         )
     }
 

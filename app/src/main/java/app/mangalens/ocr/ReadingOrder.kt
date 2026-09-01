@@ -1,5 +1,6 @@
 package app.mangalens.ocr
 
+import android.graphics.Rect
 import app.mangalens.settings.SourceLang
 
 /**
@@ -22,6 +23,13 @@ import app.mangalens.settings.SourceLang
  * a full-height panel down the right side of the page, where no horizontal
  * gutter crosses the page at all, so the vertical cut correctly takes that
  * panel first and only then splits the stacked panels beside it.
+ *
+ * Given the panel grid as well ([PageLayout]), the page is read panel by
+ * panel: balloons are assigned to the panel holding them, the panels are
+ * ordered by the same cut — any gap between two panels is a gutter — and
+ * each panel's balloons are ordered within it. That closes the one layout
+ * balloon geometry alone cannot decide: a full-height side panel whose
+ * balloon sits level with a two-panel tier beside it.
  */
 object ReadingOrder {
 
@@ -49,11 +57,62 @@ object ReadingOrder {
      * @param rtl true for traditional Japanese pages (right-to-left tiers),
      *   false for vertically-scrolling webtoons and manhua.
      */
-    fun order(bubbles: List<Bubble>, rtl: Boolean): List<Bubble> {
+    fun order(bubbles: List<Bubble>, rtl: Boolean, panels: List<Rect> = emptyList()): List<Bubble> {
         if (bubbles.size <= 1) return bubbles
+        if (panels.isEmpty()) {
+            val out = ArrayList<Bubble>(bubbles.size)
+            cut(bubbles, rtl, 0, out, null)
+            return out
+        }
+
+        // Units of reading: each panel holding balloons, plus every balloon
+        // outside the grid on its own.
+        val members = Array(panels.size) { ArrayList<Bubble>() }
+        val loose = ArrayList<Bubble>()
+        for (b in bubbles) {
+            val p = panelOf(b.box, panels)
+            if (p < 0) loose.add(b) else members[p].add(b)
+        }
+        val units = ArrayList<Pair<Rect, List<Bubble>>>()
+        for (i in panels.indices) if (members[i].isNotEmpty()) units.add(panels[i] to members[i])
+        for (b in loose) units.add(b.box to listOf(b))
+        if (units.size == 1) {
+            val out = ArrayList<Bubble>(bubbles.size)
+            cut(units[0].second, rtl, 0, out, null)
+            return out
+        }
+
+        // Panels never overlap, so whatever gap lies between two of them is
+        // a gutter — the floor that keeps line spacing from splitting a
+        // balloon does not apply.
+        val proxies = units.mapIndexed { i, u -> Bubble(i.toString(), u.first, false) }
+        val orderedProxies = ArrayList<Bubble>(proxies.size)
+        cut(proxies, rtl, 0, orderedProxies, 1f)
         val out = ArrayList<Bubble>(bubbles.size)
-        cut(bubbles, rtl, 0, out)
+        for (p in orderedProxies) {
+            val inside = units[p.text.toInt()].second
+            if (inside.size == 1) out.add(inside[0]) else cut(inside, rtl, 0, out, null)
+        }
         return out
+    }
+
+    /** Index of the panel holding most of [box], or -1 when none holds half of it. */
+    private fun panelOf(box: Rect, panels: List<Rect>): Int {
+        val area = box.width().toLong() * box.height()
+        if (area <= 0L) return -1
+        var best = -1
+        var bestShare = 0.5f
+        for ((i, p) in panels.withIndex()) {
+            val ix = minOf(box.right, p.right) - maxOf(box.left, p.left)
+            val iy = minOf(box.bottom, p.bottom) - maxOf(box.top, p.top)
+            if (ix <= 0 || iy <= 0) continue
+            val share = (ix.toLong() * iy).toFloat() / area
+            if (share > bestShare) {
+                bestShare = share
+                best = i
+            }
+        }
+        return best
     }
 
     /**
@@ -70,7 +129,11 @@ object ReadingOrder {
         return vertical * 3 >= dialogue.size
     }
 
-    private fun cut(items: List<Bubble>, rtl: Boolean, depth: Int, out: MutableList<Bubble>) {
+    /**
+     * @param gutterFloor the narrowest gap that counts as a gutter, or null
+     *   to derive it from the boxes' own size.
+     */
+    private fun cut(items: List<Bubble>, rtl: Boolean, depth: Int, out: MutableList<Bubble>, gutterFloor: Float?) {
         if (items.isEmpty()) return
         if (items.size == 1) {
             out.add(items[0])
@@ -84,7 +147,7 @@ object ReadingOrder {
         // A gutter only counts if it is wider than the text it separates,
         // otherwise ordinary line spacing inside a balloon splits the page.
         val sizes = items.map { minOf(it.box.width(), it.box.height()) }.sorted()
-        val minGutter = (sizes[sizes.size / 2] * GUTTER_RATIO).coerceAtLeast(4f)
+        val minGutter = gutterFloor ?: (sizes[sizes.size / 2] * GUTTER_RATIO).coerceAtLeast(4f)
 
         val h = widestGap(items, minGutter, horizontal = true)
         val v = widestGap(items, minGutter, horizontal = false)
@@ -102,8 +165,8 @@ object ReadingOrder {
         val readNearSideFirst = useHorizontal || !rtl
         val first = if (readNearSideFirst) split.low else split.high
         val second = if (readNearSideFirst) split.high else split.low
-        cut(first, rtl, depth + 1, out)
-        cut(second, rtl, depth + 1, out)
+        cut(first, rtl, depth + 1, out, gutterFloor)
+        cut(second, rtl, depth + 1, out, gutterFloor)
     }
 
     private class Split(val low: List<Bubble>, val high: List<Bubble>, val gap: Float)

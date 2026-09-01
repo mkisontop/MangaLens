@@ -61,6 +61,36 @@ class OcrEngine {
         winStreak = 0
     }
 
+    /**
+     * Reads one balloon's crop, enlarged by the caller so the recognizers
+     * see lettering at the size they were trained on. With [lang] known the
+     * matching recognizer runs alone; otherwise all three race and the
+     * strongest script signature wins, as on a full page — but nothing is
+     * pinned from a crop, and Latin lines are kept for the same reason they
+     * are kept on a page.
+     */
+    suspend fun recognizeRegion(bitmap: Bitmap, lang: SourceLang?): List<OcrLine> {
+        val known = lang ?: pinned
+        if (known != null && known != SourceLang.AUTO) return run(recognizerFor(known), bitmap)
+        return coroutineScope {
+            val image = InputImage.fromBitmap(bitmap, 0)
+            val ko = async { runCatching { korean.process(image).await() }.getOrNull() }
+            val ja = async { runCatching { japanese.process(image).await() }.getOrNull() }
+            val zh = async { runCatching { chinese.process(image).await() }.getOrNull() }
+            val results = listOf(ko.await(), ja.await(), zh.await())
+            val scored = results.map { t ->
+                val text = t?.text ?: ""
+                maxOf(Script.hangulCount(text) * 3, Script.kanaCount(text) * 3 + Script.hanCount(text), Script.hanCount(text) * 2)
+            }
+            val best = scored.indices.maxBy { scored[it] }
+            if (scored[best] >= 2) {
+                toLines(results[best])
+            } else {
+                toLines(results.maxByOrNull { it?.text?.count { c -> c.isLetter() } ?: 0 })
+            }
+        }
+    }
+
     private fun recognizerFor(lang: SourceLang): TextRecognizer = when (lang) {
         SourceLang.KO -> korean
         SourceLang.JA -> japanese

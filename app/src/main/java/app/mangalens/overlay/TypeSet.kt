@@ -111,6 +111,97 @@ object TypeSet {
         return lines
     }
 
+    /** A shaped break: the lines, and how far short of their caps they fell. */
+    class Fit(val lines: List<String>, val cost: Float)
+
+    /**
+     * The words of one text under one paint, with every line width the
+     * shape-fitting search could ask for measured once. [fit] is then pure
+     * arithmetic, cheap enough to try dozens of line profiles per balloon.
+     */
+    class Shaper(text: String, measure: (String) -> Float) {
+        val words: List<String> = text.trim().split(WS).filter { it.isNotEmpty() }
+
+        /** width[a][b]: the joined width of words a..b, measured as one string. */
+        private val width: Array<FloatArray>? = if (words.size in 1..DP_WORD_LIMIT) {
+            val m = words.size
+            Array(m) { a ->
+                val row = FloatArray(m)
+                val sb = StringBuilder(words[a])
+                row[a] = measure(words[a])
+                for (b in a + 1 until m) {
+                    sb.append(' ').append(words[b])
+                    row[b] = measure(sb.toString())
+                }
+                row
+            }
+        } else {
+            null
+        }
+
+        /** The widest single word; no line can be narrower than this. */
+        val widestWord: Float = width?.let { w -> w.indices.maxOf { w[it][it] } } ?: 0f
+
+        /** How many lines a greedy break needs under [maxWidth] — the fewest possible. */
+        fun greedyLines(maxWidth: Float): Int {
+            val w = width ?: return words.size
+            var lines = 1
+            var start = 0
+            for (i in 1 until words.size) {
+                if (w[start][i] > maxWidth) {
+                    lines++
+                    start = i
+                }
+            }
+            return lines
+        }
+
+        /**
+         * Sets the words as exactly `caps.size` lines, line i no wider than
+         * caps[i] and each as close to its cap as the words allow — the
+         * caps being the balloon's own width at the rows each line will
+         * occupy. Null when no such break exists, including when a single
+         * word is wider than its cap; the caller answers that with a smaller
+         * type or a different band of the balloon.
+         */
+        fun fit(caps: FloatArray): Fit? {
+            val w = width ?: return null
+            val m = words.size
+            val k = caps.size
+            if (k < 1 || k > m) return null
+            val best = Array(k + 1) { FloatArray(m + 1) { INFEASIBLE } }
+            val cut = Array(k + 1) { IntArray(m + 1) }
+            best[0][0] = 0f
+            for (j in 1..k) {
+                val cap = caps[j - 1]
+                if (cap <= 0f) return null
+                for (i in j..m - (k - j)) {
+                    for (a in j - 1 until i) {
+                        val before = best[j - 1][a]
+                        if (before >= INFEASIBLE) continue
+                        val lw = w[a][i - 1]
+                        if (lw > cap) continue
+                        val slack = (cap - lw) / cap
+                        val cost = before + slack * slack
+                        if (cost < best[j][i]) {
+                            best[j][i] = cost
+                            cut[j][i] = a
+                        }
+                    }
+                }
+            }
+            if (best[k][m] >= INFEASIBLE) return null
+            val lines = MutableList(k) { "" }
+            var end = m
+            for (j in k downTo 1) {
+                val start = cut[j][end]
+                lines[j - 1] = words.subList(start, end).joinToString(" ")
+                end = start
+            }
+            return Fit(lines, best[k][m])
+        }
+    }
+
     private fun greedyBreak(
         words: List<String>,
         measure: (String) -> Float,

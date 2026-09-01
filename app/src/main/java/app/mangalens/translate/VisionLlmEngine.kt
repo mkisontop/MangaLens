@@ -49,10 +49,17 @@ class VisionLlmEngine(
 
     val cacheNamespace: String get() = "Vision:" + label + ":" + settings.effectiveModel()
 
+    /**
+     * @param onBubble receives each answered region the moment the model
+     *   finishes writing it, so the page can be painted while the rest of
+     *   the reply is still streaming. The returned list is the complete,
+     *   final answer regardless.
+     */
     suspend fun translatePage(
         bitmap: Bitmap,
         lang: SourceLang,
         anchors: List<app.mangalens.ocr.Bubble>,
+        onBubble: (suspend (VisionBubble) -> Unit)? = null,
     ): List<VisionBubble> =
         withContext(Dispatchers.IO) {
             LlmHttp.requireConfig(settings)
@@ -87,35 +94,29 @@ class VisionLlmEngine(
                 if (b.runId >= 0) o.put("run", b.runId).put("part", b.runPart)
                 regions.put(o)
             }
-            val user = JSONObject()
-                .put("expected_source_language", langHint)
+            // What changes rarely goes first and what changes every page
+            // goes last, so a provider that caches request prefixes reuses
+            // the series memory from one page to the next.
+            val stable = JSONObject()
                 .put("glossary", JSONObject(glossary?.snapshot() ?: emptyMap<String, String>()))
                 .put("characters", JSONObject(cast?.describeAll() ?: emptyMap<String, String>()))
+                .toString()
+            val page = JSONObject()
+                .put("expected_source_language", langHint)
                 .put("story_so_far", JSONArray(StoryContext.snapshot()))
                 .put("detected_regions", regions)
                 .toString()
 
-            val anthropicContent = JSONArray()
-                .put(
-                    JSONObject().put("type", "image").put(
-                        "source",
-                        JSONObject()
-                            .put("type", "base64")
-                            .put("media_type", "image/jpeg")
-                            .put("data", jpegB64)
-                    )
-                )
-                .put(JSONObject().put("type", "text").put("text", user))
-            val openAiContent = JSONArray()
-                .put(
-                    JSONObject().put("type", "image_url").put(
-                        "image_url",
-                        JSONObject().put("url", "data:image/jpeg;base64,$jpegB64")
-                    )
-                )
-                .put(JSONObject().put("type", "text").put("text", user))
-
-            val raw = LlmHttp.complete(settings, SYSTEM_PROMPT, anthropicContent, openAiContent, maxTokens = 4000)
+            val stream = if (onBubble == null) null else BubbleStream()
+            val streamed = HashSet<Int>()
+            val raw = LlmHttp.complete(
+                settings, SYSTEM_PROMPT, stable, jpegB64, page,
+                maxTokens = 4000,
+                effort = LlmHttp.effortFor(settings, "medium"),
+                onDelta = if (stream == null) null else { delta ->
+                    for (o in stream.feed(delta)) entry(o, anchors, streamed)?.let { onBubble!!(it) }
+                },
+            )
             val reply = LlmHttp.extractJsonObject(raw)
 
             val out = ArrayList<VisionBubble>()
@@ -123,36 +124,7 @@ class VisionLlmEngine(
             val arr = reply.optJSONArray("bubbles") ?: JSONArray()
             for (i in 0 until arr.length()) {
                 val o = arr.optJSONObject(i) ?: continue
-                if (o.optString("kind") == "skip") continue
-                val en = o.optString("en", "").trim()
-                if (en.isEmpty()) continue
-                val sfx = o.optString("kind") == "sfx"
-                val src = o.optString("src", "").trim()
-                val who = o.optString("who", "").trim().take(24)
-
-                val id = o.optInt("id", -1)
-                if (id in anchors.indices) {
-                    if (!seenIds.add(id)) continue
-                    out.add(VisionBubble(id, 0, 0, 0, 0, src, en, sfx, who))
-                    continue
-                }
-                // Extra text the on-device OCR missed — here (and only here)
-                // the model's own box is used.
-                val box = o.optJSONArray("box") ?: continue
-                if (box.length() < 4) continue
-                val nx = box.optInt(0, -1)
-                val ny = box.optInt(1, -1)
-                val nw = box.optInt(2, 0)
-                val nh = box.optInt(3, 0)
-                if (nx !in 0..1000 || ny !in 0..1000 || nw <= 0 || nh <= 0) continue
-                out.add(
-                    VisionBubble(
-                        -1, nx, ny,
-                        nw.coerceAtMost(1000 - nx),
-                        nh.coerceAtMost(1000 - ny),
-                        src, en, sfx, who,
-                    )
-                )
+                entry(o, anchors, seenIds)?.let { out.add(it) }
             }
             reply.optJSONObject("new_terms")?.let { terms ->
                 val learned = HashMap<String, String>()
@@ -163,6 +135,41 @@ class VisionLlmEngine(
             out.forEach { if (!it.sfx) StoryContext.remember(it.en, it.who) }
             out
         }
+
+    /** One reply entry as a bubble, or null when it answers nothing paintable. */
+    private fun entry(
+        o: JSONObject,
+        anchors: List<app.mangalens.ocr.Bubble>,
+        seenIds: MutableSet<Int>,
+    ): VisionBubble? {
+        if (o.optString("kind") == "skip") return null
+        val en = o.optString("en", "").trim()
+        if (en.isEmpty()) return null
+        val sfx = o.optString("kind") == "sfx"
+        val src = o.optString("src", "").trim()
+        val who = o.optString("who", "").trim().take(24)
+
+        val id = o.optInt("id", -1)
+        if (id in anchors.indices) {
+            if (!seenIds.add(id)) return null
+            return VisionBubble(id, 0, 0, 0, 0, src, en, sfx, who)
+        }
+        // Extra text the on-device OCR missed — here (and only here)
+        // the model's own box is used.
+        val box = o.optJSONArray("box") ?: return null
+        if (box.length() < 4) return null
+        val nx = box.optInt(0, -1)
+        val ny = box.optInt(1, -1)
+        val nw = box.optInt(2, 0)
+        val nh = box.optInt(3, 0)
+        if (nx !in 0..1000 || ny !in 0..1000 || nw <= 0 || nh <= 0) return null
+        return VisionBubble(
+            -1, nx, ny,
+            nw.coerceAtMost(1000 - nx),
+            nh.coerceAtMost(1000 - ny),
+            src, en, sfx, who,
+        )
+    }
 
     companion object {
 
@@ -189,6 +196,7 @@ class VisionLlmEngine(
 
         private val SYSTEM_PROMPT = """
 You are an elite manga/manhwa/manhua localization translator looking at one raw comic page screenshot. Your output is typeset straight onto the page, so it must be correct the first time.
+The request carries the series memory first ("glossary", "characters"), then the page image, then the page itself ("expected_source_language", "story_so_far", "detected_regions").
 
 READING THE IMAGE
 Every region is outlined in magenta and labelled with its region id on a magenta badge at the region's top-left corner. For each region, read the original lettering under that outline directly from the art. "ocr_text_maybe_garbled" is a hint only — it is frequently wrong on vertical, stylized, handwritten and overlapping text, and the image always wins. Answer each region by its badge number. Never restate or adjust the given boxes.

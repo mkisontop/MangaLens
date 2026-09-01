@@ -45,9 +45,11 @@ import app.mangalens.translate.TranslationService
 import app.mangalens.translate.WorkMemory
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
@@ -104,6 +106,23 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
 
         /** Thumb rows of drift (~2% of the screen) that count as scrolling. */
         private const val SLOW_SCROLL_MIN_ROWS = 2
+
+        /**
+         * Quiet time after which the frame is read ahead of the stability
+         * window. OCR and balloon detection are the slow half of a pass and
+         * need nothing but the frame, so they start as soon as the screen
+         * settles; by the time the reader has provably stopped, the page is
+         * usually already read and only translation remains. Painting still
+         * waits for the full window, so a brief pause never flashes cards.
+         */
+        private const val EARLY_ANALYSIS_MS = 150L
+
+        /**
+         * How far (thumb mean difference) the live frame may have drifted
+         * from the frame read ahead before that reading is thrown away.
+         * Identical frames differ by capture noise only, well under one.
+         */
+        private const val PREPARED_MAX_DRIFT = 1.2
 
         val running = MutableStateFlow(false)
     }
@@ -164,6 +183,23 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
     // Reference for slow-scroll drift detection (capture thread only).
     private var slowRefThumb: IntArray? = null
     private var slowRefAt = 0L
+
+    /** The newest frame's thumb, for judging whether a frame read ahead is still the one on screen. */
+    @Volatile private var latestThumb: IntArray? = null
+
+    /**
+     * A frame grabbed and read ahead of the stability window: the page
+     * analysis runs while the loop is still waiting to be sure the reader
+     * has stopped. Main thread only; [preparing] mirrors it for the
+     * capture thread, which must cancel it the moment the screen moves.
+     */
+    private class Prepared(
+        val bitmap: Bitmap,
+        val job: Deferred<Pair<IntArray, TranslatePipeline.Analysis>>,
+    )
+
+    private var prepared: Prepared? = null
+    @Volatile private var preparing = false
 
     /**
      * Passes in flight, so a cancelled pass's late cleanup can never switch
@@ -318,6 +354,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         val (w, h, _) = displaySize()
         if (w != capW || h != capH) {
             translateJob?.cancel()
+            discardPrepared()
             state = State.SCANNING
             shownThumb = null
             clearCards()
@@ -351,11 +388,13 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
             val thumb = FrameStability.grayThumb(bmp, capW, capH)
             val diff = FrameStability.meanDiff(prevThumb, thumb)
             prevThumb = thumb
+            latestThumb = thumb
             if (now < suppressUntil) return
             if (diff > MOTION_THRESHOLD) {
                 lastMotionAt = now
                 slowRefThumb = null
                 if (state != State.SCANNING) scope.launch { onMotion() }
+                else if (preparing) scope.launch { discardPrepared() }
                 return
             }
             val mask = overlayMask
@@ -373,6 +412,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                 if (kotlin.math.abs(drift) >= SLOW_SCROLL_MIN_ROWS) {
                     lastMotionAt = now
                     if (state != State.SCANNING) scope.launch { onMotion() }
+                    else if (preparing) scope.launch { discardPrepared() }
                     return
                 }
             }
@@ -507,17 +547,71 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
     private fun startTicker() {
         scope.launch {
             while (isActive) {
-                delay(120)
+                delay(60)
                 if (paused || settings.mode == CaptureMode.MANUAL) continue
                 if (projection == null || state != State.SCANNING) continue
                 val now = SystemClock.uptimeMillis()
-                if (lastFrameAt > 0 &&
-                    now >= suppressUntil &&
-                    now - lastMotionAt >= settings.stabilityMs
-                ) {
+                if (lastFrameAt <= 0 || now < suppressUntil) continue
+                val quiet = now - lastMotionAt
+                if (quiet >= settings.stabilityMs) {
                     startTranslate(auto = true)
+                } else if (quiet >= EARLY_ANALYSIS_MS && !preparing) {
+                    startPrepare()
                 }
             }
+        }
+    }
+
+    /**
+     * Grabs the frame and starts reading it before the stability window
+     * has run out. Nothing is painted from here; [startTranslate] picks the
+     * reading up if the frame is still the one on screen, and any motion
+     * in between throws it away.
+     */
+    private fun startPrepare() {
+        // Never read a frame with our own cards on it.
+        if (controller?.bubbleView?.hasBubbles() == true) return
+        val bmp = grabFrame() ?: return
+        val exclusions = controller?.overlayExclusions() ?: emptyList()
+        preparing = true
+        val job = scope.async(Dispatchers.Default) {
+            FrameStability.grayThumbOf(bmp) to pipeline.analyze(bmp, settings, exclusions)
+        }
+        prepared = Prepared(bmp, job)
+    }
+
+    /** Drops the frame read ahead, if any. Main thread only. */
+    private fun discardPrepared() {
+        val p = prepared
+        prepared = null
+        preparing = false
+        if (p == null) return
+        p.job.cancel()
+        retireLater(p.bitmap)
+    }
+
+    /** Hands over the frame read ahead, or null when there is none. Main thread only. */
+    private fun takePrepared(): Prepared? {
+        val p = prepared ?: return null
+        prepared = null
+        preparing = false
+        if (p.job.isCancelled) {
+            retireLater(p.bitmap)
+            return null
+        }
+        return p
+    }
+
+    /**
+     * Frees a frame whose reading was cut short. The recognizer may still
+     * be looking at the pixels for a moment after its coroutine is
+     * cancelled, so the memory is given back a little later rather than
+     * from under it.
+     */
+    private fun retireLater(bmp: Bitmap) {
+        scope.launch {
+            delay(1500)
+            runCatching { bmp.recycle() }
         }
     }
 
@@ -526,47 +620,77 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         state = State.TRANSLATING
         translateJob = scope.launch {
             pushBusy()
+            var bmp: Bitmap? = null
             try {
                 // A long enough break since the last translated page means the
                 // next one probably belongs to a different series.
                 works.beginPass(System.currentTimeMillis())
                 shownThumb = null
-                val bmp = grabCleanBitmap()
-                if (bmp == null) {
-                    state = State.SCANNING
-                    return@launch
-                }
-                setPill("translating…")
                 val exclusions = controller?.overlayExclusions() ?: emptyList()
-                var draftShown: List<RenderBubble> = emptyList()
-                val result = try {
+
+                // The page may already have been read: analysis starts as
+                // soon as the screen goes quiet, ahead of the stability
+                // window, and is picked up here when the frame has not moved
+                // since. Otherwise the frame is grabbed and read now.
+                //
+                // Either way the baseline for page-change detection is taken
+                // from the exact bitmap handed to the pipeline. Waiting for a
+                // later "settled" frame instead left a hole: a fling inside
+                // the suppression window put a new page on screen first, the
+                // baseline then described the new page while the cards
+                // described the old one, and the mismatch could never be
+                // noticed.
+                var ahead: TranslatePipeline.Analysis? = null
+                val prep = takePrepared()
+                if (prep != null) {
+                    setPill("translating…")
+                    val read = try {
+                        prep.job.await()
+                    } catch (e: CancellationException) {
+                        if (!isActive) throw e
+                        null
+                    } catch (_: Exception) {
+                        null
+                    }
+                    val live = latestThumb
+                    if (read != null && FrameStability.meanDiff(read.first, live) <= PREPARED_MAX_DRIFT) {
+                        bmp = prep.bitmap
+                        shownThumb = read.first
+                        ahead = read.second
+                    } else {
+                        // The screen moved under the reading, or it failed.
+                        retireLater(prep.bitmap)
+                    }
+                }
+                val analysis: TranslatePipeline.Analysis = ahead ?: run {
+                    val fresh = grabCleanBitmap()
+                    if (fresh == null) {
+                        state = State.SCANNING
+                        return@launch
+                    }
+                    bmp = fresh
+                    setPill("translating…")
                     withContext(Dispatchers.Default) {
-                        // Remember the page being translated from the exact
-                        // bitmap handed to the pipeline. Waiting for a later
-                        // "settled" frame instead left a hole: a fling inside
-                        // the suppression window put a new page on screen
-                        // first, the baseline then described the new page
-                        // while the cards described the old one, and the
-                        // mismatch could never be noticed.
-                        shownThumb = FrameStability.grayThumbOf(bmp)
-                        pipeline.process(bmp, settings, exclusions) { partial ->
-                            // Fast path landed — paint it now, AI polish follows.
-                            withContext(Dispatchers.Main.immediate) {
-                                if (isActive && state == State.TRANSLATING) {
-                                    draftShown = partial.bubbles
-                                    lastShown = partial.bubbles
-                                    suppressUntil = SystemClock.uptimeMillis() + 600
-                                    paintCards(partial.bubbles)
-                                    setPill("✓ ${partial.bubbles.size} · ${partial.engineLabel} · ✨ upgrading…")
-                                }
+                        shownThumb = FrameStability.grayThumbOf(fresh)
+                        pipeline.analyze(fresh, settings, exclusions)
+                    }
+                }
+
+                var draftShown: List<RenderBubble> = emptyList()
+                val result = withContext(Dispatchers.Default) {
+                    pipeline.translate(analysis, settings) { partial ->
+                        // A draft or a streamed batch landed — paint it now,
+                        // the rest of the polish follows.
+                        withContext(Dispatchers.Main.immediate) {
+                            if (isActive && state == State.TRANSLATING) {
+                                draftShown = partial.bubbles
+                                lastShown = partial.bubbles
+                                suppressUntil = SystemClock.uptimeMillis() + 600
+                                paintCards(partial.bubbles)
+                                setPill("✓ ${partial.bubbles.size} · ${partial.engineLabel} · ✨ upgrading…")
                             }
                         }
                     }
-                } finally {
-                    // Cancellation is this loop's steady state — every scroll
-                    // that interrupts a pass lands here — so the full-screen
-                    // copy is reclaimed on that path too, not only on success.
-                    bmp.recycle()
                 }
                 if (!isActive) return@launch
                 // The polish replaces what it answered and never erases what
@@ -586,7 +710,8 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                     works.noteQuietPass()
                 }
                 controller?.bubbleView?.setDebugBalloons(
-                    if (settings.diagnostics) result.balloons else emptyList()
+                    if (settings.diagnostics) result.balloons else emptyList(),
+                    if (settings.diagnostics) result.panels else emptyList(),
                 )
                 // Diagnostics stay up: they exist to be read off a page that
                 // came back wrong, and a pill that vanishes is no use for that.
@@ -610,6 +735,10 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                 state = State.SHOWING
                 setPill("⚠ " + (e.message?.take(90) ?: "translation failed"), 4500)
             } finally {
+                // Cancellation is this loop's steady state — every scroll
+                // that interrupts a pass lands here — so the full-screen
+                // copy is reclaimed on that path too, not only on success.
+                bmp?.let { if (isActive) it.recycle() else retireLater(it) }
                 popBusy()
             }
         }
@@ -627,15 +756,20 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
             suppressUntil = SystemClock.uptimeMillis() + 900
             delay(280)
         }
-        // Crop away any stride padding here, once per translation pass, and
-        // always hand out a private copy so the reused buffers stay ours.
-        return synchronized(frameLock) {
-            latestBitmap?.let { src ->
-                val w = capW.coerceAtMost(src.width)
-                val h = capH.coerceAtMost(src.height)
-                val out = Bitmap.createBitmap(src, 0, 0, w, h)
-                if (out === src) src.copy(Bitmap.Config.ARGB_8888, false) else out
-            }
+        return grabFrame()
+    }
+
+    /**
+     * A private copy of the newest frame, cropped of any stride padding, or
+     * null before the first frame has arrived. Always a copy, so the reused
+     * capture buffers stay the capture thread's own.
+     */
+    private fun grabFrame(): Bitmap? = synchronized(frameLock) {
+        latestBitmap?.let { src ->
+            val w = capW.coerceAtMost(src.width)
+            val h = capH.coerceAtMost(src.height)
+            val out = Bitmap.createBitmap(src, 0, 0, w, h)
+            if (out === src) src.copy(Bitmap.Config.ARGB_8888, false) else out
         }
     }
 
@@ -662,6 +796,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         paused = !paused
         if (paused) {
             translateJob?.cancel()
+            discardPrepared()
             state = State.SCANNING
             shownThumb = null
             clearCards()
@@ -746,6 +881,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
     override fun onDestroy() {
         running.value = false
         translateJob?.cancel()
+        discardPrepared()
         scope.cancel()
         runCatching { virtualDisplay?.release() }
         virtualDisplay = null

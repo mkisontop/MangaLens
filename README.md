@@ -92,34 +92,59 @@ entered again.
 MediaProjection (screen capture)
         │  frames
         ▼
-Frame differ ──"user stopped scrolling"──▶ ML Kit OCR (KO/JA/ZH race, winner pinned)
-        │                                        │ lines + boxes
-   scroll detected                               ▼
-        │                              Bubble grouper (union-find clustering,
-        ▼                               vertical-column ordering, furigana drop)
- overlays cleared                                │ bubbles
+Frame differ ──"screen went quiet"──▶ Page analysis, started ~150 ms after the
+        │                              last motion and thrown away if it resumes:
+   scroll detected                       ML Kit OCR (KO/JA/ZH race, winner pinned)
+        │                             ∥ Balloon + panel finder (page pixels)
+        ▼                                then a 2x re-read of any balloon OCR read nothing in
+ overlays cleared                                │ lines + balloons + panels
                                                  ▼
-                                      Reading order (recursive X-Y cut over
-                                       panel gutters, right-to-left for manga)
+                                      Bubble grouper (union-find clustering bounded
+                                       by balloons, vertical-column ordering, furigana drop)
+                                                 │ bubbles
+                                                 ▼
+                                      Reading order (panel by panel where the page
+                                       shows a grid; recursive X-Y cut otherwise)
                                                  │
                                                  ▼
                                       Utterance linker (sentences split
                                        across balloons rejoined)
                                                  │
-                                                 ▼
+                     "reader has stopped" ──▶    ▼
                                     Translation engine (+ LRU cache, fallback chain,
-                                     glossary + cast + story context)
+                                     glossary + cast + story context; AI replies
+                                     stream and paint balloon by balloon)
                                                  │ English
                                                  ▼
-                                    Overlay renderer (color-sampled patches,
-                                     auto-fitting text, untouchable window)
+                                    Overlay renderer (balloons wiped through their
+                                     own mask, text set to the balloon's shape)
 ```
 
 Key details:
 
+- **The page is read before the reader has provably stopped**: OCR and
+  balloon detection are the slow half of a pass and need nothing but the
+  frame, so they start about 150 ms after the last motion, while the loop is
+  still waiting out the stability window that keeps a brief pause from
+  flashing cards. Any motion in between throws the reading away; otherwise,
+  by the time the window closes the page is usually already read and only
+  translation remains. OCR and balloon detection run side by side rather
+  than one after the other, and a balloon OCR read nothing in is cropped
+  from the full-resolution frame, enlarged, and read again on its own —
+  ML Kit misses small and stylized lettering it reads fine at twice the
+  size.
 - **Progressive AI rendering**: in AI Pro the free draft paints in ~1 s and the
   AI polish swaps in when it lands — the reading loop never waits on a slow
-  connection. The status pill shows ✓ for drafts and ✨ once polished.
+  connection. The status pill shows ✓ for drafts and ✨ once polished. The AI
+  reply is streamed and parsed as it arrives, so each balloon is painted the
+  moment the model finishes writing it, in reading order, over whatever the
+  draft still covers — the page fills in balloon by balloon instead of all at
+  once when the last one closes. Requests are laid out stable-first (system
+  prompt, then glossary and cast, then the page), so providers that cache a
+  request prefix reuse the series memory page after page; on the Anthropic
+  API those blocks carry explicit cache breakpoints, and current Claude
+  models are asked for a lower reasoning effort — translation is not a
+  problem to think about at length, and the answer comes back sooner.
 - **AI Vision routing (Auto)**: pages routed by script — vertical Japanese and
   manhua go to the vision model as a compressed image (~150–300 KB, less with
   Data saver); horizontal Korean webtoons use text-only requests a few KB big.
@@ -136,23 +161,58 @@ Key details:
   OCR could not read *at all* still becomes a region for the vision model to
   read off the image.
 
-  Burst (shout) balloons get a second detection pass: their border is a ring
-  of radiating ticks rather than a drawn curve, the flood leaks out through
-  the gaps, and pass one can never enclose them. Thickened ink seals the
-  gaps, and the shouted line becomes an ordinary region instead of a balloon
-  the app pretends not to see. A third pass flips the polarity for black
+  The page is analysed on a coarse grid, but every cell of it is summarised
+  three ways from the full-resolution pixels — mean, darkest and lightest
+  luminance — rather than by averaging alone. Averaging is what made the
+  detector blind on tablets: at a quarter scale a two-pixel outline averages
+  to mid-grey, reads as paper, and the balloon's interior leaks into the
+  page. The darkest pixel in a cell survives any downscale, so a hairline
+  outline is still a wall the flood cannot cross. Fill is judged on the
+  interior with its lettering holes filled back in, so a balloon packed with
+  text is as blobby as an empty one; and a region whose interior holds flat
+  mid-tones — shading, colour, the texture of drawn art — is a panel with a
+  figure in it, not a balloon, however well it satisfies the enclosure test.
+
+  Burst (shout) balloons get sealed passes: their border is a ring of
+  radiating ticks rather than a drawn curve, the flood leaks out through
+  the gaps, and the plain pass can never enclose them. Thickened ink seals
+  the gaps — at two radii, for the tick spacing of phone and of tablet
+  captures — and the shouted line becomes an ordinary region instead of a
+  balloon the app pretends not to see. A polarity-flipped pass finds black
   narration and flashback boxes — enclosed dark regions carrying light
-  lettering — whose cards then render light-on-dark to match. A fourth
-  pass relaxes the interior threshold for tinted balloons — the pink and
+  lettering — whose cards then render light-on-dark to match. A tinted pass
+  relaxes the interior threshold for pastel balloons — the pink and
   lavender fills manhwa colorists reach for — which read as neither light
-  nor dark and slipped between the first three.
+  nor dark and slipped between the others.
+
+  Two balloons drawn joined — one character's consecutive lines, or two
+  speakers' balloons touching — flood as one shape. The shape is eroded
+  until it falls into separate cores, each core grows back over its own
+  share, and each balloon keeps its own region, its own text and its own
+  card; a single balloon with a waist or a tail erodes to a single core and
+  stays whole. A balloon the screen edge cuts through — every scroll stop on
+  a webtoon has one — is found and cleaned too, under strict gates (one
+  edge, a modest share of the screen, lettering OCR actually read inside it)
+  so the visible part of a panel never passes for one.
 - **Balloons are cleaned, not covered**: every detection carries its interior
   mask — the actual flooded shape, tails and curves included — and the card
   paints an opaque fill through it, sampled from the balloon's own paper, with
-  the English typeset over it in Comic Neue with the taper human letterers
-  use (shorter first and last lines, widest in the middle,
-  `ScanlationRenderTest` previews). The original lettering is gone, not
-  peeking around a floating patch.
+  the English typeset over it in Comic Neue. The original lettering is gone,
+  not peeking around a floating patch. A gradient or textured balloon — the
+  coloured fills manhwa uses — is not patched with a flat average: its own
+  paper is continued under the lettering, cell by cell through the mask, so
+  the gradient runs through unbroken (`ShapedTypesetTest` previews).
+- **Text is set to the balloon's shape, not its box**: the mask is measured
+  row by row — how wide the interior is at every row, about the body's own
+  centre, with a tail off to one side ignored — and the block is fitted into
+  that: at each type size a few line counts and vertical positions are
+  tried, every line capped by the room the balloon has at the rows it would
+  sit on, and the first size that fits wins with the placement that fills the
+  shape best and sits on the body. A round balloon gets the taper a letterer
+  gives it (short first and last lines, widest in the middle) because that is
+  its shape; a tall thin one gets short lines all the way down; a tailed one
+  keeps its text out of the tail. Type shrinks only when the words genuinely
+  do not fit the shape.
 - **Motion clears, stillness translates**: the moment real motion is seen the
   overlays vanish, so a translation is never left hovering over content it no
   longer matches — a stale card painted confidently in the wrong place reads
@@ -191,12 +251,19 @@ Key details:
   page layouts (`ReadingOrderBenchmarkTest`), this reads **13/13** correctly
   where the previous top-to-bottom, left-to-right sort managed 6/13.
 
-  One layout family is genuinely undecidable and is marked as such in the
-  corpus: a full-height panel down one side, with a balloon near its top,
-  produces balloon geometry identical to a two-panel tier above a single
-  panel — and the two read in different orders. Only the panel borders
-  distinguish them, and the grouper sees balloon boxes alone. Detecting panel
-  borders from the frame is what would close it.
+  One layout family is undecidable from balloon boxes alone: a full-height
+  panel down one side, with a balloon near its top, produces balloon
+  geometry identical to a two-panel tier above a single panel — and the two
+  read in different orders. Only the panel borders distinguish them, so the
+  panel grid is now read off the page itself: a run of rows or columns that
+  holds nothing but paper (or nothing but black) across a region is a
+  gutter, cutting on gutters recursively yields the panels, and a leaf only
+  counts as a panel when it has a drawn border on all four sides — so
+  balloons floating on a blank webtoon strip never form a grid. Where a
+  grid exists the page is read panel by panel: balloons are assigned to the
+  panel holding them, the panels are ordered by the same cut, and each
+  panel's balloons are ordered within it. Both layouts of that family are
+  drawn as pages in `PageLayoutTest` and read correctly.
 - **Split sentences are rejoined**: one line of dialogue broken over two or
   three balloons ("あいつが……" / "……来たのか") is detected from the dangling
   particle and translated as a single sentence, then divided back across the
@@ -267,8 +334,9 @@ Key details:
   continue in a second one — and the repeat carries its own drifting box that
   lands beside or below the balloon it belongs to.
 - **Overlay feedback loop is impossible by design**: overlays are cleared
-  before every capture, re-OCR only triggers after real screen motion, and the
-  app's own floating button region is excluded from OCR.
+  before every capture, re-OCR only triggers after real screen motion, a
+  frame is never read ahead while our own cards are on it, and the app's own
+  floating button region is excluded from OCR.
 - **Junk gates**: stray border pipes, furigana, one-character crumbs and
   romanized-gibberish translations are filtered — a bubble renders correctly or
   not at all.
