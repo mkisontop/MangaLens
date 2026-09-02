@@ -16,8 +16,9 @@ Scroll and they vanish; stop and the next page translates itself.
 · [all releases](https://github.com/mkisontop/mangalens/releases)
 · [changelog](CHANGELOG.md)
 
-Still on 0.9.1? Follow the [one-time update instructions](#one-time-update-from-091)
-instead of using the normal APK.
+Current release: **0.10.0**. Still on 0.9.1? Follow the
+[one-time update instructions](#one-time-update-from-091) instead of using
+the normal APK.
 
 ## How it feels
 

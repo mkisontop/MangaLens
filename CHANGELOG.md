@@ -1,10 +1,14 @@
 # Changelog
 
-## Unreleased
+## 0.10.0
 
 The speed release: the page is read while the loop is still waiting for the
 reader to stop, the AI polish arrives balloon by balloon, and the balloons
 themselves are found and cleaned on the pages that used to defeat it.
+
+**Download:** `MangaLens.apk` below updates 0.9.2 and newer in place. Still on
+0.9.1? Use `MangaLens-legacy-update.apk` once (Android 9+), as described in
+the README.
 
 - **Read ahead of the stop.** OCR and balloon detection start about 150 ms
   after the last motion — while the stability window is still running — and
