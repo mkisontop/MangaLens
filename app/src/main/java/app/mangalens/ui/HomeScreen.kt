@@ -52,6 +52,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.mangalens.capture.ScreenCaptureService
+import app.mangalens.settings.AiReasoning
 import app.mangalens.settings.AiVisionMode
 import app.mangalens.settings.AppSettings
 import app.mangalens.settings.CaptureMode
@@ -367,6 +368,30 @@ private fun EngineCard(settings: AppSettings, repo: SettingsRepository) {
                         "The AI reads the page image itself — catches handwriting, stylized lettering and anything OCR misses, in manhwa and manga alike (~150–300 KB per page, less with Data saver). Falls back to text-only, then Google, automatically."
                     else
                         "Only OCR'd text is sent (a few KB). Best for very slow internet; stylized lettering depends on on-device OCR.",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+                Spacer(Modifier.height(10.dp))
+                Text("AI reasoning — how long the model may think per page", style = MaterialTheme.typography.bodyMedium)
+                Spacer(Modifier.height(6.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Chip("Fast", settings.aiReasoning == AiReasoning.FAST) {
+                        scope.launch { repo.setAiReasoning(AiReasoning.FAST) }
+                    }
+                    Chip("Balanced", settings.aiReasoning == AiReasoning.BALANCED) {
+                        scope.launch { repo.setAiReasoning(AiReasoning.BALANCED) }
+                    }
+                    Chip("Thorough", settings.aiReasoning == AiReasoning.THOROUGH) {
+                        scope.launch { repo.setAiReasoning(AiReasoning.THOROUGH) }
+                    }
+                }
+                Spacer(Modifier.height(6.dp))
+                Text(
+                    when (settings.aiReasoning) {
+                        AiReasoning.FAST -> "Least thinking the model allows: the polish lands soonest. Fine for clean, horizontal lettering."
+                        AiReasoning.BALANCED -> "A little thinking on the page image, the least on text. Balloons stream in one by one either way."
+                        AiReasoning.THOROUGH -> "The model's full reasoning depth: best speaker attribution and hard lettering, at a longer wait for the first balloon."
+                    },
                     style = MaterialTheme.typography.bodySmall,
                     color = MaterialTheme.colorScheme.onSurfaceVariant
                 )

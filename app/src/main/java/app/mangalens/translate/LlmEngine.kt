@@ -41,12 +41,18 @@ class LlmEngine(
             lang,
         )
 
+    /**
+     * @param onEntry receives each bubble's English as the model finishes
+     *   it, by input index, so a page can be painted while the rest of the
+     *   reply streams. The returned list is the complete answer regardless.
+     */
     suspend fun translateWithKinds(
         items: List<String>,
         kinds: List<BubbleKind>,
         runs: List<Int>,
         parts: List<Int>,
         lang: SourceLang,
+        onEntry: (suspend (Int, String) -> Unit)? = null,
     ): List<String> = withContext(Dispatchers.IO) {
         LlmHttp.requireConfig(settings)
 
@@ -60,20 +66,30 @@ class LlmEngine(
             if (run >= 0) o.put("run", run).put("part", parts.getOrNull(i) ?: 0)
             bubbles.put(o)
         }
-        val user = JSONObject()
-            .put("source_language", lang.name.lowercase())
+        // Series memory first, page last: see LlmHttp.
+        val stable = JSONObject()
             .put("glossary", JSONObject(glossary?.snapshot() ?: emptyMap<String, String>()))
             .put("characters", JSONObject(cast?.describeAll() ?: emptyMap<String, String>()))
+            .toString()
+        val page = JSONObject()
+            .put("source_language", lang.name.lowercase())
             .put("story_so_far", JSONArray(StoryContext.snapshot()))
             .put("bubbles", bubbles)
             .toString()
 
+        val stream = if (onEntry == null) null else BubbleStream()
         val raw = LlmHttp.complete(
-            settings,
-            SYSTEM_PROMPT,
-            JSONArray().put(JSONObject().put("type", "text").put("text", user)),
-            user,
-            maxTokens = 2600,
+            settings, SYSTEM_PROMPT, stable, emptyList(), page,
+            effort = LlmHttp.effortLevel(settings, vision = false),
+            vision = false,
+            onDelta = if (stream == null) null else { delta ->
+                for (o in stream.feed(delta)) {
+                    val id = o.optInt("id", -1)
+                    if (id !in items.indices || o.optString("kind") == "skip") continue
+                    val en = o.optString("en", "")
+                    if (en.isNotBlank()) onEntry!!(id, en)
+                }
+            },
         )
 
         val reply = LlmHttp.extractJsonObject(raw)
@@ -107,7 +123,7 @@ class LlmEngine(
 
     companion object {
         internal val SYSTEM_PROMPT = """
-You are an elite manga/manhwa/manhua localization translator producing text for typeset speech bubbles. You receive one comic page as JSON: bubbles in reading order, a glossary of established names/terms, the cast of characters met so far, and the story up to this page.
+You are an elite manga/manhwa/manhua localization translator producing text for typeset speech bubbles. You receive the series memory as JSON — a glossary of established names/terms and the cast of characters met so far — followed by one comic page as JSON: the story up to this page and its bubbles in reading order.
 "source_language" is a guess from settings. Aggregator sites often serve raws already translated once (Spanish is common) — translate whatever language the text actually is into the same natural English. If a bubble is already English, answer it with "kind":"skip".
 
 WHO IS SPEAKING — decide this before you translate

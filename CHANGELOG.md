@@ -1,5 +1,64 @@
 # Changelog
 
+## 0.10.0
+
+The speed release: the page is read while the loop is still waiting for the
+reader to stop, the AI polish arrives balloon by balloon, and the balloons
+themselves are found and cleaned on the pages that used to defeat it.
+
+**Download:** `MangaLens.apk` below updates 0.9.2 and newer in place. Still on
+0.9.1? Use `MangaLens-legacy-update.apk` once (Android 9+), as described in
+the README.
+
+- **Read ahead of the stop.** OCR and balloon detection start about 150 ms
+  after the last motion — while the stability window is still running — and
+  are thrown away if scrolling resumes. When the window closes, the page is
+  usually already read and only translation remains. The two also run side
+  by side instead of one after the other.
+- **Streamed polish.** AI replies are parsed as they stream, and each balloon
+  is painted the moment the model finishes writing it, over the draft the
+  reader is already reading. Requests are laid out stable-first, with cache
+  breakpoints on the Anthropic API, so the series memory costs next to
+  nothing page after page.
+- **AI reasoning setting.** Fast, balanced or thorough, translated into each
+  provider's own thinking control for the models that take one: Claude
+  effort, Gemini thinking level, OpenAI reasoning effort, OpenRouter's
+  reasoning parameter. Balanced thinks a little on the page image and the
+  least on text.
+- **Requests shaped per model.** Gemini 3 keeps its default temperature,
+  OpenAI reasoning models get `max_completion_tokens` and no temperature
+  (they rejected the old request outright), and the output cap now leaves
+  room for thinking so a thorough model can never truncate its own page.
+- **Close-ups for the model.** Regions OCR could not read are also sent as
+  enlarged crops from the full-resolution frame, badged with their region
+  id, so a strong vision model gets legible lettering where it matters.
+- **Balloons on tablets.** Detection now summarises every grid cell by its
+  darkest and lightest pixel as well as its mean, so a hairline outline on a
+  high-resolution capture is still a wall — previously it averaged to grey
+  and the balloon leaked into the page and was never found.
+- **Joined balloons come apart.** Two balloons drawn touching are eroded into
+  their separate cores and each grows back over its own share; each keeps
+  its own text and card. A balloon with a waist or a tail stays one balloon.
+- **Balloons at the screen edge.** A balloon the frame cuts through is found
+  and cleaned rather than rendered as a floating card, under strict gates.
+- **Art panels are not balloons.** A white panel with a shaded figure in it
+  passes every enclosure test a balloon does; the flat mid-tones of drawn art
+  now give it away.
+- **Panels read off the page.** The panel grid is detected from the gutters,
+  and pages with a grid are read panel by panel. The one layout balloon
+  geometry alone cannot decide — a full-height side panel beside a two-panel
+  tier — now reads correctly both ways.
+- **Text set to the balloon's shape.** Lines are fitted to the interior row
+  by row, about the body's own centre, tails ignored: round balloons get a
+  letterer's taper because that is their shape, tall ones get short lines
+  all the way down, and type shrinks only when the words do not fit.
+- **Gradient balloons keep their gradient.** A coloured balloon is cleaned by
+  continuing its own paper under the lettering instead of a flat patch.
+- **A second look at unread balloons.** A balloon OCR read nothing in is
+  cropped from the full-resolution frame, enlarged, and read again.
+- **Diagnostics** now report the crop re-reads and the panels found, and
+  outline the panel grid in blue beside the magenta balloons.
+
 ## 0.9.3
 
 **Still on 0.9.1?** On Android 9 or newer, use the one-time

@@ -35,6 +35,11 @@ data class RenderBubble(
      * cleaning lands where the balloon used to be.
      */
     val balloon: Balloon? = null,
+    /**
+     * An inpainted fill for the balloon at its mask's resolution, when its
+     * paper is not one flat colour; null means fill with [bgColor].
+     */
+    val fill: Bitmap? = null,
 )
 
 /**
@@ -74,6 +79,24 @@ class BubbleOverlayView(context: Context) : View(context) {
     )
 
     private var placed: List<Placed> = emptyList()
+
+    private companion object {
+        /** Smallest type, in dp, the balloon text shrinks to. */
+        const val MIN_TYPE_SIZE = 9f
+        const val LINE_SPACING = 1.06f
+
+        /** Share of a row's interior a line may use; the rest is the margin a letterer keeps. */
+        const val SHAPE_MARGIN = 0.88f
+
+        /** Line counts tried beyond the fewest the words allow. */
+        const val EXTRA_LINES = 3
+
+        /** Vertical positions sampled for a block, besides the centred one. */
+        const val TOP_SAMPLES = 12
+
+        /** Weight of the block's distance from the body centre against its fill. */
+        const val CENTER_WEIGHT = 4f
+    }
 
     /**
      * Kept so cards can be laid out again once the view knows its real size.
@@ -121,6 +144,15 @@ class BubbleOverlayView(context: Context) : View(context) {
      */
     private var debugBalloons: List<Rect> = emptyList()
 
+    /** The panel grid read off the page, outlined in blue when diagnostics are on. */
+    private var debugPanels: List<Rect> = emptyList()
+
+    private val debugPanelPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        style = Paint.Style.STROKE
+        strokeWidth = dp(1.5f)
+        color = 0xB0008CE6.toInt()
+    }
+
     fun setBubbles(bubbles: List<RenderBubble>) {
         source = bubbles
         placed = placeAll(bubbles)
@@ -143,8 +175,9 @@ class BubbleOverlayView(context: Context) : View(context) {
         return out
     }
 
-    fun setDebugBalloons(rects: List<Rect>) {
+    fun setDebugBalloons(rects: List<Rect>, panels: List<Rect> = emptyList()) {
         debugBalloons = rects
+        debugPanels = panels
         invalidate()
     }
 
@@ -152,6 +185,7 @@ class BubbleOverlayView(context: Context) : View(context) {
         source = emptyList()
         placed = emptyList()
         debugBalloons = emptyList()
+        debugPanels = emptyList()
         invalidate()
     }
 
@@ -187,8 +221,8 @@ class BubbleOverlayView(context: Context) : View(context) {
         if (b.translated.isBlank()) return null
         val balloon = b.balloon
         if (balloon != null) {
-            val stamp = erodedStamp(balloon)
-            if (stamp != null) return placeClean(b, balloon, stamp)
+            val stamp = erodedStamp(balloon, b.fill)
+            if (stamp != null) return placeClean(b, balloon, stamp, b.fill != null)
         }
         return placeCard(b, occupied)
     }
@@ -221,18 +255,23 @@ class BubbleOverlayView(context: Context) : View(context) {
      * cleaned balloon. Null when nothing survives (a sliver of a mask); that
      * bubble falls back to the rounded card instead of stamping nothing.
      */
-    private fun erodedStamp(balloon: Balloon): Bitmap? {
+    private fun erodedStamp(balloon: Balloon, fill: Bitmap?): Bitmap? {
         val w = balloon.maskW
         val h = balloon.maskH
         val mask = balloon.mask
         if (w < 3 || h < 3 || mask.size < w * h) return null
+        // An inpainted fill carries the balloon's own colours cell for
+        // cell; a flat one is white and tinted at draw time.
+        val colors = fill?.takeIf { it.width == w && it.height == h }?.let { f ->
+            IntArray(w * h).also { f.getPixels(it, 0, w, 0, 0, w, h) }
+        }
         val px = IntArray(w * h)
         var any = false
         for (y in 1 until h - 1) {
             var i = y * w + 1
             for (x in 1 until w - 1) {
                 if (mask[i] && mask[i - 1] && mask[i + 1] && mask[i - w] && mask[i + w]) {
-                    px[i] = Color.WHITE
+                    px[i] = if (colors != null) colors[i] or (0xFF shl 24) else Color.WHITE
                     any = true
                 }
                 i++
@@ -244,46 +283,92 @@ class BubbleOverlayView(context: Context) : View(context) {
 
     /**
      * Clean-and-typeset: fill through the mask, then set the translation the
-     * way a letterer would — centered in the balloon, sized down from
-     * generous until the block sits inside about 78% of the width and 80% of
-     * the height, lines broken to [TypeSet]'s taper rather than greedily.
-     * The fill is opaque by default; the whole point is that the original
-     * lettering must not ghost through the English.
+     * way a letterer would — inside the balloon's actual shape. The mask is
+     * measured row by row ([BalloonShape]); the type starts generous and,
+     * at each size, the block is tried at a few line counts and vertical
+     * positions, each line capped by the room the balloon has at the rows
+     * it would sit on. The first size at which the words fit wins, with
+     * the placement that fills the shape best and sits nearest the body's
+     * centre. A balloon too irregular to measure falls back to fitting an
+     * elliptical taper into the box.
+     *
+     * The fill is opaque; the whole point is that the original lettering
+     * must not ghost through the English.
      */
-    private fun placeClean(b: RenderBubble, balloon: Balloon, stamp: Bitmap): Placed? {
+    private fun placeClean(b: RenderBubble, balloon: Balloon, stamp: Bitmap, inpainted: Boolean): Placed? {
         val sfx = b.kind == BubbleKind.SFX
         val box = balloon.box
-        val maxTextW = box.width() * 0.78f
-        val maxTextH = box.height() * 0.80f
-
         val tp = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
             color = readableText(b.bgColor, b.textColor)
             typeface = if (sfx) sfxFace else dialogueFace
         }
-        var size = (box.height() * 0.24f / resources.displayMetrics.density)
+        val startSize = (box.height() * 0.24f / resources.displayMetrics.density)
             .coerceIn(15f, 34f) * textScale
+
         var layout: StaticLayout? = null
-        while (true) {
-            tp.textSize = dp(size)
-            val lines = TypeSet.breakLines(b.translated, { s -> tp.measureText(s) }, maxTextW)
-            var widest = 0f
-            for (line in lines) widest = maxOf(widest, tp.measureText(line))
-            val block = lines.joinToString("\n")
-            val candidate = StaticLayout.Builder
-                .obtain(block, 0, block.length, tp, (widest + 2f).toInt().coerceAtLeast(16))
-                .setAlignment(Layout.Alignment.ALIGN_CENTER)
-                .setLineSpacing(0f, 1.06f)
-                .setIncludePad(false)
-                .build()
-            layout = candidate
-            if (widest <= maxTextW && candidate.height <= maxTextH) break
-            if (size <= 9f) break
-            size = (size - 1.25f).coerceAtLeast(9f)
+        var textX = 0f
+        var textY = 0f
+
+        val shape = BalloonShape.of(balloon.mask, balloon.maskW, balloon.maskH)
+        if (shape != null && shape.maxSpan > 0f) {
+            val cellW = box.width().toFloat() / balloon.maskW
+            val cellH = box.height().toFloat() / balloon.maskH
+            var size = startSize
+            while (size >= MIN_TYPE_SIZE) {
+                tp.textSize = dp(size)
+                val shaper = TypeSet.Shaper(b.translated) { tp.measureText(it) }
+                val lineH = (tp.descent() - tp.ascent()) * LINE_SPACING
+                val fit = fitShape(shaper, shape, lineH / cellH, cellW)
+                if (fit != null) {
+                    val (lines, topRow) = fit
+                    val block = lines.joinToString("\n")
+                    var widest = 0f
+                    for (line in lines) widest = maxOf(widest, tp.measureText(line))
+                    val candidate = StaticLayout.Builder
+                        .obtain(block, 0, block.length, tp, (widest + 2f).toInt().coerceAtLeast(16))
+                        .setAlignment(Layout.Alignment.ALIGN_CENTER)
+                        .setLineSpacing(0f, LINE_SPACING)
+                        .setIncludePad(false)
+                        .build()
+                    layout = candidate
+                    textX = box.left + shape.centerX * cellW - candidate.width / 2f
+                    val blockCenterRow = topRow + lines.size * (lineH / cellH) / 2f
+                    textY = box.top + blockCenterRow * cellH - candidate.height / 2f
+                    break
+                }
+                size = (size - 1.25f).coerceAtLeast(if (size > MIN_TYPE_SIZE) MIN_TYPE_SIZE else 0f)
+            }
+        }
+
+        if (layout == null) {
+            // Elliptical taper into the box: the shape could not be read, or
+            // the words will not fit it at any size.
+            val maxTextW = box.width() * 0.78f
+            val maxTextH = box.height() * 0.80f
+            var size = startSize
+            while (true) {
+                tp.textSize = dp(size)
+                val lines = TypeSet.breakLines(b.translated, { s -> tp.measureText(s) }, maxTextW)
+                var widest = 0f
+                for (line in lines) widest = maxOf(widest, tp.measureText(line))
+                val block = lines.joinToString("\n")
+                val candidate = StaticLayout.Builder
+                    .obtain(block, 0, block.length, tp, (widest + 2f).toInt().coerceAtLeast(16))
+                    .setAlignment(Layout.Alignment.ALIGN_CENTER)
+                    .setLineSpacing(0f, LINE_SPACING)
+                    .setIncludePad(false)
+                    .build()
+                layout = candidate
+                if (widest <= maxTextW && candidate.height <= maxTextH) break
+                if (size <= MIN_TYPE_SIZE) break
+                size = (size - 1.25f).coerceAtLeast(MIN_TYPE_SIZE)
+            }
+            val chosen = layout ?: return null
+            textX = box.exactCenterX() - chosen.width / 2f
+            textY = box.exactCenterY() - chosen.height / 2f
         }
         val chosen = layout ?: return null
 
-        val textX = box.exactCenterX() - chosen.width / 2f
-        val textY = box.exactCenterY() - chosen.height / 2f
         // At the minimum type size a verbose line can still overrun the
         // balloon; the reported bounds must cover whatever was painted, not
         // whatever was hoped for.
@@ -303,8 +388,64 @@ class BubbleOverlayView(context: Context) : View(context) {
             bg = fill,
             mask = stamp,
             maskDst = RectF(box),
-            tint = PorterDuffColorFilter(fill, PorterDuff.Mode.SRC_IN),
+            tint = if (inpainted) null else PorterDuffColorFilter(fill, PorterDuff.Mode.SRC_IN),
         )
+    }
+
+    /**
+     * The best shaped break of [shaper]'s words into the balloon at one
+     * type size, as the lines and the mask row the block starts on, or
+     * null when the words do not fit the shape at this size.
+     *
+     * @param lineRows one line's height in mask rows.
+     * @param cellW one mask cell's width in pixels.
+     */
+    private fun fitShape(
+        shaper: TypeSet.Shaper,
+        shape: BalloonShape,
+        lineRows: Float,
+        cellW: Float,
+    ): Pair<List<String>, Float>? {
+        val widest = shape.maxSpan * cellW * SHAPE_MARGIN
+        if (shaper.words.isEmpty() || shaper.widestWord > widest) return null
+        val minLines = shaper.greedyLines(widest)
+        var best: TypeSet.Fit? = null
+        var bestTop = 0f
+        var bestScore = Float.MAX_VALUE
+        for (k in minLines..minLines + EXTRA_LINES) {
+            if (k > shaper.words.size) break
+            val blockRows = k * lineRows
+            if (blockRows > shape.rows) break
+            for (top in candidateTops(shape, blockRows)) {
+                val caps = FloatArray(k) { i ->
+                    shape.capOver(top + i * lineRows, top + (i + 1) * lineRows) * cellW * SHAPE_MARGIN
+                }
+                if (caps.any { it < shaper.widestWord }) continue
+                val fit = shaper.fit(caps) ?: continue
+                // Fill the shape, and sit on the body: a block pushed to
+                // one end of the balloon reads as misplaced even when its
+                // lines fill their rows.
+                val off = (top + blockRows / 2f - shape.centerY) / shape.rows
+                val score = fit.cost + CENTER_WEIGHT * k * off * off
+                if (score < bestScore) {
+                    bestScore = score
+                    best = fit
+                    bestTop = top
+                }
+            }
+        }
+        val chosen = best ?: return null
+        return chosen.lines to bestTop
+    }
+
+    /** Block start rows to try: centred on the body, plus a spread over the balloon. */
+    private fun candidateTops(shape: BalloonShape, blockRows: Float): List<Float> {
+        val room = shape.rows - blockRows
+        if (room < 0f) return emptyList()
+        val tops = ArrayList<Float>(TOP_SAMPLES + 1)
+        tops.add((shape.centerY - blockRows / 2f).coerceIn(0f, room))
+        for (i in 0..TOP_SAMPLES) tops.add(room * i / TOP_SAMPLES)
+        return tops
     }
 
     private fun placeCard(b: RenderBubble, occupied: List<RectF>): Placed? {
@@ -438,6 +579,8 @@ class BubbleOverlayView(context: Context) : View(context) {
     }
 
     override fun onDraw(canvas: Canvas) {
+        val panels = debugPanels
+        for (i in 0 until panels.size) canvas.drawRect(panels[i], debugPanelPaint)
         val debug = debugBalloons
         for (i in 0 until debug.size) canvas.drawRect(debug[i], debugPaint)
         val list = placed

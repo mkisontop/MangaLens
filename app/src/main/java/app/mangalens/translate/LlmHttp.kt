@@ -1,11 +1,15 @@
 package app.mangalens.translate
 
+import app.mangalens.settings.AiReasoning
 import app.mangalens.settings.AppSettings
 import app.mangalens.settings.LlmProvider
 import java.io.IOException
 import java.util.concurrent.TimeUnit
 import kotlin.coroutines.resume
 import kotlin.coroutines.resumeWithException
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.suspendCancellableCoroutine
 import okhttp3.Call
 import okhttp3.Callback
@@ -14,13 +18,30 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import okhttp3.Response
+import okio.BufferedSource
 import org.json.JSONArray
 import org.json.JSONObject
 
 /**
  * Shared HTTP plumbing for the text and vision LLM engines: one client with
  * upload-friendly timeouts, the Anthropic Messages shape, the OpenAI-compatible
- * chat shape (OpenAI, Gemini, OpenRouter, custom), and tolerant JSON digging.
+ * chat shape (OpenAI, Gemini, OpenRouter, custom), streaming for both, and
+ * tolerant JSON digging.
+ *
+ * Every request is laid out stable-first: the system prompt, then the
+ * series memory (glossary and cast, which change only when a new name is
+ * met), then the page — its images and its regions — last. Providers that
+ * cache a request prefix get to reuse everything up to the page on every
+ * call; on the Anthropic API the two stable blocks carry explicit cache
+ * breakpoints, so a page costs its own tokens and little else.
+ *
+ * Every current model reasons before it answers, and each provider takes
+ * that instruction in its own dialect. The reader's [AiReasoning] choice is
+ * translated per provider and per model here, so a stronger model is asked
+ * to think as much as the reader wants and no more — the thinking is where
+ * it earns its keep, and also the whole of the wait before the first
+ * balloon streams in. Models that take no such control get none, and the
+ * request stays exactly what it was.
  */
 internal object LlmHttp {
 
@@ -32,12 +53,46 @@ internal object LlmHttp {
         .readTimeout(90, TimeUnit.SECONDS)
         .build()
 
+    /** Claude models that take an effort level; older ones reject the parameter. */
+    private val CLAUDE_EFFORT = Regex("^claude-(opus-(5|4-[5-9])|sonnet-(5|4-[6-9])|fable|mythos)")
+
+    /** Gemini models with thinking. Gemini 3 takes only low and high. */
+    private val GEMINI_THINKING = Regex("gemini-(2\\.5|3)")
+    private val GEMINI_3 = Regex("gemini-3")
+
+    /**
+     * OpenAI reasoning models. They take a reasoning effort, they reject
+     * `max_tokens` in favour of `max_completion_tokens`, and they reject
+     * any temperature but the default — three ways a request written for
+     * gpt-4o fails outright on them.
+     */
+    private val OPENAI_REASONING = Regex("^(gpt-5|o[1-9])")
+
+    /** OpenRouter model ids whose upstream takes a reasoning effort. */
+    private val OPENROUTER_REASONING = Regex("claude|gemini-(2\\.5|3)|gpt-5|/o[1-9]|grok|deepseek-r|qwen3|glm-4\\.[5-9]|kimi")
+
+    /** OpenRouter upstreams that want the default temperature left alone. */
+    private val OPENROUTER_DEFAULT_TEMPERATURE = Regex("gemini-3|gpt-5|/o[1-9]")
+
     fun providerLabel(settings: AppSettings): String = when (settings.provider) {
         LlmProvider.ANTHROPIC -> "Claude"
         LlmProvider.OPENAI -> "OpenAI"
         LlmProvider.GEMINI -> "Gemini"
         LlmProvider.OPENROUTER -> "OpenRouter"
         LlmProvider.CUSTOM -> "Custom AI"
+    }
+
+    /**
+     * The thinking level to ask for: "low", "medium" or "high". Reading the
+     * page image is where thinking pays — who is speaking, what a stylised
+     * glyph says — so the balanced setting spends a little there and the
+     * least on text, which is a translation with the context already in
+     * hand.
+     */
+    fun effortLevel(settings: AppSettings, vision: Boolean): String = when (settings.aiReasoning) {
+        AiReasoning.FAST -> "low"
+        AiReasoning.BALANCED -> if (vision) "medium" else "low"
+        AiReasoning.THOROUGH -> "high"
     }
 
     /**
@@ -69,96 +124,313 @@ internal object LlmHttp {
 
     /**
      * Sends one user turn and returns the assistant text.
-     * [anthropicContent] is a Messages-API content-block array; [openAiContent]
-     * is either a plain String or a chat-completions content array — the two
-     * wire formats for the same payload.
+     *
+     * @param stable the part of the turn that rarely changes between pages.
+     * @param images base64 JPEGs, the marked page first and any region
+     *   close-ups after it; empty for a text-only turn.
+     * @param page the per-page payload, sent last.
+     * @param effort the thinking level, from [effortLevel].
+     * @param vision whether this is the page-image path, which is allowed a
+     *   longer answer.
+     * @param onDelta when given, the reply is streamed and every piece of
+     *   text is handed over as it arrives; the complete text is still the
+     *   return value. Cancelling the caller aborts the stream.
      */
     suspend fun complete(
         settings: AppSettings,
         system: String,
-        anthropicContent: JSONArray,
-        openAiContent: Any,
-        maxTokens: Int,
-    ): String = when (settings.provider) {
-        LlmProvider.ANTHROPIC -> anthropic(settings, system, anthropicContent, maxTokens)
-        else -> openAiCompatible(settings, system, openAiContent, maxTokens)
-    }
-
-    private suspend fun anthropic(settings: AppSettings, system: String, content: JSONArray, maxTokens: Int): String {
-        // No temperature: current Claude models reject non-default sampling params.
-        val body = JSONObject()
-            .put("model", settings.effectiveModel())
-            .put("max_tokens", maxTokens)
-            .put("system", system)
-            .put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", content)))
-        val request = Request.Builder()
-            .url(settings.endpoint())
-            .header("x-api-key", settings.apiKey)
-            .header("anthropic-version", "2023-06-01")
-            .post(body.toString().toRequestBody(JSON))
-            .build()
-        await(client.newCall(request)).use { resp ->
-            val text = resp.body?.string() ?: ""
-            if (!resp.isSuccessful) {
-                throw RuntimeException(providerLabel(settings) + " HTTP " + resp.code + ": " + text.take(200))
-            }
-            val blocks = JSONObject(text).getJSONArray("content")
-            val sb = StringBuilder()
-            for (i in 0 until blocks.length()) {
-                val block = blocks.getJSONObject(i)
-                if (block.optString("type") == "text") sb.append(block.optString("text"))
-            }
-            return sb.toString()
+        stable: String,
+        images: List<String>,
+        page: String,
+        effort: String,
+        vision: Boolean,
+        onDelta: (suspend (String) -> Unit)? = null,
+    ): String {
+        val anthropic = settings.provider == LlmProvider.ANTHROPIC
+        val streaming = onDelta != null
+        val body = if (anthropic) {
+            anthropicBody(settings, system, stable, images, page, effort, vision, streaming)
+        } else {
+            openAiBody(settings, system, stable, images, page, effort, vision, streaming)
         }
-    }
-
-    private suspend fun openAiCompatible(settings: AppSettings, system: String, content: Any, maxTokens: Int): String {
-        val messages = JSONArray()
-            .put(JSONObject().put("role", "system").put("content", system))
-            .put(JSONObject().put("role", "user").put("content", content))
-        // Greedy decoding. Re-reading a page must not re-word it: the cache is
-        // keyed on OCR text, and OCR varies slightly between two captures of
-        // the same page, so a re-read often misses the cache and asks again.
-        // With sampling on, that second answer differs from the first — the
-        // same panel worded two ways depending on when you looked at it.
-        val body = JSONObject()
-            .put("model", settings.effectiveModel())
-            .put("temperature", 0)
-            .put("max_tokens", maxTokens)
-            .put("messages", messages)
         val builder = Request.Builder()
             .url(settings.endpoint())
             .post(body.toString().toRequestBody(JSON))
-        if (settings.apiKey.isNotBlank()) builder.header("Authorization", "Bearer " + settings.apiKey)
-        await(client.newCall(builder.build())).use { resp ->
-            val text = resp.body?.string() ?: ""
+        if (anthropic) {
+            builder.header("x-api-key", settings.apiKey).header("anthropic-version", "2023-06-01")
+        } else if (settings.apiKey.isNotBlank()) {
+            builder.header("Authorization", "Bearer " + settings.apiKey)
+        }
+        val call = client.newCall(builder.build())
+        await(call).use { resp ->
             if (!resp.isSuccessful) {
+                val text = resp.body?.string() ?: ""
                 throw RuntimeException(providerLabel(settings) + " HTTP " + resp.code + ": " + text.take(200))
             }
-            return JSONObject(text)
-                .getJSONArray("choices")
-                .getJSONObject(0)
-                .getJSONObject("message")
-                .optString("content", "")
+            val source = resp.body?.source() ?: return ""
+            // A server that streams says so; one that ignored the request
+            // for a stream answers with a plain document, which is handled
+            // as such rather than parsed as events.
+            val type = resp.header("Content-Type") ?: ""
+            val looksLikeEvents = type.contains("text/event-stream", ignoreCase = true) ||
+                source.peekStartsWith("event:") || source.peekStartsWith("data:")
+            if (streaming && looksLikeEvents) {
+                return readEvents(call, source, anthropic, onDelta!!)
+            }
+            val text = source.readUtf8()
+            val out = if (anthropic) anthropicText(text) else openAiText(text)
+            if (streaming) onDelta!!(out)
+            return out
         }
     }
 
-    /** Digs the response object out of prose/markdown-fenced replies. */
+    private fun BufferedSource.peekStartsWith(prefix: String): Boolean =
+        runCatching { request(prefix.length.toLong()) && peek().readUtf8(prefix.length.toLong()) == prefix }
+            .getOrDefault(false)
+
+    /**
+     * Room for the answer. The cap covers the model's thinking as well as
+     * its reply on every current API, so it is set well above what a page
+     * of translations needs: a cap the thinking exhausts cuts the JSON off
+     * mid-array, and the page then falls back to the draft as though the
+     * model had said nothing.
+     */
+    internal fun outputCap(anthropic: Boolean, vision: Boolean, effort: String): Int {
+        val base = if (anthropic) (if (vision) 8192 else 4096) else (if (vision) 16384 else 8192)
+        return if (effort == "high") base * 2 else base
+    }
+
+    // ---- request shapes ----
+
+    internal fun anthropicBody(
+        settings: AppSettings,
+        system: String,
+        stable: String,
+        images: List<String>,
+        page: String,
+        effort: String,
+        vision: Boolean,
+        stream: Boolean,
+    ): JSONObject {
+        fun cached(text: String) = JSONObject()
+            .put("type", "text")
+            .put("text", text)
+            .put("cache_control", JSONObject().put("type", "ephemeral"))
+
+        val content = JSONArray().put(cached(stable))
+        for (image in images) {
+            content.put(
+                JSONObject().put("type", "image").put(
+                    "source",
+                    JSONObject()
+                        .put("type", "base64")
+                        .put("media_type", "image/jpeg")
+                        .put("data", image)
+                )
+            )
+        }
+        content.put(JSONObject().put("type", "text").put("text", page))
+        // No temperature: current Claude models reject non-default sampling params.
+        val body = JSONObject()
+            .put("model", settings.effectiveModel())
+            .put("max_tokens", outputCap(anthropic = true, vision = vision, effort = effort))
+            .put("system", JSONArray().put(cached(system)))
+            .put("messages", JSONArray().put(JSONObject().put("role", "user").put("content", content)))
+        if (CLAUDE_EFFORT.containsMatchIn(settings.effectiveModel())) {
+            body.put("output_config", JSONObject().put("effort", effort))
+        }
+        if (stream) body.put("stream", true)
+        return body
+    }
+
+    internal fun openAiBody(
+        settings: AppSettings,
+        system: String,
+        stable: String,
+        images: List<String>,
+        page: String,
+        effort: String,
+        vision: Boolean,
+        stream: Boolean,
+    ): JSONObject {
+        // Text-only turns go as one plain string: every compatible server
+        // accepts that, and some accept nothing else.
+        val userContent: Any = if (images.isEmpty()) {
+            stable + "\n\n" + page
+        } else {
+            val parts = JSONArray().put(JSONObject().put("type", "text").put("text", stable))
+            for (image in images) {
+                parts.put(
+                    JSONObject().put("type", "image_url").put(
+                        "image_url",
+                        JSONObject().put("url", "data:image/jpeg;base64,$image")
+                    )
+                )
+            }
+            parts.put(JSONObject().put("type", "text").put("text", page))
+        }
+        val messages = JSONArray()
+            .put(JSONObject().put("role", "system").put("content", system))
+            .put(JSONObject().put("role", "user").put("content", userContent))
+        val model = settings.effectiveModel()
+        val cap = outputCap(anthropic = false, vision = vision, effort = effort)
+        val body = JSONObject().put("model", model).put("messages", messages)
+
+        // Greedy decoding wherever the model tolerates it. Re-reading a page
+        // must not re-word it: the cache is keyed on OCR text, and OCR
+        // varies slightly between two captures of the same page, so a
+        // re-read often misses the cache and asks again. With sampling on,
+        // that second answer differs from the first — the same panel worded
+        // two ways depending on when you looked at it. Gemini 3 and the
+        // OpenAI reasoning models are the exceptions: they are tuned for
+        // their default temperature, and Google warns that lowering it can
+        // send Gemini 3 into loops.
+        var greedy = true
+        var tokensField = "max_tokens"
+        when (settings.provider) {
+            LlmProvider.GEMINI -> {
+                if (GEMINI_3.containsMatchIn(model)) {
+                    greedy = false
+                    // Gemini 3 takes only low and high; medium is answered
+                    // with the faster of the two.
+                    body.put("reasoning_effort", if (effort == "high") "high" else "low")
+                } else if (GEMINI_THINKING.containsMatchIn(model)) {
+                    body.put("reasoning_effort", effort)
+                }
+            }
+            LlmProvider.OPENAI -> {
+                if (OPENAI_REASONING.containsMatchIn(model)) {
+                    greedy = false
+                    tokensField = "max_completion_tokens"
+                    body.put("reasoning_effort", effort)
+                }
+            }
+            LlmProvider.OPENROUTER -> {
+                if (OPENROUTER_REASONING.containsMatchIn(model)) {
+                    body.put("reasoning", JSONObject().put("effort", effort))
+                }
+                if (OPENROUTER_DEFAULT_TEMPERATURE.containsMatchIn(model)) greedy = false
+            }
+            else -> Unit
+        }
+        if (greedy) body.put("temperature", 0)
+        body.put(tokensField, cap)
+        if (stream) body.put("stream", true)
+        return body
+    }
+
+    // ---- response shapes ----
+
+    private fun anthropicText(json: String): String {
+        val blocks = JSONObject(json).getJSONArray("content")
+        val sb = StringBuilder()
+        for (i in 0 until blocks.length()) {
+            val block = blocks.getJSONObject(i)
+            if (block.optString("type") == "text") sb.append(block.optString("text"))
+        }
+        return sb.toString()
+    }
+
+    private fun openAiText(json: String): String = JSONObject(json)
+        .getJSONArray("choices")
+        .getJSONObject(0)
+        .getJSONObject("message")
+        .optString("content", "")
+
+    /**
+     * Reads a server-sent event stream to its end, handing each text delta
+     * to [onDelta] and returning the whole text. The read blocks the
+     * thread between events; cancelling the coroutine cancels the call,
+     * which fails the read and ends the stream.
+     */
+    private suspend fun readEvents(
+        call: Call,
+        source: BufferedSource,
+        anthropic: Boolean,
+        onDelta: suspend (String) -> Unit,
+    ): String {
+        val full = StringBuilder()
+        val handle = currentCoroutineContext()[Job]?.invokeOnCompletion { cause ->
+            if (cause != null) runCatching { call.cancel() }
+        }
+        try {
+            val data = StringBuilder()
+            suspend fun dispatch() {
+                if (data.isEmpty()) return
+                val payload = data.toString()
+                data.setLength(0)
+                if (payload == "[DONE]") return
+                val o = runCatching { JSONObject(payload) }.getOrNull() ?: return
+                val text = if (anthropic) anthropicDelta(o) else openAiDelta(o)
+                if (text.isNotEmpty()) {
+                    full.append(text)
+                    onDelta(text)
+                }
+            }
+            while (true) {
+                val line = try {
+                    source.readUtf8Line()
+                } catch (e: IOException) {
+                    currentCoroutineContext().ensureActive()
+                    throw e
+                } ?: break
+                when {
+                    line.isEmpty() -> dispatch()
+                    line.startsWith("data:") -> data.append(line.substring(5).trim())
+                    // event: and comment lines carry nothing the payload does not.
+                }
+            }
+            dispatch()
+        } finally {
+            handle?.dispose()
+        }
+        return full.toString()
+    }
+
+    private fun anthropicDelta(o: JSONObject): String = when (o.optString("type")) {
+        "content_block_delta" -> {
+            val delta = o.optJSONObject("delta")
+            if (delta != null && delta.optString("type") == "text_delta") delta.optString("text", "") else ""
+        }
+        "error" -> throw RuntimeException(o.optJSONObject("error")?.optString("message") ?: "stream error")
+        else -> ""
+    }
+
+    private fun openAiDelta(o: JSONObject): String {
+        val choice = o.optJSONArray("choices")?.optJSONObject(0) ?: return ""
+        val delta = choice.optJSONObject("delta") ?: return ""
+        return if (delta.isNull("content")) "" else delta.optString("content", "")
+    }
+
+    /**
+     * Digs the response object out of prose/markdown-fenced replies. A
+     * reply that is a bare array of bubbles is wrapped into the object
+     * shape; it is recognised by its bracket coming before any brace, since
+     * the first brace inside such an array opens its first bubble, not the
+     * reply.
+     */
     fun extractJsonObject(raw: String): JSONObject {
         val cleaned = raw.replace("```json", "").replace("```", "").trim()
         val objStart = cleaned.indexOf('{')
         val objEnd = cleaned.lastIndexOf('}')
-        if (objStart >= 0 && objEnd > objStart) {
-            runCatching { return JSONObject(cleaned.substring(objStart, objEnd + 1)) }
-        }
-        // Bare-array reply: wrap so callers always see the object shape.
         val arrStart = cleaned.indexOf('[')
         val arrEnd = cleaned.lastIndexOf(']')
-        if (arrStart >= 0 && arrEnd > arrStart) {
-            runCatching {
-                return JSONObject().put("bubbles", JSONArray(cleaned.substring(arrStart, arrEnd + 1)))
-            }
+        val arrayFirst = arrStart >= 0 && (objStart < 0 || arrStart < objStart)
+
+        fun asObject(): JSONObject? = if (objStart >= 0 && objEnd > objStart) {
+            runCatching { JSONObject(cleaned.substring(objStart, objEnd + 1)) }.getOrNull()
+        } else {
+            null
         }
-        throw RuntimeException("no JSON in LLM reply")
+
+        // Bare-array reply: wrap so callers always see the object shape.
+        fun asArray(): JSONObject? = if (arrStart >= 0 && arrEnd > arrStart) {
+            runCatching { JSONObject().put("bubbles", JSONArray(cleaned.substring(arrStart, arrEnd + 1))) }.getOrNull()
+        } else {
+            null
+        }
+
+        return (if (arrayFirst) asArray() ?: asObject() else asObject() ?: asArray())
+            ?: throw RuntimeException("no JSON in LLM reply")
     }
 }

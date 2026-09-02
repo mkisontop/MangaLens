@@ -73,6 +73,8 @@ object BubbleGrouper {
      *   these disagree with the clustering below, they win — see [BalloonMerge].
      * @param includeEmptyBalloons report balloons holding no readable text.
      *   Only for engines that can read the image themselves.
+     * @param panels the page's panel grid, when the pixels showed one; it
+     *   decides reading order where balloon geometry alone cannot.
      */
     fun group(
         lines: List<OcrLine>,
@@ -83,6 +85,7 @@ object BubbleGrouper {
         exclusions: List<Rect> = emptyList(),
         balloons: List<Rect> = emptyList(),
         includeEmptyBalloons: Boolean = false,
+        panels: List<Rect> = emptyList(),
     ): List<Bubble> {
         val usable = lines.mapNotNull { l ->
             val cleaned = Script.clean(l.text)
@@ -103,7 +106,7 @@ object BubbleGrouper {
             // vertical lettering it cannot resolve at all is the usual reason,
             // and that is precisely when handing them to a vision model helps.
             return if (includeEmptyBalloons && balloons.isNotEmpty()) {
-                finish(BalloonMerge.apply(emptyList(), balloons, lang, includeEmpty = true), lang)
+                finish(BalloonMerge.apply(emptyList(), balloons, lang, includeEmpty = true), lang, panels)
             } else {
                 emptyList()
             }
@@ -164,7 +167,7 @@ object BubbleGrouper {
         }
         // Reconcile against the balloons actually on the page before anything
         // downstream treats a region as an utterance.
-        return finish(BalloonMerge.apply(bubbles, balloons, lang, includeEmptyBalloons), lang)
+        return finish(BalloonMerge.apply(bubbles, balloons, lang, includeEmptyBalloons), lang, panels)
     }
 
     /**
@@ -198,8 +201,8 @@ object BubbleGrouper {
      * prompt, and the links are what let it resolve a clause whose subject
      * lives in the previous balloon.
      */
-    private fun finish(bubbles: List<Bubble>, lang: SourceLang): List<Bubble> {
-        val ordered = ReadingOrder.order(bubbles, ReadingOrder.isRightToLeft(bubbles, lang))
+    private fun finish(bubbles: List<Bubble>, lang: SourceLang, panels: List<Rect>): List<Bubble> {
+        val ordered = ReadingOrder.order(bubbles, ReadingOrder.isRightToLeft(bubbles, lang), panels)
         return Utterance.link(ordered, lang)
     }
 

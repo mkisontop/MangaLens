@@ -33,6 +33,11 @@ class TranslationService(
 
     data class Outcome(val texts: List<String>, val engineLabel: String, val note: String? = null)
 
+    /**
+     * @param onProgress with an AI engine, receives the texts resolved so
+     *   far — cache hits and streamed answers, by input index — each time
+     *   another answer lands, so the page can be painted as it is written.
+     */
     suspend fun translate(
         items: List<String>,
         lang: SourceLang,
@@ -41,6 +46,7 @@ class TranslationService(
         runs: List<Int>? = null,
         parts: List<Int>? = null,
         forceGoogle: Boolean = false,
+        onProgress: (suspend (Map<Int, String>) -> Unit)? = null,
     ): Outcome {
         val chain: List<TranslationEngine> = when {
             forceGoogle -> listOf(google)
@@ -73,12 +79,22 @@ class TranslationService(
             val missing = missingIdx.sorted().map { it to items[it] }
             try {
                 val fresh = if (engine is LlmEngine && kinds != null) {
+                    val partial = HashMap<Int, String>()
+                    for (i in items.indices) resolved[i]?.let { partial[i] = it }
                     engine.translateWithKinds(
                         missing.map { it.second },
                         missing.map { kinds.getOrNull(it.first) ?: BubbleKind.DIALOGUE },
                         missing.map { runs?.getOrNull(it.first) ?: -1 },
                         missing.map { parts?.getOrNull(it.first) ?: 0 },
                         lang,
+                        onEntry = onProgress?.let { emit ->
+                            { k, en ->
+                                missing.getOrNull(k)?.let { (idx, _) ->
+                                    partial[idx] = en
+                                    emit(HashMap(partial))
+                                }
+                            }
+                        },
                     )
                 } else {
                     engine.translate(missing.map { it.second }, lang)
