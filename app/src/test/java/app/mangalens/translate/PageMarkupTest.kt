@@ -123,6 +123,37 @@ class PageMarkupTest {
     }
 
     @Test
+    fun `close-ups are cut from the full-resolution frame and badged`() {
+        val balloons = listOf(Rect(560, 120, 900, 320), Rect(90, 150, 430, 350))
+        val page = syntheticPage(1000, 1500, balloons)
+        val anchors = balloons.map { Bubble("", it, true) }
+
+        val crops = PageMarkup.encodeRegionCrops(page, anchors, listOf(1, 0), dataSaver = false)
+        assertTrue("one close-up per requested region", crops.size == 2)
+        for ((i, b64) in crops.withIndex()) {
+            val bytes = Base64.decode(b64, Base64.NO_WRAP)
+            assertTrue("close-up $i is a JPEG", bytes[0] == 0xFF.toByte() && bytes[1] == 0xD8.toByte())
+            val img = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+            // The balloon is 340 px wide: the crop keeps full resolution, with its padding.
+            assertTrue("close-up keeps the source resolution (got ${img.width})", img.width in 340..420)
+            // The badge sits in the top-left corner in mark magenta.
+            val corner = img.getPixel(4, 4)
+            assertTrue("badge at the corner", Color.red(corner) > 180 && Color.green(corner) < 80)
+            val out = File(outputDir, "closeup-$i.jpg")
+            out.writeBytes(bytes)
+            println("wrote ${out.absolutePath} (${bytes.size} bytes)")
+        }
+
+        // Data saver shrinks them but keeps every one.
+        val small = PageMarkup.encodeRegionCrops(page, anchors, listOf(0), dataSaver = true)
+        val img = android.graphics.BitmapFactory.decodeByteArray(Base64.decode(small[0], Base64.NO_WRAP), 0, Base64.decode(small[0], Base64.NO_WRAP).size)
+        assertTrue("data saver close-ups are at most 384 px on the long side (got ${img.width})", img.width <= 384)
+
+        // An id off the end is skipped, never a crash.
+        assertTrue(PageMarkup.encodeRegionCrops(page, anchors, listOf(7), false).isEmpty())
+    }
+
+    @Test
     fun `a page with no detected regions still encodes`() {
         val page = syntheticPage(600, 800, emptyList())
         val bytes = Base64.decode(PageMarkup.encodeMarkedPage(page, emptyList(), false), Base64.NO_WRAP)

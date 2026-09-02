@@ -142,9 +142,26 @@ Key details:
   once when the last one closes. Requests are laid out stable-first (system
   prompt, then glossary and cast, then the page), so providers that cache a
   request prefix reuse the series memory page after page; on the Anthropic
-  API those blocks carry explicit cache breakpoints, and current Claude
-  models are asked for a lower reasoning effort — translation is not a
-  problem to think about at length, and the answer comes back sooner.
+  API those blocks carry explicit cache breakpoints.
+- **A stronger model is allowed to be stronger, without paying for it in
+  waiting**: every current model reasons before it writes, and that
+  reasoning is both where a better model earns its keep and the whole of the
+  wait before the first balloon streams in. The **AI reasoning** setting
+  (fast / balanced / thorough) is translated into each provider's own
+  control — Claude's effort level, Gemini's thinking level, OpenAI's
+  reasoning effort, OpenRouter's unified reasoning parameter — and only for
+  the models that take one; balanced spends a little on the page image and
+  the least on text. Requests are also shaped per model where it matters:
+  Gemini 3 keeps its default temperature (Google warns that lowering it
+  causes loops), OpenAI reasoning models get the token field they accept,
+  and the output cap leaves room for the thinking that current APIs count
+  against it — a cap the thinking exhausts cuts the JSON off mid-page, and
+  the page falls back to the draft as though the model had said nothing.
+  The regions on-device OCR could not read go up a second time as enlarged
+  close-ups cut from the full-resolution frame, each badged with its
+  region id: on a tablet capture the page image reduces balloon lettering
+  to glyphs a dozen pixels tall, and a model that could read the stylised
+  or vertical text at full size was reduced to guessing at it.
 - **AI Vision routing (Auto)**: pages routed by script — vertical Japanese and
   manhua go to the vision model as a compressed image (~150–300 KB, less with
   Data saver); horizontal Korean webtoons use text-only requests a few KB big.

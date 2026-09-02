@@ -30,6 +30,17 @@ enum class CaptureMode { AUTO, MANUAL }
  */
 enum class AiVisionMode { AUTO, ALWAYS, OFF }
 
+/**
+ * How long the AI may think about a page before answering. Every current
+ * model reasons before it writes, and the reasoning is where a stronger
+ * model earns its keep — but it is also the wait before the first balloon
+ * streams in. FAST asks for the least thinking the provider allows,
+ * BALANCED for a little on the page image and the least on text, THOROUGH
+ * for the provider's full depth. Providers that take no such control are
+ * unaffected.
+ */
+enum class AiReasoning { FAST, BALANCED, THOROUGH }
+
 data class AppSettings(
     val engine: EngineKind = EngineKind.GOOGLE,
     val provider: LlmProvider = LlmProvider.ANTHROPIC,
@@ -39,6 +50,7 @@ data class AppSettings(
     val sourceLang: SourceLang = SourceLang.AUTO,
     val mode: CaptureMode = CaptureMode.AUTO,
     val aiVision: AiVisionMode = AiVisionMode.AUTO,
+    val aiReasoning: AiReasoning = AiReasoning.BALANCED,
     val dataSaver: Boolean = false,
     /**
      * Reports what each stage of a pass actually found, and outlines the
@@ -84,6 +96,7 @@ private object Keys {
     val SOURCE_LANG = stringPreferencesKey("source_lang")
     val MODE = stringPreferencesKey("mode")
     val AI_VISION = stringPreferencesKey("ai_vision")
+    val AI_REASONING = stringPreferencesKey("ai_reasoning")
     val DATA_SAVER = booleanPreferencesKey("data_saver")
     val DIAGNOSTICS = booleanPreferencesKey("diagnostics")
     val TEXT_SCALE = floatPreferencesKey("text_scale")
@@ -215,6 +228,7 @@ internal fun settingsFromPreferences(p: Preferences, credentials: Preferences = 
         sourceLang = enumOr(p[Keys.SOURCE_LANG], d.sourceLang),
         mode = enumOr(p[Keys.MODE], d.mode),
         aiVision = enumOr(p[Keys.AI_VISION], d.aiVision),
+        aiReasoning = enumOr(p[Keys.AI_REASONING], d.aiReasoning),
         dataSaver = p[Keys.DATA_SAVER] ?: d.dataSaver,
         diagnostics = p[Keys.DIAGNOSTICS] ?: d.diagnostics,
         textScale = p[Keys.TEXT_SCALE] ?: d.textScale,
@@ -245,6 +259,7 @@ class SettingsRepository(private val context: Context) {
     suspend fun setSourceLang(v: SourceLang) = context.settingsStore.edit { it[Keys.SOURCE_LANG] = v.name }
     suspend fun setMode(v: CaptureMode) = context.settingsStore.edit { it[Keys.MODE] = v.name }
     suspend fun setAiVision(v: AiVisionMode) = context.settingsStore.edit { it[Keys.AI_VISION] = v.name }
+    suspend fun setAiReasoning(v: AiReasoning) = context.settingsStore.edit { it[Keys.AI_REASONING] = v.name }
     suspend fun setDataSaver(v: Boolean) = context.settingsStore.edit { it[Keys.DATA_SAVER] = v }
     suspend fun setDiagnostics(v: Boolean) = context.settingsStore.edit { it[Keys.DIAGNOSTICS] = v }
     suspend fun setTextScale(v: Float) = context.settingsStore.edit { it[Keys.TEXT_SCALE] = v }

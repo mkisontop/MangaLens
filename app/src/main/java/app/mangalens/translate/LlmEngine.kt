@@ -79,9 +79,9 @@ class LlmEngine(
 
         val stream = if (onEntry == null) null else BubbleStream()
         val raw = LlmHttp.complete(
-            settings, SYSTEM_PROMPT, stable, null, page,
-            maxTokens = 2600,
-            effort = LlmHttp.effortFor(settings, "low"),
+            settings, SYSTEM_PROMPT, stable, emptyList(), page,
+            effort = LlmHttp.effortLevel(settings, vision = false),
+            vision = false,
             onDelta = if (stream == null) null else { delta ->
                 for (o in stream.feed(delta)) {
                     val id = o.optInt("id", -1)

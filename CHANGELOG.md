@@ -15,8 +15,19 @@ themselves are found and cleaned on the pages that used to defeat it.
   is painted the moment the model finishes writing it, over the draft the
   reader is already reading. Requests are laid out stable-first, with cache
   breakpoints on the Anthropic API, so the series memory costs next to
-  nothing page after page; current Claude models are asked for lower
-  reasoning effort, which returns sooner.
+  nothing page after page.
+- **AI reasoning setting.** Fast, balanced or thorough, translated into each
+  provider's own thinking control for the models that take one: Claude
+  effort, Gemini thinking level, OpenAI reasoning effort, OpenRouter's
+  reasoning parameter. Balanced thinks a little on the page image and the
+  least on text.
+- **Requests shaped per model.** Gemini 3 keeps its default temperature,
+  OpenAI reasoning models get `max_completion_tokens` and no temperature
+  (they rejected the old request outright), and the output cap now leaves
+  room for thinking so a thorough model can never truncate its own page.
+- **Close-ups for the model.** Regions OCR could not read are also sent as
+  enlarged crops from the full-resolution frame, badged with their region
+  id, so a strong vision model gets legible lettering where it matters.
 - **Balloons on tablets.** Detection now summarises every grid cell by its
   darkest and lightest pixel as well as its mean, so a hairline outline on a
   high-resolution capture is still a wall — previously it averaged to grey

@@ -71,6 +71,16 @@ class SettingsTest {
     }
 
     @Test
+    fun `reasoning defaults to balanced and reads back what was stored`() {
+        assertEquals(AiReasoning.BALANCED, settingsFromPreferences(preferencesOf()).aiReasoning)
+        val stored = preferencesOf(stringPreferencesKey("ai_reasoning") to "THOROUGH")
+        assertEquals(AiReasoning.THOROUGH, settingsFromPreferences(stored).aiReasoning)
+        // An unknown value from a newer build falls back rather than crashing.
+        val odd = preferencesOf(stringPreferencesKey("ai_reasoning") to "GALACTIC")
+        assertEquals(AiReasoning.BALANCED, settingsFromPreferences(odd).aiReasoning)
+    }
+
+    @Test
     fun `each provider reads only its own key and model`() {
         val stored = preferencesOf(
             providerKey to LlmProvider.OPENROUTER.name,

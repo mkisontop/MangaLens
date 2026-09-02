@@ -101,18 +101,26 @@ class VisionLlmEngine(
                 .put("glossary", JSONObject(glossary?.snapshot() ?: emptyMap<String, String>()))
                 .put("characters", JSONObject(cast?.describeAll() ?: emptyMap<String, String>()))
                 .toString()
+            // Regions on-device OCR could not read go up a second time as
+            // enlarged close-ups cut from the full-resolution frame, so the
+            // lettering the model must read itself reaches it legible.
+            val closeups = closeupIds(anchors, settings.dataSaver)
+            val crops = if (closeups.isEmpty()) emptyList() else {
+                PageMarkup.encodeRegionCrops(bitmap, anchors, closeups, settings.dataSaver)
+            }
             val page = JSONObject()
                 .put("expected_source_language", langHint)
                 .put("story_so_far", JSONArray(StoryContext.snapshot()))
                 .put("detected_regions", regions)
+                .put("closeups", JSONArray(closeups.take(crops.size)))
                 .toString()
 
             val stream = if (onBubble == null) null else BubbleStream()
             val streamed = HashSet<Int>()
             val raw = LlmHttp.complete(
-                settings, SYSTEM_PROMPT, stable, jpegB64, page,
-                maxTokens = 4000,
-                effort = LlmHttp.effortFor(settings, "medium"),
+                settings, SYSTEM_PROMPT, stable, listOf(jpegB64) + crops, page,
+                effort = LlmHttp.effortLevel(settings, vision = true),
+                vision = true,
                 onDelta = if (stream == null) null else { delta ->
                     for (o in stream.feed(delta)) entry(o, anchors, streamed)?.let { onBubble!!(it) }
                 },
@@ -135,6 +143,22 @@ class VisionLlmEngine(
             out.forEach { if (!it.sfx) StoryContext.remember(it.en, it.who) }
             out
         }
+
+    /**
+     * The regions that get a close-up: those OCR read next to nothing in,
+     * largest first, capped so a page of hand-lettering does not turn into
+     * a dozen uploads.
+     */
+    private fun closeupIds(anchors: List<app.mangalens.ocr.Bubble>, dataSaver: Boolean): List<Int> {
+        val cap = if (dataSaver) MAX_CLOSEUPS_DATA_SAVER else MAX_CLOSEUPS
+        return anchors.indices
+            .filter { i ->
+                val t = anchors[i].text
+                t.count { it.isLetter() || app.mangalens.ocr.Script.isCjk(it) } < 3
+            }
+            .sortedByDescending { anchors[it].box.width().toLong() * anchors[it].box.height() }
+            .take(cap)
+    }
 
     /** One reply entry as a bubble, or null when it answers nothing paintable. */
     private fun entry(
@@ -173,6 +197,10 @@ class VisionLlmEngine(
 
     companion object {
 
+        /** Close-ups per page; each is a small upload and a few hundred tokens. */
+        private const val MAX_CLOSEUPS = 6
+        private const val MAX_CLOSEUPS_DATA_SAVER = 3
+
         /** JPEG-encodes the page, downscaled so slow uplinks stay usable. */
         fun encodePage(bitmap: Bitmap, dataSaver: Boolean): String {
             val maxDim = if (dataSaver) 1000 else 1400
@@ -200,6 +228,7 @@ The request carries the series memory first ("glossary", "characters"), then the
 
 READING THE IMAGE
 Every region is outlined in magenta and labelled with its region id on a magenta badge at the region's top-left corner. For each region, read the original lettering under that outline directly from the art. "ocr_text_maybe_garbled" is a hint only — it is frequently wrong on vertical, stylized, handwritten and overlapping text, and the image always wins. Answer each region by its badge number. Never restate or adjust the given boxes.
+The regions listed in "closeups" are also attached after the page as enlarged close-up images, each carrying its region id on the same magenta badge. Read those regions from their close-up, which is sharper than the page, and still answer them by id — a close-up is never a new region.
 An outline usually marks a whole speech balloon. Everything inside it is ONE character's line, however many columns or lines it is set in — read the columns in order (vertical text runs top-to-bottom, columns right-to-left) and translate the balloon as a single utterance. Do not translate a column or a fragment as if it were a sentence on its own.
 "ocr_text_maybe_garbled" is empty when on-device OCR could not read the region at all. That is normal on vertical and hand-lettered text and does NOT mean the region is empty — read it from the image. Answer with "kind":"skip" only if there is genuinely no readable text there.
 "expected_source_language" is a guess from settings. Aggregator sites often serve raws already translated once — Spanish is common — so if the page's lettering is actually some other language, read that language and translate it into the same natural English. If a region's lettering is already English, answer it with "kind":"skip".

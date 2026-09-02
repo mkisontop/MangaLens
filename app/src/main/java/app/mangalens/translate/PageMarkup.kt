@@ -76,6 +76,72 @@ object PageMarkup {
         return marked
     }
 
+    /**
+     * Enlarged close-ups of the regions in [ids], each badged with its own
+     * id in the same style as the page marks, as base64 JPEGs.
+     *
+     * The page goes up at 1400 pixels on its long side, which turns the
+     * lettering of a balloon on a tablet capture into glyphs a dozen pixels
+     * tall. A model that could read the stylised or vertical text at full
+     * size is reduced to guessing at it, and a stronger model gains nothing
+     * over a weaker one. The close-ups are cut from the full-resolution
+     * frame, so the regions on-device OCR could not read reach the model
+     * legible — the exact regions where its reading matters.
+     */
+    fun encodeRegionCrops(
+        bitmap: Bitmap,
+        anchors: List<Bubble>,
+        ids: List<Int>,
+        dataSaver: Boolean,
+    ): List<String> {
+        val maxDim = if (dataSaver) 384 else 768
+        val quality = if (dataSaver) 62 else 80
+        val out = ArrayList<String>(ids.size)
+        for (id in ids) {
+            val box = anchors.getOrNull(id)?.box ?: continue
+            val pad = (max(box.width(), box.height()) * 0.08f).toInt().coerceAtLeast(6)
+            val crop = Rect(
+                (box.left - pad).coerceIn(0, bitmap.width),
+                (box.top - pad).coerceIn(0, bitmap.height),
+                (box.right + pad).coerceIn(0, bitmap.width),
+                (box.bottom + pad).coerceIn(0, bitmap.height),
+            )
+            if (crop.width() < 8 || crop.height() < 8) continue
+            val scale = (maxDim.toFloat() / max(crop.width(), crop.height())).coerceAtMost(1f)
+            val w = (crop.width() * scale).roundToInt().coerceAtLeast(1)
+            val h = (crop.height() * scale).roundToInt().coerceAtLeast(1)
+            val cut = Bitmap.createBitmap(bitmap, crop.left, crop.top, crop.width(), crop.height())
+            val sized = if (scale < 1f) Bitmap.createScaledBitmap(cut, w, h, true) else cut
+            val canvasBitmap = if (sized !== bitmap && sized.isMutable) sized else sized.copy(Bitmap.Config.ARGB_8888, true)
+            if (sized !== cut) cut.recycle()
+            if (canvasBitmap !== sized) sized.recycle()
+            if (canvasBitmap == null) continue
+            runCatching { drawBadge(canvasBitmap, id) }
+            out.add(encodeJpeg(canvasBitmap, quality))
+            canvasBitmap.recycle()
+        }
+        return out
+    }
+
+    /** The region's badge at a close-up's top-left corner. */
+    private fun drawBadge(target: Bitmap, id: Int) {
+        val canvas = Canvas(target)
+        val badge = (max(target.width, target.height) * 0.07f).coerceIn(16f, 34f)
+        val plate = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL
+            color = MARK_COLOR
+        }
+        val label = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.WHITE
+            textSize = badge * 0.72f
+            textAlign = Paint.Align.CENTER
+            isFakeBoldText = true
+        }
+        val r = badge / 2f
+        canvas.drawRoundRect(RectF(0f, 0f, badge, badge), r * 0.35f, r * 0.35f, plate)
+        canvas.drawText(id.toString(), r, r + label.textSize * 0.35f, label)
+    }
+
     private fun drawMarks(target: Bitmap, anchors: List<Bubble>, scale: Float) {
         if (anchors.isEmpty()) return
         val canvas = Canvas(target)
