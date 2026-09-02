@@ -1,7 +1,8 @@
 # MangaLens preview build
 
 Debug builds of branch `claude/manga-lens-realtime-translation-bv8riz`
-at commit 0787e11 (read-ahead analysis, streamed AI polish,
+at commit d3c91ae (read-ahead analysis, streamed AI polish, AI reasoning setting,
+region close-ups for the vision model,
 resolution-robust balloon detection, panel-aware order, shape-aware
 typesetting, inpainted fills).
 
