@@ -1,5 +1,42 @@
 # Changelog
 
+## 0.10.1
+
+Tap-to-turn readers are noticed on the first tap.
+
+**Download:** `MangaLens.apk` below updates 0.9.2 and newer in place. Still on
+0.9.1? Use `MangaLens-legacy-update.apk` once (Android 9+), as described in
+the README.
+
+- **The page turn's one frame is never dropped.** A screen capture delivers
+  a frame only when the screen changes, and a reader that turns the page on
+  a tap changes it exactly once: one frame with the new page on it, then
+  stillness. The capture loop looks at about twelve frames a second and
+  used to drop the rest outright, so when that one frame landed within
+  80 ms of the tap's own ripple it was dropped too, and with nothing after
+  it the swap went unseen — the previous page's translation sat on the new
+  page until the next tap. A frame that arrives too soon is now held and
+  looked at when the interval is up, so the last frame of any burst is
+  always seen.
+- **A turn during the polish is caught at once.** The comparison against
+  the translated page now runs from the moment the page is grabbed until
+  its cards come down — while the model is still streaming balloons, and
+  through the moments after each paint — instead of only once the pass has
+  finished and settled. Turning the page mid-stream used to go unnoticed
+  until the stream ended.
+- **The button and the pill are masked out.** The floating button, its busy
+  ring and the status pill are captured along with the page and were
+  compared as if they were part of it; on a page with dense cards the pill
+  appearing after a pass could pass for a page change and start the pass
+  over. Their footprint is now excluded from every comparison, tracked as
+  the pill comes and goes and the button is dragged, and the cells a card
+  or pill has just left stay excluded until the screen has caught up.
+- **Read-ahead survives the pill.** A frame read ahead of the stability
+  window is checked against the live screen before it is used; that check
+  now ignores the controls too, and also counts how many cells changed, so
+  a swap between two mostly-white pages can never slip through as "still
+  the same frame".
+
 ## 0.10.0
 
 The speed release: the page is read while the loop is still waiting for the

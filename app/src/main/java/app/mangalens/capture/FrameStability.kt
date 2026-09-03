@@ -70,11 +70,26 @@ object FrameStability {
         return px
     }
 
-    fun meanDiff(a: IntArray?, b: IntArray?): Double {
+    /** Mean absolute difference per cell, over the cells [mask] does not cover. */
+    fun meanDiff(a: IntArray?, b: IntArray?, mask: BooleanArray? = null): Double {
         if (a == null || b == null || a.size != b.size) return 255.0
         var sum = 0L
-        for (i in a.indices) sum += abs(a[i] - b[i])
-        return sum.toDouble() / a.size
+        var n = 0
+        for (i in a.indices) {
+            if (mask != null && i < mask.size && mask[i]) continue
+            sum += abs(a[i] - b[i])
+            n++
+        }
+        return if (n == 0) 0.0 else sum.toDouble() / n
+    }
+
+    /** The cells either mask covers; null when neither covers anything. */
+    fun union(a: BooleanArray?, b: BooleanArray?): BooleanArray? {
+        if (a == null) return b
+        if (b == null) return a
+        val out = BooleanArray(maxOf(a.size, b.size))
+        for (i in out.indices) out[i] = (i < a.size && a[i]) || (i < b.size && b[i])
+        return out
     }
 
     /**
