@@ -16,7 +16,7 @@ Scroll and they vanish; stop and the next page translates itself.
 · [all releases](https://github.com/mkisontop/mangalens/releases)
 · [changelog](CHANGELOG.md)
 
-Current release: **0.10.0**. Still on 0.9.1? Follow the
+Current release: **0.10.1**. Still on 0.9.1? Follow the
 [one-time update instructions](#one-time-update-from-091) instead of using
 the normal APK.
 
@@ -332,7 +332,19 @@ Key details:
   threshold. Cards are masked out of the comparison, since they are captured
   along with the page and sit exactly where it changes. The reference is
   taken from the very bitmap that was translated — never from a later
-  "settled" frame that a fast fling may already have moved.
+  "settled" frame that a fast fling may already have moved. The comparison
+  runs from the moment the page is grabbed until its cards come down —
+  through the streamed polish and the moments after each paint — so a
+  reader who turns the page mid-stream is noticed at once rather than when
+  the stream ends. And the frame a tap produces is never dropped: a capture
+  delivers a frame only when the screen changes, a tap changes it exactly
+  once, and the loop's rate limit (about twelve frames a second) holds a
+  frame that arrives too soon and looks at it when the interval is up,
+  where it used to skip it — which is how a swap landing within 80 ms of
+  the tap's own ripple went unseen until the next tap. The floating button,
+  its busy ring and the status pill are masked out of every comparison
+  along with the cards, and cells a card or pill has just left stay masked
+  until the screen has caught up.
 - **Slow scrolls can't smuggle a new balloon under an old card**: a gentle
   manhwa scroll is invisible to both detectors above. Consecutive frames
   barely differ when mostly-white strip slides over mostly-white strip, and

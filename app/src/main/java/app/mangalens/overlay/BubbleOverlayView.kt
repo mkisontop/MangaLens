@@ -181,6 +181,31 @@ class BubbleOverlayView(context: Context) : View(context) {
         invalidate()
     }
 
+    /**
+     * The strips the diagnostic outlines are drawn on, for the capture loop
+     * to mask out of its comparisons: outlines around every panel and
+     * balloon would otherwise read as the page having changed the moment
+     * they are drawn, and diagnostics would restart the very pass they
+     * were meant to explain.
+     */
+    fun debugStrokeRects(): List<Rect> {
+        val n = debugPanels.size + debugBalloons.size
+        if (n == 0) return emptyList()
+        val out = ArrayList<Rect>(n * 4)
+        // Half the stroke each side of the edge, plus anti-aliasing.
+        val w = dp(2f).toInt().coerceAtLeast(2)
+        for (r in debugPanels) strokeStrips(r, w, out)
+        for (r in debugBalloons) strokeStrips(r, w, out)
+        return out
+    }
+
+    private fun strokeStrips(r: Rect, w: Int, out: MutableList<Rect>) {
+        out.add(Rect(r.left - w, r.top - w, r.right + w, r.top + w))
+        out.add(Rect(r.left - w, r.bottom - w, r.right + w, r.bottom + w))
+        out.add(Rect(r.left - w, r.top - w, r.left + w, r.bottom + w))
+        out.add(Rect(r.right - w, r.top - w, r.right + w, r.bottom + w))
+    }
+
     fun clear() {
         source = emptyList()
         placed = emptyList()

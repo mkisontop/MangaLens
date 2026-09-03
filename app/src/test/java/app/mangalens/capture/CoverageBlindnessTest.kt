@@ -55,4 +55,30 @@ class CoverageBlindnessTest {
         val mask = BooleanArray(n) { true }
         assertEquals(0.0, FrameStability.changedFraction(a, b, mask), 1e-9)
     }
+
+    @Test
+    fun `the controls are masked out of the mean difference too`() {
+        val a = IntArray(n) { 220 }
+        val b = a.copyOf()
+        // A dark pill lands on a white page: a few dozen cells, a long way —
+        // enough to fail a frame read ahead as "no longer on screen".
+        val pill = BooleanArray(n)
+        for (y in 20 until 24) for (x in 10 until 50) {
+            pill[y * FrameStability.SIZE + x] = true
+            b[y * FrameStability.SIZE + x] = 70
+        }
+        assertTrue("unmasked, the pill reads as drift", FrameStability.meanDiff(a, b) > 1.2)
+        assertEquals("masked, the page is still the page", 0.0, FrameStability.meanDiff(a, b, pill), 1e-9)
+    }
+
+    @Test
+    fun `a union keeps every cell either mask covers`() {
+        val cards = BooleanArray(n) { it < 100 }
+        val pill = BooleanArray(n) { it in 200 until 260 }
+        val both = FrameStability.union(cards, pill)!!
+        assertEquals(160, both.count { it })
+        assertTrue(FrameStability.union(null, null) == null)
+        assertTrue(FrameStability.union(cards, null) === cards)
+        assertTrue(FrameStability.union(null, pill) === pill)
+    }
 }

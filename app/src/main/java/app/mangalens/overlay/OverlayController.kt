@@ -46,6 +46,16 @@ class OverlayController(private val context: Context, private val listener: List
     private var attached = false
     private val hidePill = Runnable { pill?.visibility = View.GONE }
 
+    /**
+     * Called on the main thread whenever the screen area the controls
+     * occupy changes: the pill comes or goes or is re-measured, the button
+     * is dragged, the menu opens or closes. The capture loop masks that
+     * area out of its comparisons and must learn of every change before
+     * the frame that shows it is drawn — which is why the row's own layout
+     * pass reports it, ahead of that frame's draw.
+     */
+    var onFootprintChanged: (() -> Unit)? = null
+
     private fun dp(v: Float): Int = (v * context.resources.displayMetrics.density).toInt()
 
     fun attach() {
@@ -76,6 +86,7 @@ class OverlayController(private val context: Context, private val listener: List
         runCatching { wm.removeView(bubbleView) }
         controls?.let { runCatching { wm.removeView(it) } }
         controls = null
+        onFootprintChanged = null
         attached = false
     }
 
@@ -154,6 +165,9 @@ class OverlayController(private val context: Context, private val listener: List
         }
         row.addView(btn)
         row.addView(status)
+        row.addOnLayoutChangeListener { _, l, t, r, b, oldL, oldT, oldR, oldB ->
+            if (l != oldL || t != oldT || r != oldR || b != oldB) onFootprintChanged?.invoke()
+        }
 
         val lp = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -198,6 +212,7 @@ class OverlayController(private val context: Context, private val listener: List
                         lp.x = startX + dx.toInt()
                         lp.y = startY + dy.toInt()
                         controls?.let { c -> runCatching { wm.updateViewLayout(c, lp) } }
+                        onFootprintChanged?.invoke()
                     }
                 }
                 MotionEvent.ACTION_UP -> {
@@ -275,10 +290,13 @@ class OverlayController(private val context: Context, private val listener: List
 
         wm.addView(col, lp)
         menu = col
+        onFootprintChanged?.invoke()
     }
 
     fun dismissMenu() {
-        menu?.let { runCatching { wm.removeView(it) } }
+        val open = menu ?: return
+        runCatching { wm.removeView(open) }
         menu = null
+        onFootprintChanged?.invoke()
     }
 }
