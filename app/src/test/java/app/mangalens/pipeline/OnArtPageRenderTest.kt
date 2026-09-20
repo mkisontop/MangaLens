@@ -163,10 +163,17 @@ class OnArtPageRenderTest {
             columns(c, 420, 120, 6, 10, 30, lightInk, true, rnd),
             "If I finish this, do I get to just go home? Thanks a lot! I can see my whole life flashing before my eyes right here under the stars. What on earth is going on?!",
         )
-        // A second, shorter block well clear of it.
+        // A two-column aside one glyph's width from the monologue — close
+        // enough that proximity alone welds them into one paragraph.
+        blocks += Block(
+            "aside-near",
+            columns(c, 523, 120, 2, 5, 30, lightInk, true, rnd),
+            "If this is done, can I just go home? Thanks!",
+        )
+        // A second, shorter block well clear of both.
         blocks += Block(
             "aside",
-            columns(c, 620, 120, 2, 6, 30, lightInk, true, rnd),
+            columns(c, 700, 120, 2, 6, 30, lightInk, true, rnd),
             "Here I am, making my way in an unfamiliar land.",
         )
         // The shout at the top right, large.
@@ -286,7 +293,9 @@ class OnArtPageRenderTest {
         }
         assertTrue("light lettering must be painted over the monologue (found $lit px)", lit > 300)
 
-        // No two placements pile onto each other.
+        // No two placements pile onto each other, and no English sits on
+        // other English at all: the aside a column from the monologue must
+        // part from it sideways, not print over it.
         for (i in rects.indices) for (j in i + 1 until rects.size) {
             val inter = Rect()
             if (!inter.setIntersect(rects[i], rects[j])) continue
@@ -294,6 +303,46 @@ class OnArtPageRenderTest {
             val smaller = minOf(rects[i].width().toLong() * rects[i].height(), rects[j].width().toLong() * rects[j].height())
             assertTrue("placements $i and $j majority-overlap ($overlap of $smaller)", overlap * 100 < smaller * 40)
         }
+        val texts = view.textRects()
+        for (i in texts.indices) for (j in i + 1 until texts.size) {
+            val inter = Rect()
+            val hit = inter.setIntersect(texts[i], texts[j]) && inter.width() > 2 && inter.height() > 2
+            assertTrue("English blocks $i (${texts[i]}) and $j (${texts[j]}) overlap", !hit)
+        }
+    }
+
+    /**
+     * The clipping the starry page showed: a block placed later wipes its
+     * columns after an earlier block's English was painted, and where the
+     * two touch the English loses its first letters. Backgrounds go down
+     * before any lettering, whatever the order of the blocks.
+     */
+    @Test
+    fun `a later block's wipe never paints over an earlier block's English`() {
+        val bmp = Bitmap.createBitmap(pageW, pageH, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+        c.drawColor(Color.rgb(40, 40, 52))
+        val rnd = Random(3)
+        // A column whose English block will spread wide to both sides…
+        val first = columns(c, 330, 300, 1, 12, 30, lightInk, false, rnd)
+        // …and a short column standing where that block's right half lands.
+        val second = columns(c, 410, 470, 1, 3, 30, lightInk, false, rnd)
+        val a = RenderPrep.bubble(bmp, first[0].box, "SOMETHING LONG ENOUGH TO SPREAD OUT WIDE ACROSS THE COLUMN BESIDE IT", "縦", true, app.mangalens.ocr.BubbleKind.DIALOGUE, emptyList(), first.map { it.box })
+        val b = RenderPrep.bubble(bmp, second[0].box, "OK", "縦", true, app.mangalens.ocr.BubbleKind.DIALOGUE, emptyList(), second.map { it.box })
+        val v = BubbleOverlayView(RuntimeEnvironment.getApplication()).apply { layout(0, 0, pageW, pageH) }
+        v.setBubbles(listOf(a, b))
+        val out = bmp.copy(Bitmap.Config.ARGB_8888, true)
+        v.draw(Canvas(out))
+
+        val text = v.textRects()[0]
+        val wipe = Rect(second[0].box).apply { inset(-ArtWipe.PAD, -ArtWipe.PAD) }
+        val shared = Rect()
+        assertTrue("the fixture must put the second wipe under the first block's English", shared.setIntersect(text, wipe))
+        var lit = 0
+        for (y in shared.top until shared.bottom) for (x in shared.left until shared.right) {
+            if (luminance(out.getPixel(x, y)) > 200) lit++
+        }
+        assertTrue("the English must show through where the later wipe lands (found $lit light px)", lit > 20)
     }
 
     /** Dark lettering on a light page takes dark type with a light outline, and the same wipe. */

@@ -214,7 +214,16 @@ class BubbleOverlayView(context: Context) : View(context) {
         for (b in bubbles) {
             val p = place(b, occupied) ?: continue
             out.add(p)
-            occupied.add(p.bounds)
+            // Lettering on open art claims only the English it painted: the
+            // lines it wiped are art again, and another block may sit over
+            // them. Everything else claims its whole footprint.
+            occupied.add(
+                if (p.lineWipes.isNotEmpty()) {
+                    RectF(p.textX, p.textY, p.textX + p.layout.width, p.textY + p.layout.height)
+                } else {
+                    p.bounds
+                },
+            )
         }
         return out
     }
@@ -412,7 +421,7 @@ class BubbleOverlayView(context: Context) : View(context) {
         left = left.coerceAtMost(screenW - w - dp(2f)).coerceAtLeast(dp(2f))
         top = top.coerceAtMost(screenH - h - dp(2f)).coerceAtLeast(dp(2f))
         val rect = RectF(left, top, left + w, top + h)
-        nudgeClear(rect, occupied, screenH)
+        clearText(rect, occupied, screenW, screenH)
 
         val grow = ArtWipe.PAD.toFloat()
         val wipes = b.lines.map { RectF(it).apply { inset(-grow, -grow) } }
@@ -764,6 +773,34 @@ class BubbleOverlayView(context: Context) : View(context) {
     }
 
     /**
+     * Slides a block of lettering off anything already placed. Text over
+     * text is unreadable at any overlap, so unlike [nudgeClear] this moves
+     * on a grazing touch — and it moves whichever way is shortest, sideways
+     * included, so two blocks set side by side on the art part sideways and
+     * each stays on its own columns rather than one leaping above or below.
+     */
+    private fun clearText(rect: RectF, occupied: List<RectF>, screenW: Float, screenH: Float) {
+        val gap = dp(4f)
+        for (attempt in 0 until 4) {
+            val hit = occupied.firstOrNull { other ->
+                minOf(other.right, rect.right) - maxOf(other.left, rect.left) > 2f &&
+                    minOf(other.bottom, rect.bottom) - maxOf(other.top, rect.top) > 2f
+            } ?: return
+            val moves = listOf(
+                (hit.right - rect.left + gap) to 0f, // right
+                -(rect.right - hit.left + gap) to 0f, // left
+                0f to (hit.bottom - rect.top + gap), // down
+                0f to -(rect.bottom - hit.top + gap), // up
+            ).filter { (dx, dy) ->
+                rect.left + dx >= dp(2f) && rect.right + dx <= screenW - dp(2f) &&
+                    rect.top + dy >= dp(2f) && rect.bottom + dy <= screenH - dp(2f)
+            }
+            val (dx, dy) = moves.minByOrNull { (dx, dy) -> kotlin.math.abs(dx) + kotlin.math.abs(dy) } ?: return
+            rect.offset(dx, dy)
+        }
+    }
+
+    /**
      * Shifts a card off cards already placed. Only meaningful overlap moves
      * it (over a third of the card's own area) — cards on a comic page brush
      * against each other constantly, and jittering every card for a grazing
@@ -803,6 +840,11 @@ class BubbleOverlayView(context: Context) : View(context) {
         val list = placed
         if (list.isEmpty()) return
         val radius = dp(9f)
+        // Two passes: every fill, wipe and card first, every line of English
+        // after. Painted item by item, a later item's wipe lands on top of
+        // an earlier item's lettering wherever the two touch — the column a
+        // monologue wipes runs under the first letters of the aside beside
+        // it — and the reader sees words missing their first letter.
         for (i in 0 until list.size) {
             val p = list[i]
             if (p.mask != null && p.maskDst != null) {
@@ -836,6 +878,9 @@ class BubbleOverlayView(context: Context) : View(context) {
                 strokePaint.color = if (lum < 140) 0x59FFFFFF else 0x2E000000
                 canvas.drawRoundRect(p.card, radius, radius, strokePaint)
             }
+        }
+        for (i in 0 until list.size) {
+            val p = list[i]
             canvas.save()
             canvas.translate(p.textX, p.textY)
             p.strokeLayout?.draw(canvas)

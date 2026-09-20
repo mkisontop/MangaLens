@@ -170,7 +170,18 @@ object BubbleGrouper {
         val groups = HashMap<Int, MutableList<OcrLine>>()
         for (i in 0 until n) groups.getOrPut(find(i)) { mutableListOf() }.add(usable[i])
 
-        val bubbles = groups.values.mapNotNull { raw ->
+        // Outside every balloon, proximity is the only boundary there is,
+        // and it reaches further than a block of lettering does: two
+        // monologues set side by side on the art, a column's width apart,
+        // weld into one region and come back as one paragraph. A block's
+        // own lines are evenly spaced, so a gap far wider than the others
+        // is the space between two blocks, and the group is cut there.
+        val blocks = ArrayList<MutableList<OcrLine>>(groups.size)
+        for ((root, members) in groups) {
+            if (balloonOf[root] >= 0) blocks.add(members) else blocks.addAll(splitAtWideGaps(members))
+        }
+
+        val bubbles = blocks.mapNotNull { raw ->
             buildBubble(raw, lang, medianStroke)
         }
         // Reconcile against the balloons actually on the page before anything
@@ -271,6 +282,50 @@ object BubbleGrouper {
         // wipe even though its reading was dropped from the text.
         val lines = raw.map { Rect(it.box) }
         return Bubble(text, union, vertical, if (sfx) BubbleKind.SFX else BubbleKind.DIALOGUE, lines = lines)
+    }
+
+    /** A gap wider than this many em is never inside one block, whatever its other gaps. */
+    private const val BLOCK_GAP_EM = 0.9f
+
+    /** A gap this many times the block's typical gap separates two blocks. */
+    private const val BLOCK_GAP_RATIO = 2.5f
+
+    /**
+     * Cuts a group of lettering that sits outside every balloon at any gap
+     * far wider than the gaps between its other lines: wider than
+     * [BLOCK_GAP_RATIO] times the typical gap, and at least [BLOCK_GAP_EM]
+     * of the lettering's size. Columns are walked right to left and rows
+     * top to bottom, the axis blocks separate along; a group of one or two
+     * lines has nothing to compare and stays whole.
+     */
+    private fun splitAtWideGaps(members: MutableList<OcrLine>): List<MutableList<OcrLine>> {
+        if (members.size < 3) return listOf(members)
+        val vertical = arrangedVertically(members) ?: (members.count { it.vertical } * 2 > members.size)
+        val em = members.map { if (vertical) it.box.width() else it.box.height() }.sorted()
+            .let { it[it.size / 2] }.coerceAtLeast(8)
+        val ordered = if (vertical) members.sortedByDescending { it.box.centerX() } else members.sortedBy { it.box.centerY() }
+        // The gap before each line, measured from the reach of everything
+        // before it, so a wide line never hides a gap behind a narrow one.
+        val gaps = IntArray(ordered.size)
+        var reach = if (vertical) ordered[0].box.left else ordered[0].box.bottom
+        for (i in 1 until ordered.size) {
+            val b = ordered[i].box
+            gaps[i] = if (vertical) max(0, reach - b.right) else max(0, b.top - reach)
+            reach = if (vertical) min(reach, b.left) else max(reach, b.bottom)
+        }
+        val typical = gaps.copyOfRange(1, gaps.size).sorted().let { it[(it.size - 1) / 2] }
+        val threshold = max(em * BLOCK_GAP_EM, typical * BLOCK_GAP_RATIO)
+        val out = ArrayList<MutableList<OcrLine>>()
+        var current = mutableListOf(ordered[0])
+        for (i in 1 until ordered.size) {
+            if (gaps[i] > threshold) {
+                out.add(current)
+                current = mutableListOf()
+            }
+            current.add(ordered[i])
+        }
+        out.add(current)
+        return out
     }
 
     /**

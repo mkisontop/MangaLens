@@ -29,6 +29,9 @@ defeated them.
 - **Per-glyph OCR boxes read as columns.** Large vertical lettering comes
   back one square box per glyph; the arrangement now decides direction, so
   two columns read right-to-left instead of interleaved.
+- **Neighbouring blocks on the art stay separate.** Two monologues set side
+  by side a column apart used to weld into one paragraph; a group outside
+  every balloon is now cut at a gap far wider than its other gaps.
 - **Split sentences: fewer false welds.** 的/了 and 야/라 leave the
   connective tables; a bare particle followed by a two-character reply, a
   short te-form request and a Korean quotative ending no longer link. The

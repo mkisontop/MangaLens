@@ -84,16 +84,55 @@ class BubbleGroupingTest {
     }
 
     @Test
-    fun `without balloons the two panels do merge, which is the defect`() {
-        // Pins the behaviour the boundary exists to prevent, so the fixture
-        // cannot quietly stop reproducing it.
+    fun `without balloons the two panels are only told apart by their gaps`() {
+        // Proximity welds the six columns into one group. The wide-gap cut
+        // then separates them, but it can only see spacing, not which
+        // columns share a balloon: here the right balloon's own columns are
+        // spaced unevenly (30 px, then 80 px), and the 80 px gap is cut as
+        // well. Balloons are what make the boundary exact; this pins what
+        // the page looks like without them.
         val bubbles = group(emptyList())
-        assertEquals(
-            "with no balloons to bound them, proximity welds the panels: " +
-                "${bubbles.map { it.text }}",
-            1,
-            bubbles.size,
+        assertTrue(
+            "the two balloons' lines must not share a region: ${bubbles.map { it.text }}",
+            bubbles.none { it.text.contains("夕が") && it.text.contains("いい") },
         )
+        assertEquals("the uneven right balloon is cut too", 3, bubbles.size)
+    }
+
+    @Test
+    fun `two blocks of lettering on open art a column apart are two regions`() {
+        // A six-column monologue on the art with a two-column aside beside
+        // it, the gap between them one glyph wide: proximity reaches across
+        // (the padding is a column and a half), the gap cut separates them.
+        val lines = ArrayList<OcrLine>()
+        for (k in 0 until 6) lines += column("這是文字", 700 - k * 55)
+        lines += column("這還", 340)
+        lines += column("完成", 285)
+        val bubbles = BubbleGrouper.group(lines, 800, 0, 0, SourceLang.ZH)
+        assertEquals("monologue and aside, got ${bubbles.map { it.text }}", 2, bubbles.size)
+        assertEquals("the monologue keeps its six columns", 6, bubbles[0].lines.size)
+        assertEquals("the aside keeps its two", 2, bubbles[1].lines.size)
+    }
+
+    @Test
+    fun `a wide gap inside a balloon is not cut`() {
+        // Columns spaced 15, 15 and 60 px apart inside one balloon: the
+        // balloon says they are one utterance, whatever the spacing.
+        val balloon = Rect(300, 80, 760, 420)
+        val lines = listOf(column("一二", 700), column("三四", 645), column("五六", 590), column("七八", 490))
+        val bubbles = BubbleGrouper.group(lines, 800, 0, 0, SourceLang.JA, balloons = listOf(balloon))
+        assertEquals("one balloon, one region: ${bubbles.map { it.text }}", 1, bubbles.size)
+        assertEquals("一二三四五六七八", bubbles[0].text)
+    }
+
+    @Test
+    fun `a paragraph gap under one em holds a block together`() {
+        val lines = listOf(column("一二", 700), column("三四", 650), column("五六", 600), column("七八", 530), column("九十", 480))
+        // Gaps of 10, 10, 30, 10 px on 40 px columns: the 30 px gap is under
+        // 0.9 em and under 2.5 times the typical gap only just — a paragraph
+        // break, not a second block.
+        val bubbles = BubbleGrouper.group(lines, 800, 0, 0, SourceLang.JA)
+        assertEquals("one block, got ${bubbles.map { it.text }}", 1, bubbles.size)
     }
 
     @Test

@@ -209,7 +209,9 @@ Key details:
   drawn at phone resolution — rounded rectangles, caption boxes flush in a
   panel corner, thought clouds, dashed whisper balloons, double outlines,
   zigzag shouts, occluded pairs, balloons on black and on busy colour art,
-  hairline outlines, tails, tablet captures — and all of them are found.
+  hairline outlines, tails, tablet captures — and every shape that holds a
+  line is found (a balloon holding only an ellipsis may be missed; there is
+  nothing in it to translate).
 
   Two balloons drawn joined — one character's consecutive lines, or two
   speakers' balloons touching — flood as one shape. The shape is eroded
@@ -429,7 +431,11 @@ Key details:
   the recognizer hands back one square box per glyph — as it does on large
   vertical lettering — no box calls itself vertical, so the arrangement
   decides: glyphs stacked into fewer columns than rows are a column, and two
-  such columns read right-to-left instead of interleaved.
+  such columns read right-to-left instead of interleaved. Outside every
+  balloon, proximity is the only boundary and it reaches further than a
+  block of lettering does — two monologues set side by side on the art, a
+  column apart, welded into one paragraph — so a group is cut at any gap
+  far wider than the gaps between its other lines.
 - **Sound effects are matched script-blind**: ぎゅ and ギュ are one effect,
   and OCR returns a long-vowel bar as 一 as often as ー, so lookups fold
   hiragana onto katakana and the lookalikes onto the bar first. The
