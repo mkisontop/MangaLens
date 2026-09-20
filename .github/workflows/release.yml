@@ -8,11 +8,17 @@ name: release
 # commit if it doesn't already exist. The permanent links are:
 #   https://github.com/mkisontop/mangalens/releases/latest/download/MangaLens.apk
 #   https://github.com/mkisontop/mangalens/releases/latest/download/MangaLens-legacy-update.apk
+#
+# A pre-release — signed with the same private key, installable over any
+# 0.9.2+ build, but left out of releases/latest and of the in-app update
+# check until promoted — goes out through a branch named prerelease/v0.11.0
+# (deleted again after publishing) or the manual run's "prerelease" box. Its
+# link is https://github.com/mkisontop/mangalens/releases/download/v0.11.0/MangaLens.apk.
 
 on:
   push:
     tags: ["v*"]
-    branches: ["release/v*"]
+    branches: ["release/v*", "prerelease/v*"]
   workflow_dispatch:
     inputs:
       tag:
@@ -47,11 +53,22 @@ jobs:
       - name: Resolve release metadata
         env:
           INPUT_TAG: ${{ inputs.tag }}
+          INPUT_PRERELEASE: ${{ inputs.prerelease }}
         run: |
+          PRERELEASE=false
           if [ -n "$INPUT_TAG" ]; then
             TAG="$INPUT_TAG"
+            [ "$INPUT_PRERELEASE" = "true" ] && PRERELEASE=true
           else
-            TAG="${GITHUB_REF_NAME#release/}"
+            case "$GITHUB_REF_NAME" in
+              prerelease/*)
+                TAG="${GITHUB_REF_NAME#prerelease/}"
+                PRERELEASE=true
+                ;;
+              *)
+                TAG="${GITHUB_REF_NAME#release/}"
+                ;;
+            esac
           fi
           if [[ ! "$TAG" =~ ^v[0-9]+(\.[0-9]+)+$ ]]; then
             echo "::error::Release tag '$TAG' must look like v0.9.3."
@@ -61,6 +78,7 @@ jobs:
           {
             echo "TAG=$TAG"
             echo "VER=$VER"
+            echo "PRERELEASE=$PRERELEASE"
           } >> "$GITHUB_ENV"
           if git show-ref --verify --quiet "refs/tags/$TAG"; then
             tagged_commit="$(git rev-list -n 1 "$TAG")"
@@ -291,7 +309,6 @@ jobs:
       - name: Publish release
         env:
           GH_TOKEN: ${{ github.token }}
-          PRERELEASE: ${{ inputs.prerelease }}
         run: |
           flags=()
           if [ "$PRERELEASE" = "true" ]; then
@@ -309,7 +326,7 @@ jobs:
             "${flags[@]}"
 
       - name: Clean up release branch
-        if: startsWith(github.ref, 'refs/heads/release/')
+        if: startsWith(github.ref, 'refs/heads/release/') || startsWith(github.ref, 'refs/heads/prerelease/')
         env:
           GH_TOKEN: ${{ github.token }}
         run: gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/heads/$GITHUB_REF_NAME" || true
