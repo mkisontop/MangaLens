@@ -54,6 +54,38 @@ object SfxDict {
         "ハッ" to "GASP", "キャー" to "EEEK", "ウワ" to "WAAAH", "ゲホ" to "COUGH",
         "ゴホ" to "COUGH", "ぐすん" to "SNIFF", "ぐぅ" to "GRRRN", "ザッ" to "SHFF",
         "ズズ" to "SLURP", "ガチャ" to "CLICK", "ガシ" to "GRAB",
+        // --- Japanese: more of the everyday ones ---
+        "ドクン" to "BA-DUMP", "ドクドク" to "THUMP THUMP", "ドキン" to "BA-DUMP", "キュン" to "…SQUEEZE…",
+        "ドーン" to "BOOM", "ドオン" to "BOOM", "ドッ" to "WHUMP", "ガーン" to "…SHOCK…", "ズーン" to "…GLOOM…",
+        "バタバタ" to "STOMP STOMP", "バタ" to "THUD", "ガタン" to "CLUNK", "ガチャン" to "CLANK",
+        "ピシッ" to "CRACK", "ピシ" to "CRACK", "パリン" to "SHATTER", "バリ" to "CRUNCH", "ボリ" to "CRUNCH",
+        "コンコン" to "KNOCK KNOCK", "コン" to "KNOCK", "トントン" to "TAP TAP", "トン" to "TAP",
+        "パチパチ" to "CLAP CLAP", "パチン" to "SNAP", "パチ" to "BLINK", "ポン" to "PAT", "ポカ" to "BONK",
+        "ジロジロ" to "…STARE…", "ジロ" to "GLARE", "ボー" to "…DAZED…", "ボーッ" to "…DAZED…",
+        "ニヤニヤ" to "SMIRK", "ニコニコ" to "BEAM", "ニッ" to "GRIN", "ムスッ" to "SULK", "ムッ" to "HMPH",
+        "イライラ" to "…IRRITATED…", "ワクワク" to "…EXCITED…", "ソワソワ" to "…FIDGET…", "オロオロ" to "…FLUSTER…",
+        "ハラハラ" to "FLUTTER", "ポロポロ" to "DRIP DRIP", "ポロ" to "PLOP", "ジワ" to "…WELLING…",
+        "ゾワ" to "SHUDDER", "ヒヤ" to "CHILL", "ヒヤヒヤ" to "…NERVOUS…", "ブルッ" to "SHIVER",
+        "スヤスヤ" to "ZZZ", "グースカ" to "ZZZ", "クー" to "ZZZ", "ペコ" to "BOW", "ペコペコ" to "BOW BOW",
+        "ガブ" to "CHOMP", "パク" to "CHOMP", "モグ" to "MUNCH", "ゴクリ" to "GULP", "ゴクン" to "GULP",
+        "チッ" to "TCH", "フン" to "HMPH", "ブー" to "BOO", "シクシク" to "SOB SOB", "シク" to "SOB",
+        "ウウ" to "UGH", "うう" to "UGH", "グス" to "SNIFF", "ズビ" to "SNIFF",
+        "ゴーン" to "BONG", "ピンポン" to "DING DONG", "プルル" to "RING RING", "ピリリ" to "BEEP BEEP",
+        "ブブ" to "BZZT", "ヴヴ" to "BZZT", "ジジ" to "BZZT", "ザザ" to "RUSTLE", "サー" to "SHHH", "ザー" to "POUR",
+        "ポツ" to "DRIP", "ポツポツ" to "PITTER PATTER", "ジャー" to "WHOOSH", "ジュー" to "SIZZLE",
+        "グツグツ" to "BUBBLE", "ブクブク" to "BUBBLE", "ゴリ" to "GRIND", "ギリ" to "GRIT", "ギリギリ" to "GRIND",
+        "ブンブン" to "BUZZ", "ブン" to "WHOOSH", "ヒュン" to "WHOOSH", "ビュン" to "ZOOM", "ビュー" to "WHOOSH",
+        "ドロ" to "OOZE", "ヌル" to "SLIP", "ペタ" to "PAT", "ペタン" to "PLOP", "ポフ" to "POOF",
+        "フワ" to "FLOAT", "フワフワ" to "FLUFFY", "ユラ" to "SWAY", "ユラユラ" to "SWAY", "クル" to "SPIN",
+        "クルクル" to "SPIN SPIN", "ダラ" to "DRIP", "ダラダラ" to "…SWEAT…", "タラ" to "DRIP", "タラー" to "…SWEAT…",
+        "ハア" to "HAAH", "ハアハア" to "PANT PANT", "フー" to "PHEW", "フゥ" to "PHEW", "スー" to "…",
+        "ガシャーン" to "KRASH", "バーン" to "BAM", "バキッ" to "KRAK", "ボキ" to "SNAP", "ゴン" to "BONK",
+        "ゴツン" to "BONK", "ズドン" to "KABOOM", "ズガ" to "KRAKOOM", "ドカーン" to "KABOOM", "チュッ" to "SMOOCH",
+        "ジタバタ" to "FLAIL", "テクテク" to "WALK WALK", "トボトボ" to "TRUDGE", "スタスタ" to "STRIDE",
+        "ソロ" to "SNEAK", "ソロソロ" to "SNEAK", "コソ" to "WHISPER", "コソコソ" to "SNEAK", "ボソ" to "MUTTER",
+        "ボソボソ" to "MUMBLE", "ヒソヒソ" to "WHISPER", "ガヤガヤ" to "HUBBUB", "ワー" to "WAAAH", "キャッ" to "EEK",
+        "ゲッ" to "URK", "ギクッ" to "GULP", "ギク" to "GULP", "ドキッ" to "BA-DUMP", "ハッ" to "GASP",
+        "ンッ" to "MM", "ウッ" to "URGH", "エッ" to "EH", "ヒッ" to "EEP", "オエ" to "BLERGH",
         // --- Korean ---
         "쿵쿵" to "THUD THUD", "쿵" to "THUD", "쾅" to "BANG", "콰광" to "KABOOM",
         "우당탕" to "CRASH", "쨍그랑" to "SHATTER", "철컥" to "CLICK", "덜컥" to "CLUNK",
@@ -65,21 +97,51 @@ object SfxDict {
         "꿀꺽" to "GULP", "흠칫" to "FLINCH", "부들" to "TREMBLE", "덜덜" to "TREMBLE",
         "부르르" to "SHIVER", "킥킥" to "SNICKER", "콜록" to "COUGH", "훌쩍" to "SNIFF",
         "씨익" to "SMIRK", "뚝" to "DRIP", "사각" to "SCRTCH", "벌컥" to "FLING",
+        "쿵쾅" to "THUMP THUMP", "쾅쾅" to "BANG BANG", "콰르릉" to "KRAKOOM", "우르릉" to "RUMBLE",
+        "쿨쿨" to "ZZZ", "드르렁" to "SNORE", "덜컹" to "RATTLE", "탁" to "TAP", "털썩" to "FLOP",
+        "휘익" to "WHOOSH", "휘청" to "WOBBLE", "휘리릭" to "WHIRL", "번쩍" to "FLASH", "반짝" to "SPARKLE",
+        "찰칵" to "CLICK", "딸깍" to "CLICK", "달칵" to "CLICK", "띠링" to "DING", "따르릉" to "RING RING",
+        "지잉" to "BZZZ", "지지직" to "BZZT", "삐빅" to "BEEP BEEP", "쏴아" to "SHHH", "주르륵" to "DRIP",
+        "뚝뚝" to "DRIP DRIP", "흑흑" to "SOB SOB", "엉엉" to "WAAAH", "히히" to "HEHE", "하하" to "HAHA",
+        "크크" to "KEKEKE", "푸훗" to "PFFT", "피식" to "SNORT", "쓰윽" to "SWISH", "스르륵" to "SLIDE",
+        "살금살금" to "TIPTOE", "성큼성큼" to "STRIDE", "터벅터벅" to "TRUDGE", "쨍" to "CLANG", "찌릿" to "ZAP",
+        "움찔" to "FLINCH", "오들오들" to "SHIVER", "후다닥" to "SCRAMBLE", "허둥지둥" to "…FLUSTER…",
+        "멍하니" to "…DAZED…", "멍" to "…BLANK…", "끄덕끄덕" to "NOD NOD", "끄덕" to "NOD", "도리도리" to "SHAKE SHAKE",
+        "빠직" to "CRACK", "부글부글" to "…SEETHE…", "화르륵" to "FWOOSH", "치직" to "SIZZLE", "꼬르륵" to "GRRRL",
+        "냠냠" to "NOM NOM", "쩝쩝" to "SMACK SMACK", "하암" to "YAWN", "쪽" to "SMOOCH", "토닥토닥" to "PAT PAT",
+        "꼬옥" to "SQUEEZE", "꽉" to "GRIP", "쓱싹" to "SCRUB", "웅성웅성" to "MURMUR", "와글와글" to "CHATTER",
+        "짝짝" to "CLAP CLAP", "후우" to "PHEW", "휴" to "PHEW", "끼익" to "SCREECH", "부웅" to "VROOM",
         // --- Chinese ---
         "轰隆" to "RUMBLE", "轰" to "BOOM", "砰" to "BANG", "嘭" to "BANG",
         "咚" to "THUD", "哐" to "CLANG", "啪" to "SLAP", "咔嚓" to "CRACK",
         "唰" to "SWISH", "嗖" to "WHOOSH", "哗" to "WHOOSH", "呼" to "WHOOSH",
         "噗" to "PFFT", "嘟" to "BEEP", "滴答" to "DRIP", "沙沙" to "RUSTLE",
         "咕噜" to "GURGLE", "呵呵" to "HEH", "嘻嘻" to "HEHE", "咳" to "COUGH",
-    )
+        "咚咚" to "THUD THUD", "砰砰" to "BANG BANG", "哗啦" to "CRASH", "哗啦啦" to "WHOOSH", "咔" to "CLICK",
+        "嗒嗒" to "TAP TAP", "嗒" to "TAP", "吱呀" to "CREAK", "吱" to "SQUEAK", "叮咚" to "DING DONG", "叮" to "DING",
+        "铃铃" to "RING RING", "嗡嗡" to "BUZZ", "嗡" to "BZZZ", "呜呜" to "SOB SOB", "呜" to "SOB", "哈哈" to "HAHA",
+        "哼" to "HMPH", "啧" to "TSK", "嘶" to "HISS", "咕" to "GULP", "扑通" to "THUMP", "怦怦" to "BA-DUMP",
+        "扑哧" to "PFFT", "唰唰" to "SWISH SWISH", "噼里啪啦" to "CRACKLE", "噼啪" to "CRACK", "啪嗒" to "PLOP",
+        "咣当" to "CLANG", "哐当" to "CLANG", "嘎吱" to "CREAK", "嘎" to "CRUNCH", "嚓" to "SHK", "刷" to "SWISH",
+        "呼呼" to "WHOOSH", "呼噜" to "SNORE", "嘿嘿" to "HEHE", "哇" to "WAAH", "嘘" to "SHHH",
+        // Traditional forms of the common ones, as Taiwanese and Hong Kong editions letter them.
+        "轟隆" to "RUMBLE", "轟" to "BOOM", "嘩啦" to "CRASH", "嘩" to "WHOOSH", "噠" to "TAP", "嗚嗚" to "SOB SOB",
+        "嗚" to "SOB", "鏘" to "CLANG", "鐺" to "CLANG", "嘰" to "SQUEAK", "撲通" to "THUMP", "撲哧" to "PFFT",
+        "噓" to "SHHH", "鈴鈴" to "RING RING", "嘖" to "TSK", "咔嚓" to "CRACK",
+    ).map { (key, en) -> normalize(key) to en }
 
     /**
      * Longest-prefix match, so an elongated form (ゴクゴク) wins over the stem
      * it starts with. Prefix matching also absorbs the tail noise and stretched
      * vowels OCR picks up off hand-drawn lettering (ゴゴゴゴ…).
+     *
+     * The match is script-blind within Japanese: ぎゅ and ギュ are one sound
+     * effect, and artists letter either — hiragana for the soft and small,
+     * katakana for the loud — so both are folded onto katakana first, along
+     * with the marks OCR mistakes a long-vowel bar for.
      */
     fun lookup(text: String): String? {
-        val t = text.trim()
+        val t = normalize(text)
         if (t.isEmpty()) return null
         var best: String? = null
         var bestLen = 0
@@ -90,6 +152,29 @@ object SfxDict {
             }
         }
         return best
+    }
+
+    /**
+     * Katakana-folded, with the lookalikes OCR returns for a long-vowel bar
+     * (一, ―, －, ｰ) restored to ー and small kana widened to their full
+     * forms, so 「ど一ん」 and 「ドーン」 are the same key.
+     */
+    fun normalize(text: String): String {
+        val sb = StringBuilder(text.length)
+        for (raw in text.trim()) {
+            val c = when (raw) {
+                '一', '―', '－', 'ｰ', '—', '｜' -> 'ー'
+                '゜', '゛', ' ', '　' -> continue
+                else -> raw
+            }
+            // Hiragana → katakana: the blocks are offset by 0x60.
+            val k = if (c.code in 0x3041..0x3096) (c.code + 0x60).toChar() else c
+            sb.append(k)
+        }
+        // A bar can only be a long vowel after a kana; one in front of
+        // everything is a stray border stroke.
+        while (sb.isNotEmpty() && sb[0] == 'ー') sb.deleteCharAt(0)
+        return sb.toString()
     }
 }
 

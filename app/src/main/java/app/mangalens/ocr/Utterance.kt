@@ -56,17 +56,54 @@ object Utterance {
     /**
      * Korean connective endings (-고, -서, -는데 …). A clause ending in one of
      * these is grammatically mid-sentence.
+     *
+     * Absent on purpose: 야 and 라. Each joins clauses in one reading (-아야
+     * "must", -(이)라 "because it is") and closes a line in a far commoner
+     * one — 「내 거야」 is "it's mine", 「가라」 is "go!" — so either welds a
+     * reply onto the line before it.
      */
     private val KO_CONNECTIVES = listOf(
         "는데", "은데", "ㄴ데", "지만", "니까", "아서", "어서", "면서", "거나", "든지",
-        "라서", "이라", "하고", "고", "서", "며", "면", "야", "라",
+        "라서", "이라", "하고", "고", "서", "며", "면",
+        // Topic and object particles: a line ending in one has its predicate
+        // in the next balloon, as with は and を.
+        "은", "는", "을", "를",
     )
 
-    /** Chinese conjunctions and possessive/aspect tails that run on. */
+    /**
+     * Korean quotative endings that close a spoken line even though they end
+     * in the connective 고: 「알았다고」 is "I said I get it", not the front
+     * half of anything.
+     */
+    private val KO_FINAL_QUOTATIVES = listOf("다고", "라고", "냐고", "자고", "다구", "라구")
+
+    /**
+     * Chinese conjunctions and tails that run on. 的 and 了 are absent for
+     * the same reason の and な are absent from the Japanese table: both
+     * join clauses in prose and both end spoken lines constantly — 「我知道了」
+     * and 「這是我的」 are complete — and balloons in Chinese editions
+     * routinely carry no final punctuation to say so.
+     */
     private val ZH_CONNECTIVES = listOf(
-        "但是", "可是", "因为", "所以", "而且", "然后", "虽然", "如果",
-        "的", "了", "和", "跟", "而", "就", "还", "又",
+        "但是", "可是", "因为", "因為", "所以", "而且", "然后", "然後", "虽然", "雖然", "如果",
+        "和", "跟", "而", "就", "还", "還", "又",
     )
+
+    /**
+     * Two characters or fewer of reply — うん, ええ, はい, いや, 嗯, 응, 네,
+     * え？ — after a line that merely ends in a bare particle. A sentence
+     * split across balloons does not end in an interjection; two speakers
+     * trading a line and a grunt do, and that is the weld that invents a
+     * sentence. A first half that trails off (…、) still takes any tail.
+     */
+    private const val MAX_REPLY_CJK = 2
+
+    /**
+     * A short Japanese line ending in て/で is a request — 「待って」「やめて」
+     * 「見て」「急いで」 — not a clause chained into the next balloon.
+     * 「それを聞いて」 is long enough to be the chain.
+     */
+    private const val MAX_REQUEST_CJK = 4
 
     /**
      * Assigns run ids to [bubbles], which must already be in reading order.
@@ -123,7 +160,15 @@ object Utterance {
         if (!dangles(a.text, lang)) return false
         // A tail that opens with a quote or a capital-style opener is a new line.
         if (b.text.firstOrNull() in setOf('「', '『', '(', '（')) return false
+        // A bare particle followed by a grunt is an exchange, not a sentence.
+        if (!trailsOff(a.text) && Script.cjkCount(b.text) <= MAX_REPLY_CJK) return false
         return near(a, b)
+    }
+
+    /** True when the line ends in punctuation that explicitly invites more: …、, */
+    private fun trailsOff(raw: String): Boolean {
+        val last = raw.trim().trimEnd('　', ' ').lastOrNull() ?: return false
+        return last == '…' || last == '‥' || last == '、' || last == ',' || last == '，'
     }
 
     /**
@@ -166,17 +211,29 @@ object Utterance {
         // A cut-off glottal stop or a stretched vowel is mid-breath.
         if (last == 'っ' || last == 'ッ' || last == 'ー' || last == '~' || last == '～') return true
 
-        val connectives = when (lang) {
-            SourceLang.KO -> KO_CONNECTIVES
-            SourceLang.ZH -> ZH_CONNECTIVES
-            SourceLang.JA -> JA_CONNECTIVES
+        val cjk = Script.cjkCount(t)
+
+        val script = when (lang) {
+            SourceLang.KO -> SourceLang.KO
+            SourceLang.ZH -> SourceLang.ZH
+            SourceLang.JA -> SourceLang.JA
             // In AUTO the script itself picks the table.
             SourceLang.AUTO -> when {
-                Script.hangulCount(t) > 0 -> KO_CONNECTIVES
-                Script.kanaCount(t) > 0 -> JA_CONNECTIVES
-                else -> ZH_CONNECTIVES
+                Script.hangulCount(t) > 0 -> SourceLang.KO
+                Script.kanaCount(t) > 0 -> SourceLang.JA
+                else -> SourceLang.ZH
             }
         }
-        return connectives.any { t.endsWith(it) }
+        return when (script) {
+            SourceLang.KO -> {
+                if (KO_FINAL_QUOTATIVES.any { t.endsWith(it) }) false
+                else KO_CONNECTIVES.any { t.endsWith(it) }
+            }
+            SourceLang.JA -> {
+                if ((last == 'て' || last == 'で') && cjk <= MAX_REQUEST_CJK) false
+                else JA_CONNECTIVES.any { t.endsWith(it) }
+            }
+            else -> ZH_CONNECTIVES.any { t.endsWith(it) }
+        }
     }
 }

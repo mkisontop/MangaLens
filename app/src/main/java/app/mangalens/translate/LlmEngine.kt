@@ -56,16 +56,7 @@ class LlmEngine(
     ): List<String> = withContext(Dispatchers.IO) {
         LlmHttp.requireConfig(settings)
 
-        val bubbles = JSONArray()
-        items.forEachIndexed { i, t ->
-            val o = JSONObject()
-                .put("id", i)
-                .put("text", t)
-                .put("kind", if (kinds.getOrNull(i) == BubbleKind.SFX) "sfx" else "dialogue")
-            val run = runs.getOrNull(i) ?: -1
-            if (run >= 0) o.put("run", run).put("part", parts.getOrNull(i) ?: 0)
-            bubbles.put(o)
-        }
+        val bubbles = bubblesJson(items, kinds, runs, parts)
         // Series memory first, page last: see LlmHttp.
         val stable = JSONObject()
             .put("glossary", JSONObject(glossary?.snapshot() ?: emptyMap<String, String>()))
@@ -122,6 +113,22 @@ class LlmEngine(
     }
 
     companion object {
+        /** The page's bubbles as the model sees them: text, kind, run links and the room each has. */
+        internal fun bubblesJson(items: List<String>, kinds: List<BubbleKind>, runs: List<Int>, parts: List<Int>): JSONArray {
+            val bubbles = JSONArray()
+            items.forEachIndexed { i, t ->
+                val o = JSONObject()
+                    .put("id", i)
+                    .put("text", t)
+                    .put("kind", if (kinds.getOrNull(i) == BubbleKind.SFX) "sfx" else "dialogue")
+                val run = runs.getOrNull(i) ?: -1
+                if (run >= 0) o.put("run", run).put("part", parts.getOrNull(i) ?: 0)
+                if (kinds.getOrNull(i) != BubbleKind.SFX) FitBudget.chars(t)?.let { o.put("fit", it) }
+                bubbles.put(o)
+            }
+            return bubbles
+        }
+
         internal val SYSTEM_PROMPT = """
 You are an elite manga/manhwa/manhua localization translator producing text for typeset speech bubbles. You receive the series memory as JSON — a glossary of established names/terms and the cast of characters met so far — followed by one comic page as JSON: the story up to this page and its bubbles in reading order.
 "source_language" is a guess from settings. Aggregator sites often serve raws already translated once (Spanish is common) — translate whatever language the text actually is into the same natural English. If a bubble is already English, answer it with "kind":"skip".
@@ -140,6 +147,10 @@ VOICE
 - Use the glossary EXACTLY for any name or term it contains. Romanize new names sensibly and keep them consistent within the page.
 - Keep honorifics that carry nuance (oppa, hyung, noona, unnie, -nim, -ssi, senpai, -san, -sama, -chan, shifu, gege, jiejie).
 - Keep lines as tight as real typeset dialogue. No translator notes, no explanations.
+
+ROOM IN THE BALLOON
+The English is typeset into the original balloon, which was drawn for the shorter source. A bubble's "fit" is the number of English characters that sits in it at full size. Write to it: tighten phrasing, drop filler, prefer the short word — the way a translator writes for a letterer. Go over it only when meaning would otherwise be lost; never pad a short line to reach it.
+A thought or narration line reads in the register it has on the page: inner monologue in the first person, narration boxes in a measured literary voice, shouts short and punchy.
 
 DAMAGED INPUT
 This text came from on-device OCR and may contain recognition errors, scrambled column order, or stray characters. Reconstruct the intended sentence from context and the story so far — never translate garbage literally, never romanize the source. If a bubble is pure noise (UI scraps, page numbers, unreadable fragments), skip it rather than guessing wildly.

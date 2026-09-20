@@ -2,6 +2,7 @@ package app.mangalens.ocr
 
 import android.graphics.Bitmap
 import android.graphics.Rect
+import kotlin.math.abs
 import kotlin.math.max
 import kotlin.math.min
 
@@ -167,6 +168,20 @@ object BalloonFinder {
     private const val MAX_INK = 0.60f
 
     /**
+     * A big balloon holding a short line — 「え？」 across half a panel — has
+     * far less lettering than [MIN_INK] asks for, and short lines in large
+     * balloons are a page-a-chapter occurrence. Under the ordinary floor
+     * such a balloon is admitted on a lower one provided its lettering sits
+     * where lettering sits: a few cells at least, and centred in the shape.
+     * A blank highlight with a fleck of ink at its rim does not qualify.
+     */
+    private const val SPARSE_MIN_INK = 0.003f
+    private const val SPARSE_MIN_INK_CELLS = 8
+
+    /** How far from the box centre, as a share of its size, sparse lettering may sit. */
+    private const val SPARSE_CENTRE_REACH = 0.22f
+
+    /**
      * Radii (work pixels) the ink is thickened by when hunting burst
      * balloons. Their border is a ring of radiating ticks, and the flood
      * leaks out through the gaps between them; thickening the ticks seals
@@ -274,7 +289,7 @@ object BalloonFinder {
             for (b in found) if (out.none { sameBalloon(it.box, b.box) }) out.add(b)
         }
 
-        out.addAll(sweep(Pass(open, dark, flatMid, MIN_FILL, inverted = false, allowEdge = true), geom))
+        out.addAll(sweep(Pass(open, dark, flatMid, MIN_FILL, inverted = false, allowEdge = true, sparse = true), geom))
 
         // Second pass for burst balloons — the shouted lines whose border is
         // a ring of radiating ticks rather than a drawn curve. The gaps
@@ -383,6 +398,8 @@ object BalloonFinder {
         val inverted: Boolean,
         /** Whether a component cut by the frame edge may be reported as partial. */
         val allowEdge: Boolean,
+        /** Whether a balloon holding only a few cells of lettering may be admitted; see [SPARSE_MIN_INK]. */
+        val sparse: Boolean = false,
     )
 
     private class Geometry(
@@ -519,18 +536,34 @@ object BalloonFinder {
         // panel with art in it, not a balloon with text in it.
         var ink = 0
         var art = 0
+        var inkX = 0L
+        var inkY = 0L
         for (y in 0 until boxH) {
             val row = (minY + y) * g.w + minX
             val mrow = y * boxW
             for (x in 0 until boxW) {
                 if (!mask[mrow + x]) continue
                 val i = row + x
-                if (pass.lettering[i]) ink++
+                if (pass.lettering[i]) {
+                    ink++
+                    inkX += x
+                    inkY += y
+                }
                 if (pass.art[i]) art++
             }
         }
         val inkFraction = ink.toFloat() / filled
-        if (inkFraction < MIN_INK || inkFraction > MAX_INK) return false
+        if (inkFraction > MAX_INK) return false
+        if (inkFraction < MIN_INK) {
+            // Sparse lettering is admitted only on the plain pass, and only
+            // where it sits like lettering: enough of it, and in the middle.
+            if (!pass.sparse) return false
+            if (ink < SPARSE_MIN_INK_CELLS || inkFraction < SPARSE_MIN_INK) return false
+            val cx = inkX.toFloat() / ink
+            val cy = inkY.toFloat() / ink
+            if (abs(cx - boxW / 2f) > boxW * SPARSE_CENTRE_REACH) return false
+            if (abs(cy - boxH / 2f) > boxH * SPARSE_CENTRE_REACH) return false
+        }
         if (art.toFloat() / filled > MAX_ART) return false
 
         val full = pageRect(minX, minY, boxW, boxH, g)

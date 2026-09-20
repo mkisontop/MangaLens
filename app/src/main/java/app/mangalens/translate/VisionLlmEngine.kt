@@ -77,23 +77,7 @@ class VisionLlmEngine(
             // Each detected region is an anchor the model answers by id, so
             // overlays land pixel-perfect even when the model's own sense of
             // image coordinates drifts.
-            val regions = JSONArray()
-            anchors.forEachIndexed { i, b ->
-                val o = JSONObject()
-                    .put("id", i)
-                    .put(
-                        "box",
-                        JSONArray()
-                            .put(b.box.left * 1000 / bitmap.width)
-                            .put(b.box.top * 1000 / bitmap.height)
-                            .put(b.box.width() * 1000 / bitmap.width)
-                            .put(b.box.height() * 1000 / bitmap.height)
-                    )
-                    .put("ocr_text_maybe_garbled", b.text)
-                    .put("kind_guess", if (b.kind == app.mangalens.ocr.BubbleKind.SFX) "sfx" else "dialogue")
-                if (b.runId >= 0) o.put("run", b.runId).put("part", b.runPart)
-                regions.put(o)
-            }
+            val regions = regionsJson(anchors, bitmap.width, bitmap.height)
             // What changes rarely goes first and what changes every page
             // goes last, so a provider that caches request prefixes reuses
             // the series memory from one page to the next.
@@ -197,6 +181,29 @@ class VisionLlmEngine(
 
     companion object {
 
+        /** The detected regions as the model sees them: id, box, OCR hint, kind, run links and the room each has. */
+        internal fun regionsJson(anchors: List<app.mangalens.ocr.Bubble>, width: Int, height: Int): JSONArray {
+            val regions = JSONArray()
+            anchors.forEachIndexed { i, b ->
+                val o = JSONObject()
+                    .put("id", i)
+                    .put(
+                        "box",
+                        JSONArray()
+                            .put(b.box.left * 1000 / width)
+                            .put(b.box.top * 1000 / height)
+                            .put(b.box.width() * 1000 / width)
+                            .put(b.box.height() * 1000 / height)
+                    )
+                    .put("ocr_text_maybe_garbled", b.text)
+                    .put("kind_guess", if (b.kind == app.mangalens.ocr.BubbleKind.SFX) "sfx" else "dialogue")
+                if (b.runId >= 0) o.put("run", b.runId).put("part", b.runPart)
+                if (b.kind != app.mangalens.ocr.BubbleKind.SFX) FitBudget.chars(b.text)?.let { o.put("fit", it) }
+                regions.put(o)
+            }
+            return regions
+        }
+
         /** Close-ups per page; each is a small upload and a few hundred tokens. */
         private const val MAX_CLOSEUPS = 6
         private const val MAX_CLOSEUPS_DATA_SAVER = 3
@@ -248,6 +255,12 @@ VOICE
 - Keep honorifics that carry nuance (oppa, hyung, noona, unnie, -nim, -ssi, senpai, -san, -sama, -chan, gege, jiejie, shifu).
 - Use "glossary" EXACTLY for known names/terms; romanize new names sensibly.
 - Keep lines as tight as real typeset dialogue. No translator notes, no romanization in "en".
+
+ROOM IN THE BALLOON
+The English is typeset into the original balloon, which was drawn for the shorter source. A region's "fit" is the number of English characters that sits in it at full size; where it is missing, judge the room from the image. Write to it: tighten phrasing, drop filler, prefer the short word — the way a translator writes for a letterer. Go over it only when meaning would otherwise be lost; never pad a short line to reach it.
+
+BALLOON TYPES
+Read the shape of the region you are answering and let it set the voice. A cloud-shaped or scalloped balloon is a thought: inner monologue, first person, no quotation marks. A plain rectangle is narration: a measured, literary voice, past tense unless the story narrates in the present. A jagged or burst balloon is a shout: short, punchy, exclamation. Lettering drawn straight onto the art with no balloon is a monologue or a caption: keep its register. Small handwritten text beside a character is an aside: brief and casual. Text on signs, screens, books and objects is translated briefly when the story needs it and otherwise skipped.
 
 SOUND EFFECTS
 Punchy comic onomatopoeia in CAPS (WHAM, BA-DUMP, KRAK) with "kind":"sfx". Japanese SFX cover states as well as sounds — silence (シーン), staring (ジー), nervousness (ドキドキ) — so translate the effect, not a literal noise. Use "kind":"skip" for UI scraps, watermarks, page numbers and decorative or unreadable SFX.

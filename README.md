@@ -201,7 +201,15 @@ Key details:
   lettering — whose cards then render light-on-dark to match. A tinted pass
   relaxes the interior threshold for pastel balloons — the pink and
   lavender fills manhwa colorists reach for — which read as neither light
-  nor dark and slipped between the others.
+  nor dark and slipped between the others. A big balloon holding a short
+  line — 「え？」 across half a panel — has far less lettering than the
+  ordinary floor asks for; the plain pass admits it on a lower floor when
+  the little lettering there is sits where lettering sits, centred in the
+  shape. `BalloonTaxonomyTest` scores the detector on thirty balloon shapes
+  drawn at phone resolution — rounded rectangles, caption boxes flush in a
+  panel corner, thought clouds, dashed whisper balloons, double outlines,
+  zigzag shouts, occluded pairs, balloons on black and on busy colour art,
+  hairline outlines, tails, tablet captures — and all of them are found.
 
   Two balloons drawn joined — one character's consecutive lines, or two
   speakers' balloons touching — flood as one shape. The shape is eroded
@@ -231,6 +239,39 @@ Key details:
   its shape; a tall thin one gets short lines all the way down; a tailed one
   keeps its text out of the tail. Type shrinks only when the words genuinely
   do not fit the shape.
+- **Lettering on open art is retouched, not boxed**: a monologue set in
+  columns straight onto a starry sky, a caption across a landscape, a shout
+  drawn over the top of a page — none of it has a balloon interior to clean,
+  and the old answer was a card floated over the art, which hid the panel
+  and left the original lettering in view beside it. Each such region now
+  carries the OCR boxes of its lines, and every line is wiped back into the
+  art around it: the fill runs the colour just outside one edge across to
+  the colour just outside the other, row by row, from median samples so a
+  star or a neighbouring stroke cannot streak across it, and the art between
+  two columns is never touched. The English is then set over the spot the
+  original occupied — where the artist left room — in stroked lettering
+  (light on dark art, dark on light, outlined in the opposite tone) in
+  balanced lines with no one-word widow, sized from the original glyphs so
+  a shout stays a shout and an aside stays small. `OnArtPageRenderTest`
+  draws the page that motivated this — balloons and column monologues on a
+  night sky — and checks that no original glyph survives, that each block's
+  English sits on the block it replaces, and that the sky between columns is
+  pixel-identical to the page.
+- **Long words are hyphenated before the type shrinks**: one word wider than
+  a tall thin balloon used to force every line down to the smallest type.
+  Below a modest reduction the offending word is now broken with a hyphen at
+  a morpheme or syllable boundary (UNBELIEV-ABLE, CONGRATU-LATIONS,
+  OVER-LOOKED), with at least three letters either side, and whichever
+  reading fits at the larger size wins.
+- **The translator is told how much room each balloon has**: the artist sized
+  the balloon for the source, and English needs two and a half to three and a
+  half characters per glyph to say the same thing. Every region goes up with a
+  `fit` — the English characters that sit in it at full size, derived from the
+  source text per script — and the model is asked to write to it the way a
+  translator writes for a letterer: tighten, cut filler, prefer the short
+  word, and go over only when meaning would be lost. The vision prompt also
+  reads the balloon's shape for its voice: cloud for thought, rectangle for
+  narration, burst for a shout, handwriting for an aside.
 - **Motion clears, stillness translates**: the moment real motion is seen the
   overlays vanish, so a translation is never left hovering over content it no
   longer matches — a stale card painted confidently in the wrong place reads
@@ -289,11 +330,17 @@ Key details:
   so a tail balloon read alone is genuinely ambiguous rather than merely
   flavourless. Detection is tuned against false positives — welding two
   characters' lines together invents a sentence that was never on the page,
-  which is worse than translating a tail clause alone — and scores 10/10
-  linked and 11/11 kept apart on the labelled corpus in
+  which is worse than translating a tail clause alone — and scores 14/14
+  linked and 25/25 kept apart on the labelled corpus in
   `UtteranceAccuracyTest`. That corpus is what caught の and な being treated
   as connectives when in dialogue they are overwhelmingly sentence-final:
-  「そうなの」 is a complete line, not the front half of one.
+  「そうなの」 is a complete line, not the front half of one. It has since
+  caught the same pattern in the other tables — 的 and 了 close Chinese
+  lines that carry no final punctuation, 야 and 라 close Korean ones — and
+  three constructions that only look like chains: a bare particle followed
+  by a two-character reply (「大丈夫だから」「うん」 is an exchange), a short
+  te-form request (「待って」 is complete), and a Korean quotative ending
+  (「알았다고」 is "I said I get it").
 - **The page is marked before it is sent**: in AI Vision each detected region
   is outlined and numbered directly on the uploaded image, so the model reads
   "region 7" off the page instead of matching coordinates to positions — the
@@ -378,7 +425,16 @@ Key details:
 - **Language auto-detect** races all three CJK recognizers and pins the winner
   after two consecutive wins, so steady-state pages pay for exactly one OCR pass.
 - **Bubble grouping** clusters OCR lines with direction-aware padding
-  (union-find), then reads vertical columns right-to-left like a human.
+  (union-find), then reads vertical columns right-to-left like a human. When
+  the recognizer hands back one square box per glyph — as it does on large
+  vertical lettering — no box calls itself vertical, so the arrangement
+  decides: glyphs stacked into fewer columns than rows are a column, and two
+  such columns read right-to-left instead of interleaved.
+- **Sound effects are matched script-blind**: ぎゅ and ギュ are one effect,
+  and OCR returns a long-vowel bar as 一 as often as ー, so lookups fold
+  hiragana onto katakana and the lookalikes onto the bar first. The
+  dictionary covers a few hundred Japanese, Korean and Chinese effects,
+  traditional forms included.
 - **Patches match the page**: each patch samples the pixels around the bubble so
   white bubbles get white patches, tinted panels get tinted patches, and the text
   auto-shrinks to fit.

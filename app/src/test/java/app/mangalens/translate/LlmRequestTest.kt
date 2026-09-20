@@ -1,5 +1,6 @@
 package app.mangalens.translate
 
+import app.mangalens.ocr.BubbleKind
 import app.mangalens.settings.AiReasoning
 import app.mangalens.settings.AppSettings
 import app.mangalens.settings.LlmProvider
@@ -159,6 +160,48 @@ class LlmRequestTest {
             assertEquals("data:image/jpeg;base64,$expected", url)
         }
         assertEquals("PAGE", parts.getJSONObject(4).getString("text"))
+    }
+
+    // ---- what the page carries ----
+
+    @Test
+    fun `every dialogue bubble carries the room it has for English`() {
+        val items = listOf("あいつが来たのか", "え？", "내가 가는데 왜 안 와", "我知道但是已经太晚了", "¡YA NO SÉ QUÉ HACER!", "ドカッ")
+        val kinds = listOf(BubbleKind.DIALOGUE, BubbleKind.DIALOGUE, BubbleKind.DIALOGUE, BubbleKind.DIALOGUE, BubbleKind.DIALOGUE, BubbleKind.SFX)
+        val arr = LlmEngine.bubblesJson(items, kinds, List(items.size) { -1 }, List(items.size) { 0 })
+        assertEquals(30, arr.getJSONObject(0).getInt("fit"))
+        assertFalse("an interjection needs no budget", arr.getJSONObject(1).has("fit"))
+        assertEquals(33, arr.getJSONObject(2).getInt("fit"))
+        assertEquals(40, arr.getJSONObject(3).getInt("fit"))
+        assertEquals(29, arr.getJSONObject(4).getInt("fit"))
+        assertFalse("sound effects are captions, not typeset dialogue", arr.getJSONObject(5).has("fit"))
+        assertTrue(LlmEngine.SYSTEM_PROMPT.contains("\"fit\""))
+    }
+
+    @Test
+    fun `vision regions carry the budget where OCR read the source`() {
+        val read = app.mangalens.ocr.Bubble("あいつが来たのか", android.graphics.Rect(100, 100, 300, 400), true)
+        val blind = app.mangalens.ocr.Bubble("", android.graphics.Rect(400, 100, 600, 400), false)
+        val arr = VisionLlmEngine.regionsJson(listOf(read, blind), 1000, 1000)
+        assertEquals(30, arr.getJSONObject(0).getInt("fit"))
+        assertFalse("nothing to size a blind region by", arr.getJSONObject(1).has("fit"))
+        assertEquals(100, arr.getJSONObject(0).getJSONArray("box").getInt(0))
+    }
+
+    @Test
+    fun `the budget leaves a natural translation room`() {
+        // Real lines and their tight, natural translations sit under the budget.
+        val pairs = listOf(
+            "あいつが来たのか" to "So he's come, has he?",
+            "大丈夫だから" to "It's fine, really.",
+            "내가 가는데 왜 안 와" to "I'm going, why aren't you coming?",
+            "我知道但是已经太晚了" to "I know, but it's already too late.",
+            "這是在日本的土地上打拼的我" to "Here I am, making my way in an unfamiliar land.",
+        )
+        for ((src, en) in pairs) {
+            val fit = FitBudget.chars(src)!!
+            assertTrue("$src: budget $fit must hold \"$en\" (${en.length})", en.length <= fit)
+        }
     }
 
     @Test

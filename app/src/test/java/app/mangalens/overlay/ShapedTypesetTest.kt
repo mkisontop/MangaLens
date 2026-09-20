@@ -61,6 +61,64 @@ class ShapedTypesetTest {
         assertEquals(1, shaper.greedyLines(100f))
     }
 
+    // ---- Hyphenation: one long word must not shrink the whole block ----
+
+    @Test
+    fun `a long word breaks at a syllable boundary near its middle`() {
+        assertEquals("UNBELIEV-" to "ABLE", TypeSet.hyphenate("UNBELIEVABLE", unit, 9f))
+        assertEquals("CONGRATULA-" to "TIONS", TypeSet.hyphenate("CONGRATULATIONS", unit, 11f))
+        assertEquals("CONGRATU-" to "LATIONS", TypeSet.hyphenate("CONGRATULATIONS", unit, 10f))
+        assertEquals("EXTRAOR-" to "DINARY", TypeSet.hyphenate("EXTRAORDINARY", unit, 9f))
+        assertEquals("WONDER-" to "FUL", TypeSet.hyphenate("WONDERFUL", unit, 8f))
+        assertEquals("OVER-" to "LOOKED", TypeSet.hyphenate("OVERLOOKED", unit, 7f))
+    }
+
+    @Test
+    fun `short words, hyphenated words and hopeless caps are left alone`() {
+        assertNull("too short to break", TypeSet.hyphenate("STRONG", unit, 4f))
+        assertNull("already hyphenated", TypeSet.hyphenate("WELL-KNOWN", unit, 6f))
+        assertNull("no split leaves both halves within the cap", TypeSet.hyphenate("UNBELIEVABLE", unit, 4f))
+        assertNull("nothing overflowed", TypeSet.hyphenateOverflow("SO IT GOES", unit, 8f))
+    }
+
+    @Test
+    fun `only the overflowing word is broken`() {
+        assertEquals(
+            "THAT WAS UNBELIEV- ABLE",
+            TypeSet.hyphenateOverflow("THAT WAS UNBELIEVABLE", unit, 9f),
+        )
+    }
+
+    @Test
+    fun `a long word in a tall thin balloon is hyphenated instead of shrinking the block`() {
+        val pageW = 600
+        val pageH = 900
+        val box = Rect(220, 100, 380, 800)
+        val mw = 40
+        val mh = 175
+        val mask = BooleanArray(mw * mh)
+        for (y in 0 until mh) for (x in 0 until mw) {
+            val nx = (x + 0.5f) / mw * 2f - 1f
+            val ny = (y + 0.5f) / mh * 2f - 1f
+            mask[y * mw + x] = nx * nx + ny * ny <= 1f
+        }
+        val balloon = Balloon(box, mw, mh, mask, false)
+        fun render(text: String): Int {
+            val v = BubbleOverlayView(RuntimeEnvironment.getApplication()).apply { layout(0, 0, pageW, pageH) }
+            v.setBubbles(listOf(RenderBubble(Rect(box), text, "縦", Color.WHITE, Color.BLACK, true, balloon = balloon)))
+            val r = v.textRects().single()
+            // Type size shows in the height per line; the block's height over
+            // its line count is a fair proxy.
+            val lines = text.count { it == ' ' } + 1
+            return r.height() / maxOf(1, lines - 1)
+        }
+        val plain = render("THAT WAS SO VERY UNBELIEVABLE")
+        val short = render("THAT WAS SO VERY GOOD OF HIM")
+        // Without hyphenation the long word forces the smallest type, and
+        // the per-line height collapses to a fraction of the short text's.
+        assertTrue("long word must not collapse the type (per-line $plain vs $short)", plain * 10 >= short * 7)
+    }
+
     // ---- BalloonShape: the interior measured row by row ----
 
     /** An ellipse [mw] x [mh] with a tail hanging off its lower left. */

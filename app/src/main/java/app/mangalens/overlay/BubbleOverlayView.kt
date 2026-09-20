@@ -18,6 +18,7 @@ import androidx.core.content.res.ResourcesCompat
 import app.mangalens.R
 import app.mangalens.ocr.Balloon
 import app.mangalens.ocr.BubbleKind
+import app.mangalens.pipeline.ArtWipe
 
 data class RenderBubble(
     val box: Rect,
@@ -40,6 +41,20 @@ data class RenderBubble(
      * paper is not one flat colour; null means fill with [bgColor].
      */
     val fill: Bitmap? = null,
+    /**
+     * The OCR line boxes of the original lettering, for text that sits on
+     * open art with no balloon around it. Present, the overlay wipes each
+     * line back into the art and sets the English over the block in
+     * stroked lettering — the way a letterer handles a monologue drawn
+     * across a sky — instead of floating a card beside it.
+     */
+    val lines: List<Rect> = emptyList(),
+    /**
+     * A fill per entry of [lines], sized to [ArtWipe.wipeRect] of it and
+     * continuing the art around the line; null entries take a flat wipe in
+     * [bgColor].
+     */
+    val lineFills: List<Bitmap?> = emptyList(),
 )
 
 /**
@@ -50,10 +65,14 @@ data class RenderBubble(
  * through the balloon's own mask, and the translation is typeset into the
  * balloon in comic lettering. The old rounded card floated over the middle
  * of the balloon with the original lettering peeking out around it — the
- * single loudest "this is an AI overlay" signal on the page. A bubble with
- * no balloon (SFX captions, drifted extras, lettering on open art) keeps
- * the card: there is no interior to clean, and a card is better than
- * painting over art that was never proved to be a balloon.
+ * single loudest "this is an AI overlay" signal on the page. Lettering with
+ * no balloon around it — a monologue set in columns over the art, a caption
+ * on a landscape — is handled as a retoucher handles it: each original line
+ * is wiped back into the art beside it and the English is set over the
+ * spot in stroked type, with no box. Only SFX captions and answers whose
+ * lettering was never located keep the rounded card: with no lines to
+ * wipe, a card is better than painting over art that was never proved to
+ * hold text.
  *
  * Mask stamps and layouts are built in [setBubbles]; [onDraw] only stamps
  * what was prepared, so a redraw is never more than blits and text.
@@ -76,6 +95,11 @@ class BubbleOverlayView(context: Context) : View(context) {
          * demanding a card the column's own height.
          */
         val wipe: RectF? = null,
+        /** Lettering on open art: the line boxes wiped, and the fill each takes (null: flat [bg]). */
+        val lineWipes: List<RectF> = emptyList(),
+        val lineFills: List<Bitmap?> = emptyList(),
+        /** The same block set as an outline, painted under [layout] so it reads on any art. */
+        val strokeLayout: StaticLayout? = null,
     )
 
     private var placed: List<Placed> = emptyList()
@@ -96,6 +120,26 @@ class BubbleOverlayView(context: Context) : View(context) {
 
         /** Weight of the block's distance from the body centre against its fill. */
         const val CENTER_WEIGHT = 4f
+
+        /**
+         * Below this share of the starting type size, a word wider than the
+         * balloon is hyphenated rather than the whole block shrunk further.
+         */
+        const val HYPHENATE_BELOW = 0.8f
+
+        /** Type on open art, as a share of the original glyph size, bounded in dp. */
+        const val INK_EM_SHARE = 0.85f
+        const val INK_MIN_START_SIZE = 12f
+        const val INK_MAX_START_SIZE = 30f
+
+        /** Width-to-height a block of on-art lettering is shaped toward. */
+        const val INK_ASPECT = 2.4f
+
+        /** Widest a block of on-art lettering may grow, as a share of the screen. */
+        const val INK_MAX_WIDTH = 0.6f
+
+        /** The outline under on-art lettering, as a share of the type size. */
+        const val INK_STROKE = 0.14f
     }
 
     /**
@@ -240,6 +284,20 @@ class BubbleOverlayView(context: Context) : View(context) {
         )
     }
 
+    /**
+     * Where the English itself is painted, one rect per placement — the
+     * typeset block without the balloon or the wiped lines around it.
+     * For diagnostics and tests; the capture loop masks [placedRects].
+     */
+    fun textRects(): List<Rect> = placed.map {
+        Rect(
+            it.textX.toInt(),
+            it.textY.toInt(),
+            it.textX.toInt() + it.layout.width,
+            it.textY.toInt() + it.layout.height,
+        )
+    }
+
     private fun dp(v: Float) = v * resources.displayMetrics.density
 
     private fun place(b: RenderBubble, occupied: List<RectF>): Placed? {
@@ -249,7 +307,127 @@ class BubbleOverlayView(context: Context) : View(context) {
             val stamp = erodedStamp(balloon, b.fill)
             if (stamp != null) return placeClean(b, balloon, stamp, b.fill != null)
         }
+        if (b.kind != BubbleKind.SFX && b.lines.isNotEmpty()) return placeInk(b, occupied)
         return placeCard(b, occupied)
+    }
+
+    /**
+     * Lettering on open art, handled as a letterer handles it: each original
+     * line is wiped back into the art around it, and the English is set as
+     * a compact horizontal block over the spot the original occupied, in
+     * stroked type — light on dark art, dark on light, always with an
+     * outline of the opposite tone so it reads on a starry sky or a
+     * screentone without a box behind it. No card: a card over a monologue
+     * drawn across a panel hides the panel, and pushed beside the text it
+     * leaves the original in view. The block is shaped from the text's own
+     * length, about two and a half times as wide as tall, never narrower
+     * than the original block and never wider than most of the screen; it
+     * is centred where the original was, since that is where the artist
+     * left room for words.
+     */
+    private fun placeInk(b: RenderBubble, occupied: List<RectF>): Placed? {
+        val screenW = (if (width > 0) width else resources.displayMetrics.widthPixels).toFloat()
+        val screenH = (if (height > 0) height else resources.displayMetrics.heightPixels).toFloat()
+        val bg = Color.argb(255, Color.red(b.bgColor), Color.green(b.bgColor), Color.blue(b.bgColor))
+        val ink = readableText(bg, b.textColor)
+        val inkLum = (Color.red(ink) * 299 + Color.green(ink) * 587 + Color.blue(ink) * 114) / 1000
+        val outline = if (inkLum > 128) 0xFF17181C.toInt() else Color.WHITE
+
+        val minW = maxOf(b.box.width().toFloat(), dp(96f)).coerceAtMost(screenW * INK_MAX_WIDTH)
+        val maxW = (screenW * INK_MAX_WIDTH).coerceAtLeast(minW)
+        // Tall room for a column's English, modest room for a row's: the
+        // block should not stand much taller than the lettering it replaces.
+        val maxH = maxOf(b.box.height() * 1.25f, dp(72f)).coerceAtMost(screenH * 0.4f)
+
+        // Type follows the original lettering's size, so a shout set in
+        // large glyphs stays a shout and a small aside stays small — a
+        // little under the glyph height, since English needs more
+        // characters for the same line — within a caption's range.
+        val em = b.lines.map { if (b.vertical) it.width() else it.height() }.sorted().let { it[it.size / 2] }
+        val density = resources.displayMetrics.density
+        var layout: StaticLayout? = null
+        var strokeLayout: StaticLayout? = null
+        var size = (em * INK_EM_SHARE / density).coerceIn(INK_MIN_START_SIZE, INK_MAX_START_SIZE) * textScale
+        while (true) {
+            val tp = TextPaint(Paint.ANTI_ALIAS_FLAG).apply {
+                color = ink
+                textSize = dp(size)
+                typeface = dialogueFace
+            }
+            val lineH = (tp.descent() - tp.ascent()) * LINE_SPACING
+            val total = tp.measureText(b.translated)
+            // One row of source lettering stays one row of English when it
+            // can; otherwise the block is shaped from the text's length.
+            val natural = if (b.lines.size == 1 && !b.vertical && total <= maxW) {
+                total + dp(2f)
+            } else {
+                kotlin.math.sqrt(total * lineH * INK_ASPECT)
+            }
+            var w = natural.coerceIn(minW, maxW)
+            var fitted: StaticLayout? = null
+            var block = b.translated
+            for (attempt in 0 until 3) {
+                // Balanced lines, never a one-word last line: the break a
+                // letterer makes for a rectangular caption.
+                val lines = TypeSet.breakLines(b.translated, { tp.measureText(it) }, w, even = true)
+                block = lines.joinToString("\n")
+                var widest = 0f
+                for (line in lines) widest = maxOf(widest, tp.measureText(line))
+                val candidate = StaticLayout.Builder
+                    .obtain(block, 0, block.length, tp, (widest + 2f).toInt().coerceAtLeast(16))
+                    .setAlignment(Layout.Alignment.ALIGN_CENTER)
+                    .setLineSpacing(0f, LINE_SPACING)
+                    .setIncludePad(false)
+                    .build()
+                fitted = candidate
+                if (candidate.height <= maxH || w >= maxW) break
+                w = (w * 1.3f).coerceAtMost(maxW)
+            }
+            layout = fitted
+            val sp = TextPaint(tp).apply {
+                style = Paint.Style.STROKE
+                strokeWidth = dp(size) * INK_STROKE
+                strokeJoin = Paint.Join.ROUND
+                strokeCap = Paint.Cap.ROUND
+                color = outline
+            }
+            strokeLayout = StaticLayout.Builder
+                .obtain(block, 0, block.length, sp, fitted!!.width)
+                .setAlignment(Layout.Alignment.ALIGN_CENTER)
+                .setLineSpacing(0f, LINE_SPACING)
+                .setIncludePad(false)
+                .build()
+            if (fitted.height <= maxH || size <= 10f) break
+            size = (size - 1.25f).coerceAtLeast(10f)
+        }
+        val chosen = layout ?: return null
+
+        var maxLine = 0f
+        for (i in 0 until chosen.lineCount) maxLine = maxOf(maxLine, chosen.getLineWidth(i))
+        val pad = dp(3f)
+        val w = maxLine + pad * 2
+        val h = chosen.height + pad * 2
+        var left = b.box.centerX() - w / 2f
+        var top = b.box.centerY() - h / 2f
+        left = left.coerceAtMost(screenW - w - dp(2f)).coerceAtLeast(dp(2f))
+        top = top.coerceAtMost(screenH - h - dp(2f)).coerceAtLeast(dp(2f))
+        val rect = RectF(left, top, left + w, top + h)
+        nudgeClear(rect, occupied, screenH)
+
+        val grow = ArtWipe.PAD.toFloat()
+        val wipes = b.lines.map { RectF(it).apply { inset(-grow, -grow) } }
+        val bounds = RectF(rect)
+        for (r in wipes) bounds.union(r)
+        return Placed(
+            bounds = bounds,
+            layout = chosen,
+            textX = rect.centerX() - chosen.width / 2f,
+            textY = rect.centerY() - chosen.height / 2f,
+            bg = bg,
+            lineWipes = wipes,
+            lineFills = b.lineFills,
+            strokeLayout = strokeLayout,
+        )
     }
 
     /**
@@ -339,11 +517,25 @@ class BubbleOverlayView(context: Context) : View(context) {
             val cellW = box.width().toFloat() / balloon.maskW
             val cellH = box.height().toFloat() / balloon.maskH
             var size = startSize
+            // One long word — UNBELIEVABLE in a tall thin balloon — must not
+            // shrink every line to fit it. Down to a modest reduction the
+            // words are tried whole; below that a word wider than the
+            // widest row is hyphenated, and whichever reading fits at the
+            // larger size wins.
+            val hyphenBelow = startSize * HYPHENATE_BELOW
             while (size >= MIN_TYPE_SIZE) {
                 tp.textSize = dp(size)
-                val shaper = TypeSet.Shaper(b.translated) { tp.measureText(it) }
+                var shaper = TypeSet.Shaper(b.translated) { tp.measureText(it) }
                 val lineH = (tp.descent() - tp.ascent()) * LINE_SPACING
-                val fit = fitShape(shaper, shape, lineH / cellH, cellW)
+                var fit = fitShape(shaper, shape, lineH / cellH, cellW)
+                if (fit == null && size <= hyphenBelow) {
+                    val cap = shape.maxSpan * cellW * SHAPE_MARGIN
+                    val broken = TypeSet.hyphenateOverflow(b.translated, { tp.measureText(it) }, cap)
+                    if (broken != null) {
+                        shaper = TypeSet.Shaper(broken) { tp.measureText(it) }
+                        fit = fitShape(shaper, shape, lineH / cellH, cellW)
+                    }
+                }
                 if (fit != null) {
                     val (lines, topRow) = fit
                     val block = lines.joinToString("\n")
@@ -616,6 +808,19 @@ class BubbleOverlayView(context: Context) : View(context) {
             if (p.mask != null && p.maskDst != null) {
                 maskPaint.colorFilter = p.tint
                 canvas.drawBitmap(p.mask, null, p.maskDst, maskPaint)
+            } else if (p.lineWipes.isNotEmpty()) {
+                // Lettering on open art: each line goes back into the art it
+                // sat on, then the English is outlined and filled over it.
+                for (k in p.lineWipes.indices) {
+                    val fill = p.lineFills.getOrNull(k)
+                    if (fill != null && !fill.isRecycled) {
+                        maskPaint.colorFilter = null
+                        canvas.drawBitmap(fill, null, p.lineWipes[k], maskPaint)
+                    } else {
+                        bgPaint.color = p.bg
+                        canvas.drawRect(p.lineWipes[k], bgPaint)
+                    }
+                }
             } else if (p.card != null) {
                 p.wipe?.let { wipe ->
                     bgPaint.color = Color.argb(
@@ -633,6 +838,7 @@ class BubbleOverlayView(context: Context) : View(context) {
             }
             canvas.save()
             canvas.translate(p.textX, p.textY)
+            p.strokeLayout?.draw(canvas)
             p.layout.draw(canvas)
             canvas.restore()
         }

@@ -18,6 +18,14 @@ data class Bubble(
     val runId: Int = -1,
     /** 0-based position within [runId]. */
     val runPart: Int = 0,
+    /**
+     * The OCR line boxes this region was built from — one per column of
+     * vertical lettering, one per row of horizontal — in page coordinates.
+     * Empty for a balloon OCR read nothing in. Lettering that sits on open
+     * art with no balloon around it is wiped line by line through these,
+     * so the art between the columns is left alone.
+     */
+    val lines: List<Rect> = emptyList(),
 )
 
 object Script {
@@ -208,7 +216,11 @@ object BubbleGrouper {
 
     private fun buildBubble(raw: MutableList<OcrLine>, lang: SourceLang, pageStroke: Int): Bubble? {
         var members: List<OcrLine> = raw
-        val vertical = members.count { it.vertical } * 2 > members.size
+        // A line's own aspect says whether it is a column or a row — unless
+        // the recognizer handed back one box per glyph, as it does on large
+        // vertical lettering, when every box is square and says nothing.
+        // The arrangement of the boxes still does.
+        val vertical = arrangedVertically(members) ?: (members.count { it.vertical } * 2 > members.size)
 
         // Furigana: narrow ruby columns hugging the main columns of a vertical
         // bubble. They duplicate readings and wreck the joined text — drop any
@@ -255,7 +267,55 @@ object BubbleGrouper {
                 (katakanaRatio >= 0.8f && cjk <= 4 && groupStroke > pageStroke * 1.45f)
             )
 
-        return Bubble(text, union, vertical, if (sfx) BubbleKind.SFX else BubbleKind.DIALOGUE)
+        // Every member's box, furigana included: the ruby is lettering to
+        // wipe even though its reading was dropped from the text.
+        val lines = raw.map { Rect(it.box) }
+        return Bubble(text, union, vertical, if (sfx) BubbleKind.SFX else BubbleKind.DIALOGUE, lines = lines)
+    }
+
+    /**
+     * Whether a group of per-glyph boxes stacks into columns (true) or runs
+     * in rows (false), or null when the boxes are ordinary lines that speak
+     * for themselves. Square, one- or two-character boxes are glyphs; when
+     * most of a group is glyphs, the group runs the way that needs fewer
+     * lines: three glyphs stacked over one another are one column, three
+     * side by side are one row. Read as rows, a column of glyphs would
+     * come out one glyph per row and, with two columns, interleaved and
+     * left-to-right — the mirror image of how the page reads.
+     */
+    private fun arrangedVertically(members: List<OcrLine>): Boolean? {
+        val glyphs = members.filter { l ->
+            val h = l.box.height().coerceAtLeast(1)
+            val aspect = l.box.width().toFloat() / h
+            aspect in 0.55f..1.8f && l.text.trim().length <= 2
+        }
+        if (glyphs.size < 3 || glyphs.size * 3 < members.size * 2) return null
+        val columns = clusters(glyphs) { a, b -> min(a.right, b.right) - max(a.left, b.left) > 0.35f * min(a.width(), b.width()) }
+        val rows = clusters(glyphs) { a, b -> min(a.bottom, b.bottom) - max(a.top, b.top) > 0.35f * min(a.height(), b.height()) }
+        return when {
+            columns < rows -> true
+            rows < columns -> false
+            else -> null
+        }
+    }
+
+    /** Number of groups [boxes] fall into when [together] links two boxes (single-linkage). */
+    private fun clusters(boxes: List<OcrLine>, together: (Rect, Rect) -> Boolean): Int {
+        val n = boxes.size
+        val parent = IntArray(n) { it }
+        fun find(x: Int): Int {
+            var r = x
+            while (parent[r] != r) r = parent[r]
+            return r
+        }
+        for (i in 0 until n) for (j in i + 1 until n) {
+            if (together(boxes[i].box, boxes[j].box)) {
+                val a = find(i)
+                val b = find(j)
+                if (a != b) parent[b] = a
+            }
+        }
+        return (0 until n).count { find(it) == it }
     }
 
     /** Columns right-to-left, characters top-to-bottom within a column. */

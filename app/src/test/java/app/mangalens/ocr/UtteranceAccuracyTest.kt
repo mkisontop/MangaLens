@@ -60,6 +60,32 @@ class UtteranceAccuracyTest {
         Case("そうだな", "行こうか", SourceLang.JA, false, "な is a sentence-final particle"),
         Case("きれいだね", "ほんとに", SourceLang.JA, false, "ね closes the line"),
         Case("いいよ", "ありがとう", SourceLang.JA, false, "よ closes the line"),
+
+        // ---- a line and the grunt that answers it ----
+        Case("大丈夫だから", "うん", SourceLang.JA, false, "sentence-final から, answered with a grunt"),
+        Case("知らないって", "え？", SourceLang.JA, false, "sentence-final quotative って, answered"),
+        Case("別にいいし", "そう", SourceLang.JA, false, "sentence-final し, answered"),
+        Case("가야 하는데", "응", SourceLang.KO, false, "-는데 trailing, answered with a grunt"),
+        Case("我知道但是", "嗯", SourceLang.ZH, false, "但是 trailing, answered with a grunt"),
+
+        // ---- requests and quotatives that only look like chains ----
+        Case("待って", "今行くから", SourceLang.JA, false, "待って is a request, not a te-form chain"),
+        Case("やめて", "なんでだよ", SourceLang.JA, false, "やめて is a request"),
+        Case("急いで", "わかってる", SourceLang.JA, false, "急いで is a request"),
+        Case("알았다고", "그래 알았어", SourceLang.KO, false, "-다고 closes a line as a quotative"),
+        Case("빨리 가자고", "알았다니까", SourceLang.KO, false, "-자고 closes a line as a quotative"),
+
+        // ---- endings dropped from the tables because they close lines ----
+        Case("내 거야", "뭐라고?", SourceLang.KO, false, "-야 is the casual copula ending"),
+        Case("빨리 가라", "싫어", SourceLang.KO, false, "-라 is an imperative ending"),
+        Case("我知道了", "那就好", SourceLang.ZH, false, "了 closes the line"),
+        Case("這是我的", "是嗎", SourceLang.ZH, false, "的 closes the line"),
+
+        // ---- and chains that still must link ----
+        Case("私は", "行きません", SourceLang.JA, true, "topic particle, predicate in the next balloon"),
+        Case("もしかして", "あの人が犯人", SourceLang.JA, true, "an adverb ending in て is not a request"),
+        Case("それを聞いて", "ほっとしたよ", SourceLang.JA, true, "a te-form chain long enough to be one"),
+        Case("그러니까 내 말은", "네가 틀렸다고", SourceLang.KO, true, "-은 topic, predicate follows"),
     )
 
     /** Stacks the pair as two balloons in one panel, close enough to link. */

@@ -31,6 +31,18 @@ object TextAnchor {
      * does not show enough of it in one place.
      */
     fun locate(src: String, lines: List<OcrLine>): Rect? {
+        val boxes = locateLines(src, lines) ?: return null
+        val union = Rect(boxes[0])
+        for (b in boxes.drop(1)) union.union(b)
+        return union
+    }
+
+    /**
+     * The boxes of the OCR lines that carry [src] — the same match as
+     * [locate], kept line by line so the lettering can be wiped where it
+     * actually is rather than across the whole union.
+     */
+    fun locateLines(src: String, lines: List<OcrLine>): List<Rect>? {
         val target = fold(src)
         if (target.length < 4) return null
 
@@ -41,7 +53,7 @@ object TextAnchor {
             if (t.length < 3) continue
             // One line holding the whole target is the common single-line
             // balloon; anything longer is judged by accumulated coverage.
-            if (t.contains(target)) return Rect(l.box)
+            if (t.contains(target)) return listOf(Rect(l.box))
             if (target.contains(t)) hits.add(Hit(l.box, t.length))
         }
         if (hits.isEmpty()) return null
@@ -63,10 +75,7 @@ object TextAnchor {
         val best = clusters.maxBy { c -> c.sumOf { it.len } }
         val covered = best.sumOf { it.len }
         if (covered < target.length * MIN_COVERAGE) return null
-
-        val union = Rect(best[0].box)
-        for (hit in best.drop(1)) union.union(hit.box)
-        return union
+        return best.map { Rect(it.box) }
     }
 
     /** Stacked lines of one balloon: vertically close, horizontally overlapping. */

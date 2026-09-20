@@ -141,6 +141,36 @@ class BubbleGroupingTest {
         )
     }
 
+    /** One square box per glyph, as ML Kit returns large vertical lettering. */
+    private fun glyph(ch: String, left: Int, top: Int, em: Int = 34) =
+        OcrLine(ch, Rect(left, top, left + em, top + em), false)
+
+    @Test
+    fun `per-glyph boxes stacked in columns are read as vertical text, right column first`() {
+        // Two columns of four glyphs each. Every box is square, so no line
+        // calls itself vertical; only the arrangement says so. Read as rows
+        // the text comes out interleaved and left-to-right: かあきい…
+        val lines = ArrayList<OcrLine>()
+        val right = "あいうえ"
+        val left = "かきくけ"
+        for ((i, ch) in right.withIndex()) lines += glyph(ch.toString(), 300, 100 + i * 40)
+        for ((i, ch) in left.withIndex()) lines += glyph(ch.toString(), 250, 100 + i * 40)
+        val bubbles = BubbleGrouper.group(lines, 800, 0, 0, SourceLang.JA)
+        assertEquals("the glyphs form one region, got $bubbles", 1, bubbles.size)
+        assertTrue("a stack of glyph boxes is vertical text", bubbles[0].vertical)
+        assertEquals("columns read right to left, top to bottom", "あいうえかきくけ", bubbles[0].text)
+        assertEquals("every glyph box is kept for the wipe", 8, bubbles[0].lines.size)
+    }
+
+    @Test
+    fun `per-glyph boxes in a row stay horizontal`() {
+        val lines = "안녕하세요".mapIndexed { i, ch -> glyph(ch.toString(), 100 + i * 38, 200) }
+        val bubbles = BubbleGrouper.group(lines, 800, 0, 0, SourceLang.KO)
+        assertEquals(1, bubbles.size)
+        assertTrue("a row of glyph boxes is horizontal text", !bubbles[0].vertical)
+        assertEquals("안 녕 하 세 요", bubbles[0].text)
+    }
+
     @Test
     fun `single stray latin letters stay junk`() {
         val lines = listOf(OcrLine("W", Rect(700, 500, 740, 540), false))

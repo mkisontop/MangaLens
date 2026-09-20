@@ -1,5 +1,45 @@
 # Changelog
 
+## Unreleased
+
+The hard-page release: lettering drawn straight onto the art is retouched
+the way a scanlator retouches it, the translator is told how much room each
+balloon has, and the detector, grouper and sentence linker were scored
+against corpora of the balloon shapes and dialogue constructions that
+defeated them.
+
+- **Lettering on open art is retouched, not boxed.** A monologue set in
+  columns on a night sky, a caption on a landscape or a shout over the top
+  of a page used to get a card floated over the art — hiding the panel and
+  leaving the original in view beside it. Each line is now wiped back into
+  the art around it (the colour outside one edge run across to the colour
+  outside the other, from median samples, so gradients pass through and a
+  star cannot streak) and the English is set over the spot in stroked,
+  balanced lettering sized from the original glyphs. The art between two
+  columns is never touched.
+- **Long words are hyphenated before the type shrinks.** UNBELIEV-ABLE at a
+  readable size instead of a whole balloon at the smallest type.
+- **The translator writes to the balloon.** Every region carries a `fit`
+  budget — the English characters that sit in it at full size — and the
+  model is asked to tighten to it rather than pad; the vision prompt also
+  reads the balloon's shape for its voice (thought cloud, narration box,
+  burst, handwritten aside).
+- **Short lines in big balloons are found.** 「え？」 across half a panel was
+  under the lettering floor; it is admitted when its lettering is centred.
+- **Per-glyph OCR boxes read as columns.** Large vertical lettering comes
+  back one square box per glyph; the arrangement now decides direction, so
+  two columns read right-to-left instead of interleaved.
+- **Split sentences: fewer false welds.** 的/了 and 야/라 leave the
+  connective tables; a bare particle followed by a two-character reply, a
+  short te-form request and a Korean quotative ending no longer link. The
+  labelled corpus stands at 14/14 linked and 25/25 kept apart.
+- **Sound effects match script-blind.** Hiragana, katakana and OCR's 一 for
+  ー all reach the same entry; a few hundred entries across Japanese, Korean
+  and Chinese, traditional forms included.
+- **Corpora.** `BalloonTaxonomyTest` scores thirty balloon shapes at phone
+  resolution; `OnArtPageRenderTest` renders the night-sky page end to end and
+  checks the pixels.
+
 ## 0.10.1
 
 Tap-to-turn readers are noticed on the first tap.

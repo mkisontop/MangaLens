@@ -45,8 +45,13 @@ object TypeSet {
      * never splitting a word. Deterministic: equal inputs give equal breaks.
      * The only lines that may exceed [maxWidth] are single words that alone
      * exceed it.
+     *
+     * @param even true for a rectangular block — a caption on open art —
+     *   where every line should run about as wide as the others, rather
+     *   than the elliptical taper a round balloon takes. Either way the
+     *   last line is never left a stub.
      */
-    fun breakLines(text: String, measure: (String) -> Float, maxWidth: Float): List<String> {
+    fun breakLines(text: String, measure: (String) -> Float, maxWidth: Float, even: Boolean = false): List<String> {
         val words = text.trim().split(WS).filter { it.isNotEmpty() }
         if (words.isEmpty()) return emptyList()
         if (words.size == 1) return words
@@ -69,10 +74,17 @@ object TypeSet {
         }
 
         // The chord of an ellipse sampled at each line's height: full width
-        // in the middle rows, tapering toward the first and last.
+        // in the middle rows, tapering toward the first and last. An even
+        // block targets one width for every line; since the words are
+        // fixed, the cheapest way to miss it is to miss it equally, which
+        // is balanced lines.
         val target = FloatArray(k) { i ->
-            val t = (2f * i - (k - 1)) / (k + 1)
-            maxWidth * sqrt(1f - t * t)
+            if (even) {
+                maxWidth
+            } else {
+                val t = (2f * i - (k - 1)) / (k + 1)
+                maxWidth * sqrt(1f - t * t)
+            }
         }
 
         // best[j][i]: cheapest way to set the first i words as j lines.
@@ -200,6 +212,88 @@ object TypeSet {
             }
             return Fit(lines, best[k][m])
         }
+    }
+
+    /**
+     * Breaks one word wider than [cap] into two with a hyphen, as a letterer
+     * does when the alternative is shrinking every line to fit one long
+     * word. Returns null when the word is too short to break, when no
+     * break leaves both halves within the cap, or when the word already
+     * carries a hyphen (break there by hand instead).
+     *
+     * The break is a morpheme boundary when a common suffix or prefix
+     * offers one (UNBELIEV-ABLE, OVER-LOOKED), otherwise a syllable boundary
+     * by the two rules that cover most English: between two consonants
+     * (WON-DER), else after a vowel that a consonant follows (CONGRATU-
+     * LATIONS). Among boundaries of equal standing the one nearest the
+     * middle wins, so the halves come out even. At least three letters stay
+     * on each side.
+     */
+    fun hyphenate(word: String, measure: (String) -> Float, cap: Float): Pair<String, String>? {
+        if (word.length < 7 || word.contains('-') || !word.all { it.isLetter() }) return null
+        val lower = word.lowercase()
+        fun vowel(i: Int) = lower[i] in "aeiouy"
+        val candidates = ArrayList<Pair<Int, Int>>() // split index to rank (lower is better)
+        // A known suffix or prefix is a morpheme boundary, the break a
+        // letterer reaches for first (UNBELIEV-ABLE, WONDER-FUL, OVER-LOOKED).
+        val stem = lower.removeSuffix("s")
+        for (suffix in SUFFIXES) {
+            if (stem.length - suffix.length >= 3 && stem.endsWith(suffix)) candidates += (stem.length - suffix.length) to -1
+        }
+        for (prefix in PREFIXES) {
+            if (lower.length - prefix.length >= 3 && lower.startsWith(prefix)) candidates += prefix.length to 0
+        }
+        for (i in 3..word.length - 3) {
+            // Split before index i: word[0, i) + "-", word[i, len).
+            val rank = when {
+                !vowel(i - 1) && !vowel(i) && (i >= 2 && vowel(i - 2)) -> 0 // VC|CV
+                vowel(i - 1) && !vowel(i) && (i + 1 < word.length && vowel(i + 1)) -> 1 // V|CV
+                else -> continue
+            }
+            candidates += i to rank
+        }
+        if (candidates.isEmpty()) return null
+        val mid = word.length / 2f
+        val fitting = candidates.filter { (i, _) ->
+            measure(word.substring(0, i) + "-") <= cap && measure(word.substring(i)) <= cap
+        }
+        val pool = if (fitting.isNotEmpty()) fitting else return null
+        val (at, _) = pool.minWith(compareBy({ it.second }, { kotlin.math.abs(it.first - mid) }))
+        return (word.substring(0, at) + "-") to word.substring(at)
+    }
+
+    private val SUFFIXES = listOf(
+        "able", "ible", "tion", "sion", "ment", "ness", "less", "ful", "ing", "ous", "ive",
+        "ance", "ence", "ship", "hood", "ward", "ism", "ist", "ity", "ial", "ical", "ally", "ly",
+    )
+
+    private val PREFIXES = listOf(
+        "under", "super", "inter", "trans", "over", "anti", "semi", "out", "pre", "dis", "mis", "non", "sub", "un", "re",
+    )
+
+    /**
+     * [text] with every word wider than [cap] hyphenated in two where that
+     * is possible; null when nothing needed breaking or nothing could be.
+     */
+    fun hyphenateOverflow(text: String, measure: (String) -> Float, cap: Float): String? {
+        val words = text.trim().split(WS).filter { it.isNotEmpty() }
+        var changed = false
+        val out = ArrayList<String>(words.size + 2)
+        for (w in words) {
+            if (measure(w) <= cap) {
+                out += w
+                continue
+            }
+            val split = hyphenate(w, measure, cap)
+            if (split == null) {
+                out += w
+            } else {
+                out += split.first
+                out += split.second
+                changed = true
+            }
+        }
+        return if (changed) out.joinToString(" ") else null
     }
 
     private fun greedyBreak(

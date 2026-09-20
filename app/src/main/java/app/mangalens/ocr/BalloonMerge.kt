@@ -92,7 +92,7 @@ object BalloonMerge {
         } else {
             BubbleKind.SFX
         }
-        return Bubble(text, Rect(balloon), vertical, kind)
+        return Bubble(text, Rect(balloon), vertical, kind, lines = members.flatMap { it.lines })
     }
 
     /** Fraction of [box] that lies inside [within]. */
