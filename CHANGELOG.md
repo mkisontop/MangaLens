@@ -1,12 +1,16 @@
 # Changelog
 
-## Unreleased
+## 0.11.0
 
 The hard-page release: lettering drawn straight onto the art is retouched
 the way a scanlator retouches it, the translator is told how much room each
 balloon has, and the detector, grouper and sentence linker were scored
 against corpora of the balloon shapes and dialogue constructions that
 defeated them.
+
+**Download:** `MangaLens.apk` below updates 0.9.2 and newer in place. Still on
+0.9.1? Use `MangaLens-legacy-update.apk` once (Android 9+), as described in
+the README.
 
 - **Lettering on open art is retouched, not boxed.** A monologue set in
   columns on a night sky, a caption on a landscape or a shout over the top
