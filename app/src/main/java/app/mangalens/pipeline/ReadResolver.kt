@@ -63,27 +63,169 @@ internal class ReadResolver(
         val done = BooleanArray(usable.size)
         for (i in usable.indices) {
             if (done[i]) continue
-            val item = usable[i]
             val balloon = home[i]
             val group = balloon?.let { byBalloon[it] }
-            // A balloon holds one character's line. When the model split
-            // it into pieces the pieces are set back together, in the order
-            // it read them; when two speakers landed in one detection — two
-            // balloons the detector saw as one — neither may wipe the other,
-            // and both are lettered in place instead.
-            if (balloon != null && group != null && (group.size == 1 || oneVoice(group.map { usable[it] }))) {
-                val members = group.map { usable[it] }
-                out.add(inBalloon(item, balloon, members))
-                for (k in group) done[k] = true
+            if (balloon == null || group == null) {
+                done[i] = true
+                free(usable[i])?.let {
+                    out.add(it)
+                    free.add(usable[i])
+                }
                 continue
             }
-            done[i] = true
-            free(item)?.let {
-                out.add(it)
-                free.add(item)
+            for (k in group) done[k] = true
+            // A detection whose interior shows anything but this lettering
+            // is art that passed for a balloon — a face, a highlight, the
+            // inside of a big glyph — and wiping it would paint over the
+            // drawing. Its lettering is erased on its own instead.
+            val trusted = trust.getOrPut(trustKey(balloon, group.map { usable[it].box })) {
+                BalloonTrust.holdsOnly(bitmap, balloon, group.map { usable[it].box })
+            }
+            if (!trusted) {
+                for (k in group) {
+                    free(usable[k])?.let {
+                        out.add(it)
+                        free.add(usable[k])
+                    }
+                }
+                continue
+            }
+            // A detection holding several items is one of two things. The
+            // model split one balloon's lines into pieces — adjacent, one
+            // voice — and they are set back together, in the order it read
+            // them. Or two balloons drawn joined were detected as one, and
+            // each line keeps its own lobe: the interior is shared out
+            // between them and each is lettered into its share, so neither
+            // wipes the other and no line straddles the join.
+            val clusters = clusters(group.map { usable[it] })
+            if (clusters.size == 1) {
+                out.add(inBalloon(clusters[0][0], balloon, clusters[0]))
+            } else {
+                val lobes = lobes(balloon, clusters)
+                for ((k, members) in clusters.withIndex()) {
+                    val lobe = lobes[k]
+                    if (lobe != null) {
+                        out.add(inBalloon(members[0], lobe, members))
+                    } else {
+                        for (m in members) {
+                            free(m)?.let {
+                                out.add(it)
+                                free.add(m)
+                            }
+                        }
+                    }
+                }
             }
         }
         freeItems = free
+        return out
+    }
+
+    private val lobeCache = HashMap<String, List<Balloon?>>()
+    private val trust = HashMap<String, Boolean>()
+
+    private fun trustKey(balloon: Balloon, boxes: List<Rect>): String =
+        System.identityHashCode(balloon).toString() + boxes.joinToString("|") { it.flattenToString() }
+
+    /**
+     * Groups the items of one detection into balloons' worth of lettering:
+     * items one voice speaks whose boxes nearly touch — closer than about
+     * a line's height — are the pieces of one balloon.
+     */
+    private fun clusters(members: List<PageItem>): List<List<PageItem>> {
+        val parent = IntArray(members.size) { it }
+        fun root(i: Int): Int {
+            var r = i
+            while (parent[r] != r) r = parent[r]
+            return r
+        }
+        for (a in members.indices) {
+            for (b in a + 1 until members.size) {
+                val x = members[a]
+                val y = members[b]
+                val sameVoice = x.who.isBlank() || y.who.isBlank() || x.who.trim().equals(y.who.trim(), ignoreCase = true)
+                if (!sameVoice) continue
+                val line = minOf(minOf(x.box.width(), x.box.height()), minOf(y.box.width(), y.box.height()))
+                if (gap(x.box, y.box) <= line * 0.8f) parent[root(b)] = root(a)
+            }
+        }
+        val byRoot = LinkedHashMap<Int, MutableList<PageItem>>()
+        for (i in members.indices) byRoot.getOrPut(root(i)) { mutableListOf() }.add(members[i])
+        return byRoot.values.toList()
+    }
+
+    /** Distance between two boxes, 0 when they touch or overlap. */
+    private fun gap(a: Rect, b: Rect): Float {
+        val dx = maxOf(0, maxOf(a.left, b.left) - minOf(a.right, b.right))
+        val dy = maxOf(0, maxOf(a.top, b.top) - minOf(a.bottom, b.bottom))
+        return kotlin.math.sqrt((dx * dx + dy * dy).toFloat())
+    }
+
+    /**
+     * [balloon]'s interior shared out between [clusters]: every mask cell
+     * goes to the cluster whose lettering is nearest, and each share
+     * becomes a balloon of its own. Null for a cluster left with too little
+     * interior to letter into.
+     */
+    private fun lobes(balloon: Balloon, clusters: List<List<PageItem>>): List<Balloon?> {
+        val key = System.identityHashCode(balloon).toString() + clusters.joinToString("|") { c ->
+            c.joinToString(",") { it.box.flattenToString() }
+        }
+        lobeCache[key]?.let { return it }
+        val mw = balloon.maskW
+        val mh = balloon.maskH
+        val box = balloon.box
+        val areas = clusters.map { c ->
+            Rect(c[0].box).apply { for (m in c) union(m.box) }
+        }
+        val owner = IntArray(mw * mh) { -1 }
+        for (cy in 0 until mh) {
+            val py = box.top + (cy + 0.5f) * box.height() / mh
+            for (cx in 0 until mw) {
+                val i = cy * mw + cx
+                if (!balloon.mask[i]) continue
+                val px = box.left + (cx + 0.5f) * box.width() / mw
+                var best = -1
+                var bestD = Float.MAX_VALUE
+                for ((k, a) in areas.withIndex()) {
+                    val dx = maxOf(0f, a.left - px, px - a.right)
+                    val dy = maxOf(0f, a.top - py, py - a.bottom)
+                    val d = dx * dx + dy * dy
+                    if (d < bestD) {
+                        bestD = d
+                        best = k
+                    }
+                }
+                owner[i] = best
+            }
+        }
+        val out = clusters.indices.map { k ->
+            var minX = mw
+            var minY = mh
+            var maxX = -1
+            var maxY = -1
+            for (cy in 0 until mh) for (cx in 0 until mw) {
+                if (owner[cy * mw + cx] != k) continue
+                if (cx < minX) minX = cx
+                if (cx > maxX) maxX = cx
+                if (cy < minY) minY = cy
+                if (cy > maxY) maxY = cy
+            }
+            if (maxX - minX < 3 || maxY - minY < 3) return@map null
+            val w = maxX - minX + 1
+            val h = maxY - minY + 1
+            val mask = BooleanArray(w * h) { j -> owner[(minY + j / w) * mw + minX + j % w] == k }
+            Balloon(
+                Rect(
+                    box.left + minX * box.width() / mw,
+                    box.top + minY * box.height() / mh,
+                    box.left + (maxX + 1) * box.width() / mw,
+                    box.top + (maxY + 1) * box.height() / mh,
+                ),
+                w, h, mask, balloon.inverted, balloon.partial,
+            )
+        }
+        lobeCache[key] = out
         return out
     }
 
@@ -121,11 +263,6 @@ internal class ReadResolver(
             }
         }
         return false
-    }
-
-    private fun oneVoice(members: List<PageItem>): Boolean {
-        val voices = members.map { it.who.trim().lowercase() }.filter { it.isNotEmpty() }.toSet()
-        return voices.size <= 1
     }
 
     private fun inBalloon(first: PageItem, balloon: Balloon, members: List<PageItem>): RenderBubble {

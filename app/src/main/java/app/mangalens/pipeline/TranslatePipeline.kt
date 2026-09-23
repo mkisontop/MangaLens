@@ -1123,7 +1123,9 @@ class TranslatePipeline(
         kind: BubbleKind,
         detected: List<Balloon>,
     ): RenderBubble {
-        val balloon = balloonFor(box, detected)
+        // Art that passed for a balloon — a face, a highlight — is never
+        // wiped: only a detection holding nothing but this lettering is.
+        val balloon = balloonFor(box, detected)?.takeIf { BalloonTrust.holdsOnly(bitmap, it, listOf(box)) }
         val bg = if (balloon != null) PageColors.interiorColor(bitmap, balloon) else PageColors.sampleBackground(bitmap, box)
         val textColor = when {
             balloon?.inverted == true -> 0xFFF2F3F7.toInt()
