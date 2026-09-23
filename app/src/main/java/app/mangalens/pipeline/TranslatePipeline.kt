@@ -20,18 +20,27 @@ import app.mangalens.settings.SourceLang
 import app.mangalens.translate.CastBook
 import app.mangalens.translate.GlossaryStore
 import app.mangalens.translate.JunkFilter
+import app.mangalens.translate.ItemKind
+import app.mangalens.translate.PageItem
 import app.mangalens.translate.PageKey
+import app.mangalens.translate.PageReader
+import app.mangalens.translate.PendingRead
 import app.mangalens.translate.ReplayGeometry
 import app.mangalens.translate.SfxDict
 import app.mangalens.translate.TranslationCache
 import app.mangalens.translate.TranslationService
 import app.mangalens.translate.VisionLlmEngine
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Deferred
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
@@ -46,6 +55,12 @@ import org.json.JSONObject
  * (cache + free Google) paints overlays in about a second via [onPartial],
  * then the AI result — vision for scripts that break on-device OCR, cheap
  * text-only requests otherwise — replaces them in place when it lands.
+ *
+ * With Gemini the page is read AI-first ([PageReader]): the screen goes to
+ * the model the moment it is still, the model finds and translates every
+ * piece of lettering itself, and on-device analysis only decides where each
+ * answer is lettered ([ReadResolver]). Lettering already translated on an
+ * earlier stop is repainted from [ItemMemory] before any request returns.
  */
 class TranslatePipeline(
     private val ocr: OcrEngine,
@@ -100,7 +115,48 @@ class TranslatePipeline(
 
         /** Short side, in pixels, a re-read crop is enlarged toward. */
         const val REREAD_SHORT_SIDE = 320f
+
+        /** AI-first read cache entry schema; older shapes are dropped. */
+        const val READ_CACHE_VERSION = 3
+
+        /**
+         * How long the machine draft waits for the AI before it is shown.
+         * The AI's first lines normally land well inside this, and a draft
+         * that paints only to be re-worded a moment later is churn, not
+         * speed — so the draft is the safety net for a slow connection
+         * rather than a flash on every page.
+         */
+        const val DRAFT_GRACE_MS = 1800L
+
+        /** Background busier than this is worth an AI redraw under its lettering. */
+        const val BUSY_FOR_AI = 0.3f
+
+        /** The longest the finished page waits for the art clean-up. */
+        const val CLEANUP_TIMEOUT_MS = 12_000L
     }
+
+    private val memory = ItemMemory()
+
+    /** Whether pages are read AI-first under [settings]. */
+    fun readsAiFirst(settings: AppSettings): Boolean =
+        settings.engine == EngineKind.LLM && settings.aiVision != AiVisionMode.OFF &&
+            settings.apiKey.isNotBlank() && PageReader.supports(settings)
+
+    /**
+     * Starts the AI read of [bitmap] in [scope] ahead of analysis — the
+     * moment the screen goes still — or returns null when pages are not
+     * read AI-first. The page is encoded before this returns; the caller
+     * owns cancelling the read if the frame is abandoned.
+     */
+    fun startRead(bitmap: Bitmap, settings: AppSettings, scope: CoroutineScope): PendingRead? {
+        if (!readsAiFirst(settings)) return null
+        return runCatching {
+            PageReader(settings, glossary, cast).start(scope, bitmap, settings.sourceLang)
+        }.getOrNull()
+    }
+
+    /** Forgets lettering remembered from earlier stops. */
+    fun forgetRecent() = memory.clear()
 
     suspend fun process(
         bitmap: Bitmap,
@@ -252,12 +308,33 @@ class TranslatePipeline(
         return Bitmap.createBitmap(px, w, h, Bitmap.Config.ARGB_8888)
     }
 
-    /** Translates an analysed page and resolves it into cards. */
+    /**
+     * Translates an analysed page and resolves it into cards.
+     *
+     * @param read the AI read of this very frame, when [startRead] began it
+     *   ahead of analysis; otherwise one is started here if needed.
+     */
     suspend fun translate(
         analysis: Analysis,
         settings: AppSettings,
         onPartial: (suspend (PageResult) -> Unit)? = null,
+        read: PendingRead? = null,
     ): PageResult {
+        if (readsAiFirst(settings) && analysis.useVision) {
+            val wrapped = onPartial?.let { emit ->
+                val f: suspend (PageResult) -> Unit = { pr -> emit(pr.copy(bubbles = soleClaimants(pr.bubbles))) }
+                f
+            }
+            val raw = readPath(analysis, settings, wrapped, read)
+            val result = raw.copy(bubbles = soleClaimants(raw.bubbles))
+            val diag = analysis.diag
+            return if (diag == null) result else result.copy(
+                diag = "$diag · cards ${result.bubbles.size}" + (raw.diag?.let { " · $it" } ?: ""),
+                balloons = analysis.balloons,
+                panels = analysis.panels,
+            )
+        }
+        read?.cancel()
         val bitmap = analysis.bitmap
         val ocrResult = analysis.ocr
         val detected = analysis.detected
@@ -445,6 +522,279 @@ class TranslatePipeline(
                 fastJob?.cancel()
             }
         }
+    }
+
+    // ---- AI-first reading (Gemini) ----
+
+    /**
+     * One page read AI-first, painted as it streams.
+     *
+     * The order things reach the screen is the whole point: lettering
+     * remembered from an earlier stop repaints at once; the model's lines
+     * then land one by one in reading order; the machine draft appears only
+     * when the model is slow to say anything, so a normal page is lettered
+     * once rather than twice. Where lettering sits on detailed art, an image
+     * model's redraw of that art replaces the local reconstruction when it
+     * arrives — same English, same place, cleaner ground under it.
+     */
+    private suspend fun readPath(
+        analysis: Analysis,
+        settings: AppSettings,
+        onPartial: (suspend (PageResult) -> Unit)?,
+        pending: PendingRead?,
+    ): PageResult = coroutineScope {
+        val bitmap = analysis.bitmap
+        val bubbles = analysis.bubbles
+        val lang = analysis.ocr.lang
+        val reader = PageReader(settings, glossary, cast)
+        val started = System.nanoTime()
+        fun elapsed() = (System.nanoTime() - started) / 1_000_000
+        val resolver = ReadResolver(
+            bitmap, analysis.detected, analysis.anchorLines,
+            analysis.ignoreTop, analysis.ignoreBottom, analysis.exclusions,
+        )
+
+        // Scroll-backs and re-reads: the whole page from cache, no network.
+        val key = if (bubbles.isNotEmpty()) visionKey(reader.cacheNamespace, lang, bubbles, bitmap) else null
+        key?.let { readCacheGet(it, bubbles, bitmap.width, bitmap.height) }?.let { cached ->
+            pending?.cancel()
+            memory.remember(bitmap, cached)
+            return@coroutineScope PageResult(resolver.resolve(cached), reader.label, null, polished = true, diag = "cached")
+        }
+        val read = pending ?: reader.start(this, bitmap, lang)
+
+        val gate = Mutex()
+        var recalled: List<PageItem> = emptyList()
+        val streamed = ArrayList<PageItem>()
+        var draft: List<RenderBubble> = emptyList()
+        var firstAt = -1L
+
+        suspend fun paint(label: String) {
+            val emit = onPartial ?: return
+            val shown = gate.withLock { UpgradeMerge.merge(draft, resolver.resolve(keepWording(recalled, streamed))) }
+            if (shown.isNotEmpty()) emit(PageResult(shown, label, "upgrading"))
+        }
+
+        if (onPartial != null) {
+            recalled = runCatching {
+                withContext(Dispatchers.Default) { memory.recall(bitmap, analysis.ignoreTop, analysis.ignoreBottom) }
+            }.getOrDefault(emptyList())
+            if (recalled.isNotEmpty()) paint(reader.label)
+        }
+
+        val draftJob = onPartial?.let {
+            launch {
+                val fast = runCatching {
+                    machineTranslate(bitmap, bubbles, lang, settings, analysis.detected, forceGoogle = true)
+                }.getOrNull() ?: return@launch
+                val wait = DRAFT_GRACE_MS - elapsed()
+                if (wait > 0) delay(wait)
+                if (fast.bubbles.isEmpty() || firstAt >= 0) return@launch
+                gate.withLock { draft = fast.bubbles }
+                paint(fast.engineLabel)
+            }
+        }
+
+        val cleaner = if (AiCleaner.supports(settings)) AiCleaner(settings) else null
+        var cleanJob: Deferred<Bitmap?>? = null
+        suspend fun wantsCleanup(): Boolean = gate.withLock {
+            resolver.freeItems.any { item -> resolver.erasureOf(item)?.let { !it.flat && it.busy >= BUSY_FOR_AI } == true }
+        }
+
+        val items: List<PageItem>? = try {
+            read.collect { item ->
+                gate.withLock {
+                    if (firstAt < 0) firstAt = elapsed()
+                    streamed.add(item)
+                }
+                paint(reader.label)
+                // The redraw takes seconds: it starts the moment the first
+                // line that needs it is known, not when the page is done.
+                if (cleaner != null && cleanJob == null && wantsCleanup()) {
+                    cleanJob = async(Dispatchers.IO) { cleaner.cleanPage(bitmap) }
+                }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            null
+        }
+
+        if (items == null) {
+            // Refused or failed. Whatever streamed stays; the rest goes
+            // through the text path, which falls back to Google on its own.
+            draftJob?.cancel()
+            cleanJob?.cancel()
+            val partial = gate.withLock { resolver.resolve(keepWording(recalled, streamed)) }
+            val text = runCatching {
+                aiTextTranslate(bitmap, bubbles, lang, settings, analysis.detected)
+            }.getOrNull()
+            val shown = if (text == null) UpgradeMerge.merge(draft, partial) else UpgradeMerge.merge(text.bubbles, partial)
+            return@coroutineScope PageResult(
+                shown, text?.engineLabel ?: reader.label, "AI read failed", polished = partial.isNotEmpty(),
+                diag = "read failed at ${elapsed()} ms",
+            )
+        }
+
+        val complete = items + gapItems(bubbles, analysis.detected, items, lang, settings)
+        key?.let { readCachePut(it, bubbles, complete, bitmap.width, bitmap.height) }
+        memory.remember(bitmap, complete)
+        val finalItems = keepWording(recalled, complete)
+        var rendered = gate.withLock { resolver.resolve(finalItems) }
+
+        val job = cleanJob ?: if (cleaner != null && wantsCleanup()) async(Dispatchers.IO) { cleaner.cleanPage(bitmap) } else null
+        var note: String? = null
+        if (job != null) {
+            onPartial?.invoke(PageResult(UpgradeMerge.merge(draft, rendered), reader.label, "cleaning art…", polished = true))
+            val cleaned = withTimeoutOrNull(CLEANUP_TIMEOUT_MS) { runCatching { job.await() }.getOrNull() }
+            if (cleaned != null) {
+                val redrawn = withContext(Dispatchers.Default) {
+                    gate.withLock {
+                        var any = 0
+                        for (item in resolver.freeItems) {
+                            val e = resolver.erasureOf(item) ?: continue
+                            if (e.flat || e.busy < BUSY_FOR_AI) continue
+                            AiCleaner.refine(bitmap, cleaned, e)?.let {
+                                resolver.upgrade(item, it)
+                                any++
+                            }
+                        }
+                        if (any > 0) rendered = resolver.resolve(finalItems)
+                        any
+                    }
+                }
+                if (redrawn > 0) note = "art cleaned"
+                cleaned.recycle()
+            } else {
+                job.cancel()
+            }
+        }
+        draftJob?.cancel()
+        PageResult(
+            rendered, reader.label, note, polished = true,
+            diag = "first ${if (firstAt >= 0) "$firstAt ms" else "—"} · done ${elapsed()} ms",
+        )
+    }
+
+    /**
+     * Keeps the wording the reader already saw. An item recalled from an
+     * earlier stop is re-read by the model along with everything else, and
+     * a fresh answer for the same balloon may be phrased differently — a
+     * line that changes words while it is being read is worse than either
+     * phrasing. The model's new geometry is kept; the recalled English wins.
+     */
+    private fun keepWording(recalled: List<PageItem>, fresh: List<PageItem>): List<PageItem> {
+        if (recalled.isEmpty()) return fresh
+        val used = BooleanArray(recalled.size)
+        val out = ArrayList<PageItem>(fresh.size + recalled.size)
+        for (f in fresh) {
+            val k = recalled.indices.firstOrNull { !used[it] && sameLettering(recalled[it].box, f.box) }
+            if (k == null) {
+                out.add(f)
+            } else {
+                used[k] = true
+                out.add(f.copy(en = recalled[k].en, who = recalled[k].who.ifBlank { f.who }))
+            }
+        }
+        for (i in recalled.indices) if (!used[i]) out.add(recalled[i])
+        return out
+    }
+
+    private fun sameLettering(a: Rect, b: Rect): Boolean =
+        iou(a, b) > 0.45f || (a.contains(b.centerX(), b.centerY()) && b.contains(a.centerX(), a.centerY()))
+
+    /**
+     * Dialogue on-device analysis found in a detected balloon that the model
+     * passed over, translated through the text engine so the page is never
+     * left with a raw balloon in it. Only balloon-held regions qualify: OCR
+     * also reads watermarks, credits and the browser's own chrome, and the
+     * model leaving those out is deliberate.
+     */
+    private suspend fun gapItems(
+        bubbles: List<Bubble>,
+        detected: List<Balloon>,
+        answered: List<PageItem>,
+        lang: SourceLang,
+        settings: AppSettings,
+    ): List<PageItem> {
+        val missing = bubbles.filter { b ->
+            b.kind == BubbleKind.DIALOGUE && b.text.isNotBlank() &&
+                detected.any { ReadResolver.containedShare(b.box, it.box) > 0.8f } &&
+                answered.none { a ->
+                    Rect.intersects(a.box, b.box) &&
+                        (containedShare(a.box, b.box) > 0.3f || containedShare(b.box, a.box) > 0.3f)
+                }
+        }
+        if (missing.isEmpty()) return emptyList()
+        val outcome = runCatching {
+            translation.translate(
+                missing.map { it.text }, lang, settings,
+                kinds = missing.map { it.kind },
+                runs = missing.map { it.runId },
+                parts = missing.map { it.runPart },
+            )
+        }.getOrNull() ?: return emptyList()
+        val fromAi = outcome.engineLabel != "Google"
+        return missing.mapIndexedNotNull { k, b ->
+            val en = JunkFilter.accept(b.text, outcome.texts.getOrElse(k) { "" }, lang, fromAi) ?: return@mapIndexedNotNull null
+            PageItem(Rect(b.box), ItemKind.SPEECH, b.text, en, vertical = b.vertical)
+        }
+    }
+
+    private fun readCacheGet(key: String, bubbles: List<Bubble>, w: Int, h: Int): List<PageItem>? {
+        if (bubbles.isEmpty()) return null
+        val raw = cache.get(key) ?: return null
+        return runCatching {
+            val obj = JSONObject(raw)
+            if (obj.optInt("v") != READ_CACHE_VERSION) throw IllegalStateException("stale read cache entry")
+            val regs = obj.getJSONArray("regions")
+            if (regs.length() != bubbles.size) throw IllegalStateException("region count changed")
+            val stored = (0 until regs.length()).map { i ->
+                val a = regs.getJSONArray(i)
+                Rect(a.getInt(0), a.getInt(1), a.getInt(2), a.getInt(3))
+            }
+            // Same content, possibly at a new scroll offset: one consistent
+            // displacement or no replay at all.
+            val shift = ReplayGeometry.shift(stored, bubbles.map { normalized(it.box, w, h) })
+                ?: throw IllegalStateException("layout no longer matches")
+            val arr = obj.getJSONArray("items")
+            (0 until arr.length()).map { i ->
+                val o = arr.getJSONArray(i)
+                PageItem(
+                    box = Rect(
+                        (o.getInt(0) + shift.dx) * w / 1000,
+                        (o.getInt(1) + shift.dy) * h / 1000,
+                        (o.getInt(2) + shift.dx) * w / 1000,
+                        (o.getInt(3) + shift.dy) * h / 1000,
+                    ),
+                    kind = ItemKind.valueOf(o.getString(4)),
+                    src = o.getString(5),
+                    en = o.getString(6),
+                    who = o.getString(7),
+                    vertical = o.getInt(8) == 1,
+                    loud = o.getInt(9) == 1,
+                )
+            }
+        }.getOrNull()
+    }
+
+    private fun readCachePut(key: String, bubbles: List<Bubble>, items: List<PageItem>, w: Int, h: Int) {
+        if (bubbles.isEmpty() || items.isEmpty()) return
+        val regs = JSONArray()
+        for (b in bubbles) {
+            val n = normalized(b.box, w, h)
+            regs.put(JSONArray().put(n.left).put(n.top).put(n.right).put(n.bottom))
+        }
+        val arr = JSONArray()
+        for (it in items) {
+            val n = normalized(it.box, w, h)
+            arr.put(
+                JSONArray().put(n.left).put(n.top).put(n.right).put(n.bottom)
+                    .put(it.kind.name).put(it.src).put(it.en).put(it.who)
+                    .put(if (it.vertical) 1 else 0).put(if (it.loud) 1 else 0)
+            )
+        }
+        cache.put(key, JSONObject().put("v", READ_CACHE_VERSION).put("regions", regs).put("items", arr).toString())
     }
 
     // ---- machine engines (Google / on-device), also the AI fast path ----
@@ -774,10 +1124,10 @@ class TranslatePipeline(
         detected: List<Balloon>,
     ): RenderBubble {
         val balloon = balloonFor(box, detected)
-        val bg = if (balloon != null) interiorColor(bitmap, balloon) else sampleBackground(bitmap, box)
+        val bg = if (balloon != null) PageColors.interiorColor(bitmap, balloon) else PageColors.sampleBackground(bitmap, box)
         val textColor = when {
             balloon?.inverted == true -> 0xFFF2F3F7.toInt()
-            luminance(bg) < 140 -> Color.WHITE
+            PageColors.luminance(bg) < 140 -> Color.WHITE
             else -> 0xFF17181C.toInt()
         }
         // A gradient or textured balloon is cleaned with its own paper
@@ -842,87 +1192,5 @@ class TranslatePipeline(
         val area = box.width().toLong() * box.height()
         if (area <= 0L) return 0f
         return (ix.toLong() * iy).toFloat() / area
-    }
-
-    /**
-     * The color a scanlator's cleaning fill should be: the average of the
-     * paper pixels inside the balloon (or, for an inverted balloon, of its
-     * ink), sampled through the interior mask so the lettering itself never
-     * tints the fill.
-     */
-    private fun interiorColor(bitmap: Bitmap, balloon: Balloon): Int {
-        val box = balloon.box
-        val stepX = (balloon.maskW / 48).coerceAtLeast(1)
-        val stepY = (balloon.maskH / 48).coerceAtLeast(1)
-        var r = 0L
-        var g = 0L
-        var b = 0L
-        var n = 0
-        var cy = 0
-        while (cy < balloon.maskH) {
-            var cx = 0
-            while (cx < balloon.maskW) {
-                if (balloon.mask[cy * balloon.maskW + cx]) {
-                    val x = (box.left + ((cx * 2 + 1) * box.width()) / (2 * balloon.maskW))
-                        .coerceIn(0, bitmap.width - 1)
-                    val y = (box.top + ((cy * 2 + 1) * box.height()) / (2 * balloon.maskH))
-                        .coerceIn(0, bitmap.height - 1)
-                    val p = bitmap.getPixel(x, y)
-                    val lum = luminance(p)
-                    val keep = if (balloon.inverted) lum <= 120 else lum >= 150
-                    if (keep) {
-                        r += Color.red(p)
-                        g += Color.green(p)
-                        b += Color.blue(p)
-                        n++
-                    }
-                }
-                cx += stepX
-            }
-            cy += stepY
-        }
-        if (n == 0) return if (balloon.inverted) 0xFF17181C.toInt() else Color.WHITE
-        val avg = Color.rgb((r / n).toInt(), (g / n).toInt(), (b / n).toInt())
-        // Most bubbles are white; snap near-white fills to pure white.
-        return if (!balloon.inverted && luminance(avg) > 190) Color.WHITE else avg
-    }
-
-    private fun luminance(c: Int) = (Color.red(c) * 299 + Color.green(c) * 587 + Color.blue(c) * 114) / 1000
-
-    /** Averages the pixels in a thin ring just outside the text box. */
-    private fun sampleBackground(bmp: Bitmap, box: Rect): Int {
-        val left = (box.left - 8).coerceIn(0, bmp.width - 1)
-        val top = (box.top - 8).coerceIn(0, bmp.height - 1)
-        val right = (box.right + 8).coerceIn(0, bmp.width - 1)
-        val bottom = (box.bottom + 8).coerceIn(0, bmp.height - 1)
-        var r = 0L
-        var g = 0L
-        var b = 0L
-        var count = 0
-
-        fun sample(x: Int, y: Int) {
-            val p = bmp.getPixel(x, y)
-            r += Color.red(p)
-            g += Color.green(p)
-            b += Color.blue(p)
-            count++
-        }
-
-        var x = left
-        while (x <= right) {
-            sample(x, top)
-            sample(x, bottom)
-            x += 4
-        }
-        var y = top
-        while (y <= bottom) {
-            sample(left, y)
-            sample(right, y)
-            y += 4
-        }
-        if (count == 0) return Color.WHITE
-        val avg = Color.rgb((r / count).toInt(), (g / count).toInt(), (b / count).toInt())
-        // Most bubbles are white; snap near-white samples to pure white for a clean look.
-        return if (luminance(avg) > 190) Color.WHITE else avg
     }
 }

@@ -40,6 +40,7 @@ import app.mangalens.settings.CaptureMode
 import app.mangalens.settings.SettingsRepository
 import app.mangalens.translate.CastBook
 import app.mangalens.translate.GlossaryStore
+import app.mangalens.translate.PendingRead
 import app.mangalens.translate.TranslationCache
 import app.mangalens.translate.TranslationService
 import app.mangalens.translate.WorkMemory
@@ -229,10 +230,29 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
      * has stopped. Main thread only; [preparing] mirrors it for the
      * capture thread, which must cancel it the moment the screen moves.
      */
-    private class Prepared(
-        val bitmap: Bitmap,
-        val job: Deferred<Pair<IntArray, TranslatePipeline.Analysis>>,
-    )
+    private class Prepared(val bitmap: Bitmap) {
+        lateinit var job: Deferred<Pair<IntArray, TranslatePipeline.Analysis>>
+
+        /**
+         * The AI read of this frame, started alongside its analysis: with
+         * Gemini the page goes to the model the moment the screen is still,
+         * so the answer is already streaming by the time the reader has
+         * provably stopped. It is not a child of the analysis job and must
+         * be cancelled explicitly whenever the frame is abandoned.
+         */
+        @Volatile var read: PendingRead? = null
+        @Volatile private var dropped = false
+
+        fun adopt(r: PendingRead?) {
+            read = r
+            if (dropped) r?.cancel()
+        }
+
+        fun drop() {
+            dropped = true
+            read?.cancel()
+        }
+    }
 
     private var prepared: Prepared? = null
     @Volatile private var preparing = false
@@ -744,11 +764,21 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         val bmp = grabFrame() ?: return
         val exclusions = controller?.overlayExclusions() ?: emptyList()
         preparing = true
-        val job = scope.async(Dispatchers.Default) {
-            FrameStability.grayThumbOf(bmp) to pipeline.analyze(bmp, settings, exclusions)
+        val p = Prepared(bmp)
+        val current = settings
+        p.job = scope.async(Dispatchers.Default) {
+            p.adopt(pipeline.startRead(bmp, current, readScope))
+            FrameStability.grayThumbOf(bmp) to pipeline.analyze(bmp, current, exclusions)
         }
-        prepared = Prepared(bmp, job)
+        prepared = p
     }
+
+    /**
+     * Where AI reads run: the service's lifetime, off the main thread, and
+     * outside any one pass's job — a read started ahead of the stability
+     * window outlives the preparation that started it.
+     */
+    private val readScope by lazy { CoroutineScope(scope.coroutineContext + Dispatchers.IO) }
 
     /** Drops the frame read ahead, if any. Main thread only. */
     private fun discardPrepared() {
@@ -757,6 +787,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         preparing = false
         if (p == null) return
         p.job.cancel()
+        p.drop()
         retireLater(p.bitmap)
     }
 
@@ -780,6 +811,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         prepared = null
         preparing = false
         if (p.job.isCancelled) {
+            p.drop()
             retireLater(p.bitmap)
             return null
         }
@@ -805,6 +837,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         translateJob = scope.launch {
             pushBusy()
             var bmp: Bitmap? = null
+            var pendingRead: PendingRead? = null
             try {
                 // A long enough break since the last translated page means the
                 // next one probably belongs to a different series.
@@ -825,10 +858,11 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                 // described the old one, and the mismatch could never be
                 // noticed.
                 var ahead: TranslatePipeline.Analysis? = null
+                var read: PendingRead? = null
                 val prep = takePrepared()
                 if (prep != null) {
                     setPill("translating…")
-                    val read = try {
+                    val done = try {
                         prep.job.await()
                     } catch (e: CancellationException) {
                         if (!isActive) throw e
@@ -836,12 +870,14 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                     } catch (_: Exception) {
                         null
                     }
-                    if (read != null && stillOnScreen(read.first, latestThumb)) {
+                    if (done != null && stillOnScreen(done.first, latestThumb)) {
                         bmp = prep.bitmap
-                        shownThumb = read.first
-                        ahead = read.second
+                        shownThumb = done.first
+                        ahead = done.second
+                        read = prep.read
                     } else {
                         // The screen moved under the reading, or it failed.
+                        prep.drop()
                         retireLater(prep.bitmap)
                     }
                 }
@@ -854,14 +890,19 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                     bmp = fresh
                     setPill("translating…")
                     withContext(Dispatchers.Default) {
+                        // The model needs nothing analysis produces, so it
+                        // starts first and reads while the page is analysed.
+                        read = pipeline.startRead(fresh, settings, readScope)
                         shownThumb = FrameStability.grayThumbOf(fresh)
                         pipeline.analyze(fresh, settings, exclusions)
                     }
                 }
+                val aheadRead = read
+                pendingRead = aheadRead
 
                 var draftShown: List<RenderBubble> = emptyList()
                 val result = withContext(Dispatchers.Default) {
-                    pipeline.translate(analysis, settings) { partial ->
+                    pipeline.translate(analysis, settings, read = aheadRead, onPartial = { partial ->
                         // A draft or a streamed batch landed — paint it now,
                         // the rest of the polish follows.
                         withContext(Dispatchers.Main.immediate) {
@@ -870,10 +911,11 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                                 lastShown = partial.bubbles
                                 suppressUntil = SystemClock.uptimeMillis() + 600
                                 paintCards(partial.bubbles)
-                                setPill("✓ ${partial.bubbles.size} · ${partial.engineLabel} · ✨ upgrading…")
+                                val doing = if (partial.note == "cleaning art…") "✨ cleaning art…" else "✨ upgrading…"
+                                setPill("✓ ${partial.bubbles.size} · ${partial.engineLabel} · $doing")
                             }
                         }
-                    }
+                    })
                 }
                 if (!isActive) return@launch
                 // The polish replaces what it answered and never erases what
@@ -928,6 +970,9 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                 // Cancellation is this loop's steady state — every scroll
                 // that interrupts a pass lands here — so the full-screen
                 // copy is reclaimed on that path too, not only on success.
+                // A read started ahead of this pass lives outside its job:
+                // finished it is a no-op to cancel, abandoned it must stop.
+                pendingRead?.cancel()
                 bmp?.let { if (isActive) it.recycle() else retireLater(it) }
                 popBusy()
             }
@@ -979,6 +1024,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         // dialogue — cover switching series the usual way. This is for going
         // straight from one work to the next with neither.
         works.startNewWork()
+        pipeline.forgetRecent()
         setPill("new series · names cleared", 2000)
     }
 
