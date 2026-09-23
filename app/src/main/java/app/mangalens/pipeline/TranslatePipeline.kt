@@ -606,12 +606,6 @@ class TranslatePipeline(
             }
         }
 
-        val cleaner = if (AiCleaner.supports(settings)) AiCleaner(settings) else null
-        var cleanJob: Deferred<Bitmap?>? = null
-        suspend fun wantsCleanup(): Boolean = gate.withLock {
-            resolver.freeItems.any { item -> resolver.erasureOf(item)?.let { !it.flat && it.busy >= BUSY_FOR_AI } == true }
-        }
-
         val items: List<PageItem>? = try {
             read.collect { item ->
                 gate.withLock {
@@ -619,11 +613,6 @@ class TranslatePipeline(
                     streamed.add(item)
                 }
                 paint(reader.label)
-                // The redraw takes seconds: it starts the moment the first
-                // line that needs it is known, not when the page is done.
-                if (cleaner != null && cleanJob == null && wantsCleanup()) {
-                    cleanJob = async(Dispatchers.IO) { cleaner.cleanPage(bitmap) }
-                }
             }
         } catch (e: CancellationException) {
             throw e
@@ -635,7 +624,6 @@ class TranslatePipeline(
             // Refused or failed. Whatever streamed stays; the rest goes
             // through the text path, which falls back to Google on its own.
             draftJob?.cancel()
-            cleanJob?.cancel()
             val partial = gate.withLock { resolver.resolve(keepWording(recalled, streamed)) }
             val text = runCatching {
                 aiTextTranslate(bitmap, bubbles, lang, settings, analysis.detected)
@@ -653,18 +641,29 @@ class TranslatePipeline(
         val finalItems = keepWording(recalled, complete)
         var rendered = gate.withLock { resolver.resolve(finalItems) }
 
-        val job = cleanJob ?: if (cleaner != null && wantsCleanup()) async(Dispatchers.IO) { cleaner.cleanPage(bitmap) } else null
+        // Lettering on detailed art has only been smoothed over locally.
+        // Its ground is redrawn by the image model once the whole page is
+        // known, so every region that needs it goes up in one request —
+        // sound effects never: those stay part of the drawing.
         var note: String? = null
-        if (job != null) {
+        val targets = if (!AiCleaner.supports(settings)) emptyList() else gate.withLock {
+            resolver.freeItems
+                .filter { it.kind != ItemKind.SFX }
+                .mapNotNull { item ->
+                    resolver.erasureOf(item)?.takeIf { !it.flat && it.busy >= BUSY_FOR_AI }?.let { item to it }
+                }
+                .sortedByDescending { it.second.busy }
+        }
+        if (targets.isNotEmpty()) {
             onPartial?.invoke(PageResult(UpgradeMerge.merge(draft, rendered), reader.label, "cleaning art…", polished = true))
-            val cleaned = withTimeoutOrNull(CLEANUP_TIMEOUT_MS) { runCatching { job.await() }.getOrNull() }
+            val cleaned = withTimeoutOrNull(CLEANUP_TIMEOUT_MS) {
+                withContext(Dispatchers.IO) { AiCleaner(settings).cleanRegions(bitmap, targets.map { it.second.rect }) }
+            }
             if (cleaned != null) {
                 val redrawn = withContext(Dispatchers.Default) {
                     gate.withLock {
                         var any = 0
-                        for (item in resolver.freeItems) {
-                            val e = resolver.erasureOf(item) ?: continue
-                            if (e.flat || e.busy < BUSY_FOR_AI) continue
+                        for ((item, e) in targets) {
                             AiCleaner.refine(bitmap, cleaned, e)?.let {
                                 resolver.upgrade(item, it)
                                 any++
@@ -676,8 +675,6 @@ class TranslatePipeline(
                 }
                 if (redrawn > 0) note = "art cleaned"
                 cleaned.recycle()
-            } else {
-                job.cancel()
             }
         }
         draftJob?.cancel()

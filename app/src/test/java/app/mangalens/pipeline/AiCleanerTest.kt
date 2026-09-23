@@ -1,6 +1,7 @@
 package app.mangalens.pipeline
 
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
@@ -8,6 +9,7 @@ import android.graphics.Rect
 import android.util.Base64
 import app.mangalens.settings.AppSettings
 import app.mangalens.settings.LlmProvider
+import app.mangalens.translate.GeminiBlocked
 import app.mangalens.translate.GeminiModelMissing
 import java.io.ByteArrayOutputStream
 import kotlinx.coroutines.runBlocking
@@ -18,6 +20,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -111,36 +114,87 @@ class AiCleanerTest {
         ),
     )
 
+    /** The collage the request carried, decoded. */
+    private fun sentCollage(body: JSONObject): Bitmap {
+        val data = body.getJSONArray("contents").getJSONObject(0).getJSONArray("parts")
+            .getJSONObject(0).getJSONObject("inlineData").getString("data")
+        val bytes = Base64.decode(data, Base64.DEFAULT)
+        return BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+    }
+
     private val settings = AppSettings(provider = LlmProvider.GEMINI, apiKey = "k", aiCleanup = true)
 
+    @Before
+    fun rested() = AiCleaner.resetRest()
+
     @Test
-    fun theRedrawComesBackAtThePagesOwnSize() = runBlocking {
-        val half = Bitmap.createScaledBitmap(art(lettering = false), w / 2, h / 2, true)
-        val cleaner = AiCleaner(settings) { _, _ -> reply(half) }
-        val out = cleaner.cleanPage(art())
+    fun onlyTheLetteringAndItsSurroundingsAreSent() {
+        val plan = AiCleaner.plan(1080, 2400, listOf(Rect(100, 100, 300, 160), Rect(280, 150, 400, 210), Rect(500, 2000, 900, 2100)))!!
+        // The two overlapping regions go up as one crop; the page itself never does.
+        assertEquals(2, plan.crops.size)
+        val areaSent = plan.crops.sumOf { it.src.width() * it.src.height() }
+        assertTrue(areaSent < 1080 * 2400 / 10)
+        for (c in plan.crops) {
+            assertEquals(c.src.width(), c.dst.width())
+            assertEquals(c.src.height(), c.dst.height())
+        }
+    }
+
+    @Test
+    fun theRedrawLandsOnlyWhereTheRegionsAre() = runBlocking {
+        val page = art()
+        // A model that returns its collage at half size, every crop whitened.
+        val cleaner = AiCleaner(settings) { _, body ->
+            val sent = sentCollage(body)
+            val white = Bitmap.createBitmap(sent.width / 2, sent.height / 2, Bitmap.Config.ARGB_8888)
+            Canvas(white).drawColor(Color.WHITE)
+            reply(white)
+        }
+        val out = cleaner.cleanRegions(page, listOf(Rect(150, 140, 250, 160)))
         assertNotNull(out)
         assertEquals(w, out!!.width)
         assertEquals(h, out.height)
+        // Inside the region: the redraw. Far outside it: the page's own pixels.
+        assertEquals(Color.WHITE, out.getPixel(200, 150))
+        assertEquals(page.getPixel(20, 20), out.getPixel(20, 20))
+        assertEquals(page.getPixel(390, 290), out.getPixel(390, 290))
     }
 
     @Test
     fun aRetiredImageModelFallsBackToTheOlderOne() = runBlocking {
         val asked = ArrayList<String>()
-        val cleaner = AiCleaner(settings) { model, _ ->
+        val cleaner = AiCleaner(settings) { model, body ->
             asked.add(model)
             if (model == AiCleaner.MODEL) throw GeminiModelMissing(model, 404, "gone")
-            reply(art(lettering = false))
+            reply(sentCollage(body))
         }
-        assertNotNull(cleaner.cleanPage(art()))
+        assertNotNull(cleaner.cleanRegions(art(), listOf(rect)))
         assertEquals(listOf(AiCleaner.MODEL, AiCleaner.FALLBACK_MODEL), asked)
     }
 
     @Test
     fun aRefusalOrFailureIsNoRedrawRatherThanAnError() = runBlocking {
         val empty = AiCleaner(settings) { _, _ -> JSONObject().put("candidates", JSONArray()) }
-        assertNull(empty.cleanPage(art()))
+        assertNull(empty.cleanRegions(art(), listOf(rect)))
         val failing = AiCleaner(settings) { _, _ -> throw RuntimeException("Gemini HTTP 500") }
-        assertNull(failing.cleanPage(art()))
+        assertNull(failing.cleanRegions(art(), listOf(rect)))
+        assertTrue("a server error is not a refusal", AiCleaner.supports(settings))
+    }
+
+    @Test
+    fun aWorkTheModelWillNotDrawIsNotAskedAboutEveryPage() = runBlocking {
+        var calls = 0
+        val refusing = AiCleaner(settings) { _, _ ->
+            calls++
+            throw GeminiBlocked("IMAGE_SAFETY")
+        }
+        assertNull(refusing.cleanRegions(art(), listOf(rect)))
+        assertTrue(AiCleaner.supports(settings))
+        assertNull(refusing.cleanRegions(art(), listOf(rect)))
+        // Two refusals in a row: the clean-up rests instead of asking again.
+        assertFalse(AiCleaner.supports(settings))
+        assertNull(refusing.cleanRegions(art(), listOf(rect)))
+        assertEquals(2, calls)
     }
 
     @Test
