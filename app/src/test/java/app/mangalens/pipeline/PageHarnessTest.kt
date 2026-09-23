@@ -135,6 +135,65 @@ class PageHarnessTest {
         }
     }
 
+    /**
+     * A webtoon read as a run of scroll stops: frames in MANGALENS_SCROLL,
+     * in name order, each the same strip scrolled further. From the second
+     * frame on, lettering seen on the first should paint from memory before
+     * the model has answered.
+     */
+    @Test
+    fun scrollStopsRepaintFromMemory() {
+        val key = System.getenv("GEMINI_API_KEY").orEmpty()
+        val dir = System.getenv("MANGALENS_SCROLL")?.let(::File)
+        assumeTrue("GEMINI_API_KEY not set", key.isNotBlank())
+        assumeTrue("MANGALENS_SCROLL not set", dir != null && dir.isDirectory)
+        val frames = dir!!.listFiles { f -> f.extension.lowercase() in setOf("jpg", "jpeg", "png") }!!.sortedBy { it.name }
+        val out = File("build/harness").apply { mkdirs() }
+        val app = RuntimeEnvironment.getApplication()
+        val settings = AppSettings(
+            engine = EngineKind.LLM, provider = LlmProvider.GEMINI, apiKey = key,
+            aiVision = AiVisionMode.AUTO, aiCleanup = false, diagnostics = true,
+        )
+        StoryContext.reset()
+        val cache = TranslationCache()
+        val glossary = GlossaryStore(app)
+        val cast = CastBook(app)
+        val pipeline = TranslatePipeline(NoOcr(), TranslationService(cache, glossary, cast), cache, glossary, cast)
+        for (file in frames) {
+            val page = BitmapFactory.decodeFile(file.path, BitmapFactory.Options().apply {
+                inPreferredConfig = Bitmap.Config.ARGB_8888
+            })
+            val t0 = System.nanoTime()
+            fun ms() = (System.nanoTime() - t0) / 1_000_000
+            val result = runBlocking {
+                val read = pipeline.startRead(page, settings, this)
+                val analysis = pipeline.analyze(page, settings)
+                var first = -1L
+                var firstCount = 0
+                val r = pipeline.translate(analysis, settings, read = read, onPartial = { p ->
+                    if (first < 0 && p.bubbles.isNotEmpty()) {
+                        first = ms()
+                        firstCount = p.bubbles.size
+                    }
+                })
+                println(
+                    "[scroll] ${file.name}: first paint $first ms ($firstCount cards) · final ${ms()} ms · " +
+                        "${r.bubbles.size} cards · ${r.diag ?: ""}",
+                )
+                r
+            }
+            for (b in result.bubbles) println("    ${b.original.replace('\n', ' ').take(30)} => ${b.translated}")
+            val view = BubbleOverlayView(app).apply { layout(0, 0, page.width, page.height) }
+            view.setBubbles(result.bubbles)
+            val translated = Bitmap.createBitmap(page.width, page.height, Bitmap.Config.ARGB_8888)
+            Canvas(translated).apply {
+                drawBitmap(page, 0f, 0f, null)
+                view.draw(this)
+            }
+            save(translated, File(out, "scroll-${file.nameWithoutExtension}.png"))
+        }
+    }
+
     private fun save(bmp: Bitmap, file: File) {
         FileOutputStream(file).use { bmp.compress(Bitmap.CompressFormat.PNG, 100, it) }
     }
