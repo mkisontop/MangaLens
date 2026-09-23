@@ -599,12 +599,12 @@ class PageReaderTest {
     }
 
     @Test
-    fun `the page goes up at most 1600 px long, 1100 with data saver, never enlarged`() = runBlocking {
+    fun `the page goes up at most 1280 px long, 1024 with data saver, never enlarged`() = runBlocking {
         val transport = FakeTransport { _, _, onDelta -> streamOut(reply(hello), onDelta) }
         reader(transport, race = 1).read(page(1000, 3000), SourceLang.JA)
-        assertEquals(533 to 1600, sentSize(transport))
+        assertEquals(426 to 1280, sentSize(transport))
         reader(transport, race = 1, s = settings.copy(dataSaver = true)).read(page(1000, 3000), SourceLang.JA)
-        assertEquals(366 to 1100, sentSize(transport))
+        assertEquals(341 to 1024, sentSize(transport))
         reader(transport, race = 1).read(page(400, 600), SourceLang.JA)
         assertEquals(400 to 600, sentSize(transport))
     }
@@ -732,5 +732,14 @@ class PageReaderTest {
         assumeTrue("no recorded pages found", pages > 0)
         println("orientation agrees with the model on $agreed of $judged CJK items")
         assertTrue("orientation agreed on only $agreed of $judged", agreed * 10 >= judged * 8)
+    }
+
+    @Test
+    fun `kana carried over from a stammer never reaches the English`() {
+        assertEquals("I-I'll do my best♡", PageReader.englishOnly("I-I'll do my bestっ♡"))
+        assertEquals("S-Sorry to keep you waiting...!?", PageReader.englishOnly("S-Sorry to keep you waiting...ぁ!?"))
+        assertEquals("Hah... hah♡", PageReader.englishOnly("Hah... hah♡"))
+        // A line with no English in it is left as the model wrote it.
+        assertEquals("はぁ♡", PageReader.englishOnly("はぁ♡"))
     }
 }

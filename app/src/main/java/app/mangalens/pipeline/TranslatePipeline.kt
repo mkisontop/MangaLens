@@ -158,6 +158,17 @@ class TranslatePipeline(
     /** Forgets lettering remembered from earlier stops. */
     fun forgetRecent() = memory.clear()
 
+    /**
+     * Opens the connection the next page will use, so the TLS handshake is
+     * paid while the reader is still scrolling rather than after they stop.
+     * Cheap to call often: it goes out at most once a minute.
+     */
+    fun warm(settings: AppSettings) {
+        if (readsAiFirst(settings)) {
+            app.mangalens.translate.GeminiApi.warm(settings.apiKey, settings.effectiveModel())
+        }
+    }
+
     suspend fun process(
         bitmap: Bitmap,
         settings: AppSettings,

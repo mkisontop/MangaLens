@@ -18,7 +18,7 @@ import org.robolectric.annotation.GraphicsMode
 /**
  * Reads the hard test pages through the real Gemini API and prints what
  * the reader would see: time to the first item, time to the whole page,
- * and every item. Skipped unless GEMINI_API_KEY is set and the pages are
+ * and every item. Skipped unless GEMINI_API_KEY and MANGALENS_PAGES are set and the pages are
  * on disk, so CI stays hermetic; GEMINI_MODEL picks another model.
  */
 @RunWith(RobolectricTestRunner::class)
@@ -26,7 +26,8 @@ import org.robolectric.annotation.GraphicsMode
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class PageReaderLiveTest {
 
-    private val pages = File("/tmp/claude-0/-home-user-MangaLens/3346ff7e-fafd-51e2-a77f-50f3d88a1700/scratchpad/pages")
+    /** A directory of raw pages, from MANGALENS_PAGES. */
+    private val pages = File(System.getenv("MANGALENS_PAGES").orEmpty())
 
     @Test
     fun `every hard page is read with its lettering found and translated`() = runBlocking {

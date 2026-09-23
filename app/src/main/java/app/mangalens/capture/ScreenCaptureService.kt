@@ -360,6 +360,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
             }
         }, captureHandler)
         setupDisplay()
+        pipeline.warm(settings)
         controller = OverlayController(this, this).also { it.attach() }
         controller?.bubbleView?.let { v ->
             v.textScale = settings.textScale
@@ -741,6 +742,9 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                 if (paused || settings.mode == CaptureMode.MANUAL) continue
                 if (projection == null || state != State.SCANNING) continue
                 val now = SystemClock.uptimeMillis()
+                // The reader is scrolling toward the next stop: have the
+                // connection open by the time they get there.
+                if (now - lastMotionAt < 200) pipeline.warm(settings)
                 if (lastFrameAt <= 0 || now < suppressUntil) continue
                 val quiet = now - lastMotionAt
                 if (quiet >= settings.stabilityMs) {

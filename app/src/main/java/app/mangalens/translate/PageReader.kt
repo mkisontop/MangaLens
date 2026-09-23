@@ -459,13 +459,19 @@ class PageReader internal constructor(
         }
 
         /**
-         * JPEG of the page, long side at most 1600 px (1100 with data
+         * JPEG of the page, long side at most 1280 px (1024 with data
          * saver) and never enlarged. Base64 once, since the race and a
          * model fallback send the same bytes again.
+         *
+         * Gemini spends a fixed budget of tokens on an image whatever its
+         * size, so pixels beyond what that budget resolves buy nothing and
+         * cost upload time — on a phone's uplink the one delay that grows
+         * with the file. Measured on dense pages of small hand lettering,
+         * 1280 px reads every item a 1600 px upload does, at 40% fewer bytes.
          */
         internal fun encode(bitmap: Bitmap, dataSaver: Boolean): String {
-            val maxDim = if (dataSaver) 1100 else 1600
-            val quality = if (dataSaver) 65 else 78
+            val maxDim = if (dataSaver) 1024 else 1280
+            val quality = if (dataSaver) 62 else 72
             val scale = maxDim.toFloat() / maxOf(bitmap.width, bitmap.height)
             val scaled = if (scale < 1f) {
                 Bitmap.createScaledBitmap(
@@ -515,7 +521,7 @@ class PageReader internal constructor(
                 box = box,
                 kind = kind,
                 src = src,
-                en = en,
+                en = englishOnly(en),
                 who = o.optString("who", "").trim().take(24),
                 vertical = isVertical(src, box.width(), box.height()),
                 loud = (kind == ItemKind.SPEECH || kind == ItemKind.THOUGHT) && isLoud(en),
@@ -549,6 +555,19 @@ class PageReader internal constructor(
             }
             val margin = if (hangul) 0.7 else 0.0
             return if (textShape > 0) boxShape > margin else boxShape < -margin
+        }
+
+        /**
+         * [en] without the kana or hangul the model sometimes carries over
+         * from the source — a trailing っ or ぁ copied from a stammer, which
+         * would be typeset as a stray glyph in the English. Only when the
+         * line really is English: a line with no Latin letters is left as
+         * the model wrote it.
+         */
+        internal fun englishOnly(en: String): String {
+            if (en.none { it in 'A'..'Z' || it in 'a'..'z' }) return en
+            val kept = en.filter { !(Script.isKana(it) || Script.isHangul(it)) }
+            return kept.replace(Regex("[ \t]{2,}"), " ").trim().ifEmpty { en }
         }
 
         /** Shouted: ends in "!!", or is set mostly in capitals. */
@@ -586,6 +605,8 @@ TRANSLATE
 - A sentence split across balloons: translate it as one sentence, then divide the English across those balloons in order, so they read on continuously.
 - "kind": speech, thought, narration, sfx, or art_text (lettering on the art outside balloons: side comments, signs).
 - Sound effects: punchy English onomatopoeia or state words in CAPS (WHAM, BA-DUMP, KRAK). Japanese SFX also name states — silence (シーン), staring (ジー), nervousness (ドキドキ) — translate the effect, not a literal noise.
+- Sounds a character voices — breaths, gasps, moans, giggles, sobs (はぁ, んっ, あっ, えへへ, うぅ, 하아, 흐윽) — are "speech" (in a balloon) or "art_text" (lettered on the art), never "sfx". Write them as natural English vocalizations in normal case, keeping their length, stammer and ♡: "Hah... hah♡", "Nngh♡", "Ah!♡", "Ehehe♡", "Hic...".
+- Keep stammers, drawn-out vowels and trailing emphasis as English does it: "S-Sorry...", "Nooo!", "I-I'll do my best!". Never carry kana or hangul into "en".
 
 AFTER THE ITEMS
 "new_terms": only names or recurring terms first established on this page and missing from the glossary. "characters": only characters on this page whose pronoun or register is not recorded yet. Keep both brief; leave them empty when nothing is new.
