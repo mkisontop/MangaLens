@@ -19,7 +19,7 @@ import org.robolectric.annotation.GraphicsMode
  * Reads the hard test pages through the real Gemini API and prints what
  * the reader would see: time to the first item, time to the whole page,
  * and every item. Skipped unless GEMINI_API_KEY and MANGALENS_PAGES are set and the pages are
- * on disk, so CI stays hermetic; GEMINI_MODEL picks another model.
+ * on disk, so CI stays hermetic; GEMINI_MODEL picks another model, GEMINI_REASONING (FAST, BALANCED, THOROUGH) its thinking.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -41,6 +41,9 @@ class PageReaderLiveTest {
             provider = LlmProvider.GEMINI,
             apiKey = key,
             model = System.getenv("GEMINI_MODEL").orEmpty(),
+            aiReasoning = System.getenv("GEMINI_REASONING")
+                ?.let { runCatching { app.mangalens.settings.AiReasoning.valueOf(it) }.getOrNull() }
+                ?: app.mangalens.settings.AiReasoning.BALANCED,
         )
         GeminiApi.warm(key, settings.effectiveModel())
         delay(1_500)
