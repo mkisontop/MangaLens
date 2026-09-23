@@ -53,6 +53,12 @@ data class AppSettings(
     val aiReasoning: AiReasoning = AiReasoning.BALANCED,
     val dataSaver: Boolean = false,
     /**
+     * Lets an image model redraw the art under lettering that sits on the
+     * art itself — where a local reconstruction can only smooth it over.
+     * Gemini only; costs an image request on pages that need it.
+     */
+    val aiCleanup: Boolean = true,
+    /**
      * Reports what each stage of a pass actually found, and outlines the
      * balloons detected in the page. When a balloon comes back untranslated the
      * cause is at OCR, at balloon detection, or at the model, and the fixes are
@@ -98,6 +104,7 @@ private object Keys {
     val AI_VISION = stringPreferencesKey("ai_vision")
     val AI_REASONING = stringPreferencesKey("ai_reasoning")
     val DATA_SAVER = booleanPreferencesKey("data_saver")
+    val AI_CLEANUP = booleanPreferencesKey("ai_cleanup")
     val DIAGNOSTICS = booleanPreferencesKey("diagnostics")
     val TEXT_SCALE = floatPreferencesKey("text_scale")
     val BG_OPACITY = floatPreferencesKey("bg_opacity")
@@ -230,6 +237,7 @@ internal fun settingsFromPreferences(p: Preferences, credentials: Preferences = 
         aiVision = enumOr(p[Keys.AI_VISION], d.aiVision),
         aiReasoning = enumOr(p[Keys.AI_REASONING], d.aiReasoning),
         dataSaver = p[Keys.DATA_SAVER] ?: d.dataSaver,
+        aiCleanup = p[Keys.AI_CLEANUP] ?: d.aiCleanup,
         diagnostics = p[Keys.DIAGNOSTICS] ?: d.diagnostics,
         textScale = p[Keys.TEXT_SCALE] ?: d.textScale,
         bgOpacity = p[Keys.BG_OPACITY] ?: d.bgOpacity,
@@ -261,6 +269,7 @@ class SettingsRepository(private val context: Context) {
     suspend fun setAiVision(v: AiVisionMode) = context.settingsStore.edit { it[Keys.AI_VISION] = v.name }
     suspend fun setAiReasoning(v: AiReasoning) = context.settingsStore.edit { it[Keys.AI_REASONING] = v.name }
     suspend fun setDataSaver(v: Boolean) = context.settingsStore.edit { it[Keys.DATA_SAVER] = v }
+    suspend fun setAiCleanup(v: Boolean) = context.settingsStore.edit { it[Keys.AI_CLEANUP] = v }
     suspend fun setDiagnostics(v: Boolean) = context.settingsStore.edit { it[Keys.DIAGNOSTICS] = v }
     suspend fun setTextScale(v: Float) = context.settingsStore.edit { it[Keys.TEXT_SCALE] = v }
     suspend fun setBgOpacity(v: Float) = context.settingsStore.edit { it[Keys.BG_OPACITY] = v }

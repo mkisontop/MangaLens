@@ -22,7 +22,7 @@ import kotlinx.coroutines.tasks.await
  * row it is "pinned" so subsequent frames only pay for a single recognizer; the
  * pin is dropped again whenever a frame produces almost no text in that script.
  */
-class OcrEngine {
+open class OcrEngine {
 
     data class Result(val lines: List<OcrLine>, val lang: SourceLang)
 
@@ -40,7 +40,7 @@ class OcrEngine {
     private var lastWinner: SourceLang? = null
     private var winStreak = 0
 
-    suspend fun recognize(bitmap: Bitmap, setting: SourceLang): Result {
+    open suspend fun recognize(bitmap: Bitmap, setting: SourceLang): Result {
         if (setting != SourceLang.AUTO) {
             return Result(run(recognizerFor(setting), bitmap), setting)
         }
@@ -69,7 +69,7 @@ class OcrEngine {
      * pinned from a crop, and Latin lines are kept for the same reason they
      * are kept on a page.
      */
-    suspend fun recognizeRegion(bitmap: Bitmap, lang: SourceLang?): List<OcrLine> {
+    open suspend fun recognizeRegion(bitmap: Bitmap, lang: SourceLang?): List<OcrLine> {
         val known = lang ?: pinned
         if (known != null && known != SourceLang.AUTO) return run(recognizerFor(known), bitmap)
         return coroutineScope {

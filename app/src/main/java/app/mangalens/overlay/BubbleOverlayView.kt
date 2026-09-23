@@ -19,6 +19,29 @@ import app.mangalens.R
 import app.mangalens.ocr.Balloon
 import app.mangalens.ocr.BubbleKind
 
+/**
+ * How a piece of English is lettered: the face, weight and treatment a
+ * scanlation letterer would pick for that kind of text.
+ */
+enum class LetterStyle {
+    DIALOGUE,
+
+    /** Shouted: heavier and larger. */
+    SHOUT,
+
+    /** Inner voice: lighter, italic. */
+    THOUGHT,
+
+    /** Narration and captions. */
+    NARRATION,
+
+    /** A sound effect, lettered as one. */
+    SFX,
+
+    /** Lettering drawn straight onto the art, set in its own colours and outline. */
+    ART,
+}
+
 data class RenderBubble(
     val box: Rect,
     val translated: String,
@@ -40,6 +63,16 @@ data class RenderBubble(
      * paper is not one flat colour; null means fill with [bgColor].
      */
     val fill: Bitmap? = null,
+    val style: LetterStyle = if (kind == BubbleKind.SFX) LetterStyle.SFX else LetterStyle.DIALOGUE,
+    /**
+     * Reconstructed background for lettering no balloon holds, drawn at
+     * [patchRect] before the English: opaque where the original strokes
+     * were, transparent elsewhere, so the art around them is untouched.
+     */
+    val patch: Bitmap? = null,
+    val patchRect: Rect? = null,
+    /** Stroke around the English, matching the original lettering's outline; null for none. */
+    val outlineColor: Int? = null,
 )
 
 /**
