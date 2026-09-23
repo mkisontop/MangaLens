@@ -404,12 +404,12 @@ private fun EngineCard(settings: AppSettings, repo: SettingsRepository) {
                 if (settings.provider == LlmProvider.GEMINI) {
                     Spacer(Modifier.height(8.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Chip("AI clean-up of text on art", settings.aiCleanup) {
+                        Chip("AI redraw of art under text (optional)", settings.aiCleanup) {
                             scope.launch { repo.setAiCleanup(!settings.aiCleanup) }
                         }
                     }
                     Text(
-                        "An image model redraws the art under lettering drawn on the art itself; costs an extra image request on pages that need it.",
+                        "Cleaning always happens on your device. This extra step asks an image model to redraw detailed art under text drawn on it — an image request per page that needs one, and often refused on explicit art (the local cleaning then stays).",
                         style = MaterialTheme.typography.bodySmall,
                         color = MaterialTheme.colorScheme.onSurfaceVariant
                     )

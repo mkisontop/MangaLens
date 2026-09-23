@@ -70,7 +70,7 @@ class PageHarnessTest {
             apiKey = key,
             model = System.getenv("MANGALENS_MODEL").orEmpty(),
             aiVision = AiVisionMode.AUTO,
-            aiCleanup = System.getenv("MANGALENS_CLEANUP") != "0",
+            aiCleanup = System.getenv("MANGALENS_CLEANUP") == "1",
             diagnostics = true,
         )
         for (file in pages) {

@@ -54,10 +54,12 @@ data class AppSettings(
     val dataSaver: Boolean = false,
     /**
      * Lets an image model redraw the art under lettering that sits on the
-     * art itself — where a local reconstruction can only smooth it over.
-     * Gemini only; costs an image request on pages that need it.
+     * art itself — the scanlation redrawer's job, where a local
+     * reconstruction can only smooth it over. Off by default: cleaning is
+     * done on the device the way a scanlation cleaner works, and the redraw
+     * costs an image request and is refused on explicit art. Gemini only.
      */
-    val aiCleanup: Boolean = true,
+    val aiCleanup: Boolean = false,
     /**
      * Reports what each stage of a pass actually found, and outlines the
      * balloons detected in the page. When a balloon comes back untranslated the
