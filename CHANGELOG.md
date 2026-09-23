@@ -1,5 +1,65 @@
 # Changelog
 
+## 0.11.0
+
+Gemini reads the page itself, the moment you stop — and every line is
+cleaned and re-lettered the way a scanlation team does it.
+
+**Download:** `MangaLens.apk` below updates 0.9.2 and newer in place. Still on
+0.9.1? Use `MangaLens-legacy-update.apk` once (Android 9+), as described in
+the README.
+
+- **AI-first reading with Gemini.** The screen goes to the model about
+  0.15 s after scrolling stops, alongside on-device analysis instead of after
+  it, through Google's native API. The model finds every piece of lettering
+  itself — balloons, captions, text on the art, sound effects — and each line
+  is painted the moment it streams in, dialogue first in reading order.
+  Measured on hard test pages, the first line lands about 1.5–2 s after the
+  request; two identical requests race and the slower is cancelled, which
+  cuts Google's occasional 3–6 s stalls. Pages go up at 1280 px (Gemini
+  reads them at a fixed budget anyway), and the connection is opened while
+  you scroll so no stop pays the handshake.
+- **Best model by measurement.** `gemini-flash-latest` (currently Gemini 3.8
+  Flash) is the default: on the test pages it found every line with tight
+  boxes and read like a scanlation. 3.5 Flash-Lite answered ~0.6 s sooner but
+  mistranslated, merged separate balloons into one and invented a sound
+  effect; it stays selectable for plain pages.
+- **Expert translation, reviewed by experts.** A panel of reviewers
+  (Japanese manga, Korean and Chinese, lettering) critiqued live output and
+  the prompt now carries their rules: one English per source sound, chosen by
+  meaning (BA-DUMP, SHRAK, DOOM), never asterisks or romanized cries; breaths,
+  moans and giggles lettered as the sound ("Hah... hah♡", "Heh heh"); rough
+  speech kept rough and crude words matched; stammers the English way;
+  titles translated, name honorifics kept. Faithful and complete — nothing
+  omitted, summarised or softened.
+- **Balloons instantly on scroll.** Lettering translated at an earlier stop
+  is found again by its own pixels — searched along the scroll, verified
+  stroke by stroke at near full resolution — and repainted before any request
+  goes out. Never by position: two balloons side by side, a line one
+  character different, or a new balloon in an old balloon's place are never
+  confused, and a line shown twice is never guessed at.
+- **Never wipes art that looks like a balloon.** A face in line art, a
+  highlight, screentone or the inside of a big glyph can pass for a balloon.
+  A detection is now cleaned only when its interior holds nothing but the
+  lettering the model found there; otherwise that lettering is erased on its
+  own. Two balloons drawn joined keep a line each, in their own lobes.
+- **Text on the art is erased, not covered.** Narration on the art, side
+  comments on screentone and white-outlined thoughts over a figure are
+  erased stroke by stroke — screentone continued, gradients followed — and
+  re-lettered in their own colours and outline. No more rounded cards.
+- **Sound effects like a scanlation handles them.** Only the ones that tell
+  you something are translated; decorative action lettering is left alone.
+  A small one on plain ground is erased and re-lettered; a big one drawn
+  across the art keeps its place and gets a small English note beside it.
+- **Lettering styles.** Shouts heavier, thoughts in italic, narration calmer,
+  sound effects bold italic and outlined; the English fades in rather than
+  popping, and a machine draft appears only when the AI is slow, so a page is
+  lettered once.
+- **Optional AI redraw.** Off by default. When on, an image model redraws
+  detailed art under lettering drawn on it; only crops around that
+  lettering are sent, the redraw is used only where it matches the art
+  around each letter, and after two refusals it rests for 15 minutes.
+
 ## 0.10.1
 
 Tap-to-turn readers are noticed on the first tap.
