@@ -24,9 +24,9 @@ import org.json.JSONObject
 
 /**
  * Shared HTTP plumbing for the text and vision LLM engines: one client with
- * upload-friendly timeouts, the Anthropic Messages shape, the OpenAI-compatible
- * chat shape (OpenAI, Gemini, OpenRouter, custom), streaming for both, and
- * tolerant JSON digging.
+ * upload-friendly timeouts, the Anthropic Messages shape, Google's native
+ * Gemini shape ([GeminiApi]), the OpenAI-compatible chat shape (OpenAI,
+ * OpenRouter, custom), streaming for all three, and tolerant JSON digging.
  *
  * Every request is laid out stable-first: the system prompt, then the
  * series memory (glossary and cast, which change only when a new name is
@@ -55,10 +55,6 @@ internal object LlmHttp {
 
     /** Claude models that take an effort level; older ones reject the parameter. */
     private val CLAUDE_EFFORT = Regex("^claude-(opus-(5|4-[5-9])|sonnet-(5|4-[6-9])|fable|mythos)")
-
-    /** Gemini models with thinking. Gemini 3 takes only low and high. */
-    private val GEMINI_THINKING = Regex("gemini-(2\\.5|3)")
-    private val GEMINI_3 = Regex("gemini-3")
 
     /**
      * OpenAI reasoning models. They take a reasoning effort, they reject
@@ -146,6 +142,15 @@ internal object LlmHttp {
         vision: Boolean,
         onDelta: (suspend (String) -> Unit)? = null,
     ): String {
+        if (settings.provider == LlmProvider.GEMINI) {
+            val body = geminiBody(settings, system, stable, images, page, effort, vision)
+            val model = settings.effectiveModel()
+            return if (onDelta != null) {
+                GeminiApi.stream(settings.apiKey, model, body, onDelta)
+            } else {
+                GeminiApi.text(GeminiApi.generate(settings.apiKey, model, body))
+            }
+        }
         val anthropic = settings.provider == LlmProvider.ANTHROPIC
         val streaming = onDelta != null
         val body = if (anthropic) {
@@ -281,23 +286,12 @@ internal object LlmHttp {
         // varies slightly between two captures of the same page, so a
         // re-read often misses the cache and asks again. With sampling on,
         // that second answer differs from the first — the same panel worded
-        // two ways depending on when you looked at it. Gemini 3 and the
-        // OpenAI reasoning models are the exceptions: they are tuned for
-        // their default temperature, and Google warns that lowering it can
-        // send Gemini 3 into loops.
+        // two ways depending on when you looked at it. The OpenAI reasoning
+        // models are the exception: they are tuned for their default
+        // temperature and reject any other.
         var greedy = true
         var tokensField = "max_tokens"
         when (settings.provider) {
-            LlmProvider.GEMINI -> {
-                if (GEMINI_3.containsMatchIn(model)) {
-                    greedy = false
-                    // Gemini 3 takes only low and high; medium is answered
-                    // with the faster of the two.
-                    body.put("reasoning_effort", if (effort == "high") "high" else "low")
-                } else if (GEMINI_THINKING.containsMatchIn(model)) {
-                    body.put("reasoning_effort", effort)
-                }
-            }
             LlmProvider.OPENAI -> {
                 if (OPENAI_REASONING.containsMatchIn(model)) {
                     greedy = false
@@ -317,6 +311,42 @@ internal object LlmHttp {
         body.put(tokensField, cap)
         if (stream) body.put("stream", true)
         return body
+    }
+
+    /**
+     * Google's native request: the system prompt as `systemInstruction`,
+     * then one user turn laid out stable-first — series memory, images,
+     * page — so Gemini's implicit prefix caching reuses the memory from one
+     * page to the next. The reply is constrained to JSON, which the native
+     * API guarantees rather than merely encourages.
+     *
+     * Greedy decoding as elsewhere, except on Gemini 3 and later: Google
+     * warns that lowering their temperature sends them into loops.
+     */
+    internal fun geminiBody(
+        settings: AppSettings,
+        system: String,
+        stable: String,
+        images: List<String>,
+        page: String,
+        effort: String,
+        vision: Boolean,
+    ): JSONObject {
+        val model = settings.effectiveModel()
+        val parts = JSONArray().put(JSONObject().put("text", stable))
+        for (image in images) {
+            parts.put(JSONObject().put("inlineData", JSONObject().put("mimeType", "image/jpeg").put("data", image)))
+        }
+        parts.put(JSONObject().put("text", page))
+        val config = JSONObject()
+            .put("responseMimeType", "application/json")
+            .put("maxOutputTokens", outputCap(anthropic = false, vision = vision, effort = effort))
+        GeminiApi.thinkingConfig(model, settings.aiReasoning)?.let { config.put("thinkingConfig", it) }
+        if (GeminiApi.takesTemperature(model)) config.put("temperature", 0)
+        return JSONObject()
+            .put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", system))))
+            .put("contents", JSONArray().put(JSONObject().put("role", "user").put("parts", parts)))
+            .put("generationConfig", config)
     }
 
     // ---- response shapes ----

@@ -279,7 +279,7 @@ private fun EngineCard(settings: AppSettings, repo: SettingsRepository) {
             Text(
                 when (settings.engine) {
                     EngineKind.GOOGLE -> "Works instantly, no setup. Solid everyday quality."
-                    EngineKind.LLM -> "Feels like an official release: the AI reads whole pages (even the raw image) with story memory, a name glossary, natural tone and honorifics. A fast draft appears instantly; the AI polish replaces it seconds later. Needs an API key — Gemini's is free."
+                    EngineKind.LLM -> "Feels like an official release: the AI reads whole pages (even the raw image) with story memory, a name glossary, natural tone and honorifics. A fast draft appears instantly; the AI polish replaces it seconds later. Needs an API key — Gemini, the fastest, has a free one."
                     EngineKind.MLKIT -> "100% offline after a one-time ~30 MB model download per language. Roughest quality of the three."
                 },
                 style = MaterialTheme.typography.bodySmall,
@@ -401,6 +401,19 @@ private fun EngineCard(settings: AppSettings, repo: SettingsRepository) {
                         scope.launch { repo.setDataSaver(!settings.dataSaver) }
                     }
                 }
+                if (settings.provider == LlmProvider.GEMINI) {
+                    Spacer(Modifier.height(8.dp))
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Chip("AI clean-up of text on art", settings.aiCleanup) {
+                            scope.launch { repo.setAiCleanup(!settings.aiCleanup) }
+                        }
+                    }
+                    Text(
+                        "An image model redraws the art under lettering drawn on the art itself; costs an extra image request on pages that need it.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
                 Spacer(Modifier.height(8.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                     Chip("Diagnostics — show what was detected", settings.diagnostics) {
@@ -477,9 +490,9 @@ private fun ProviderPicker(settings: AppSettings, repo: SettingsRepository) {
         OutlinedButton(onClick = { open = true }) {
             Text(
                 "Provider: " + when (settings.provider) {
-                    LlmProvider.ANTHROPIC -> "Anthropic Claude (recommended)"
+                    LlmProvider.ANTHROPIC -> "Anthropic Claude"
                     LlmProvider.OPENAI -> "OpenAI"
-                    LlmProvider.GEMINI -> "Google Gemini"
+                    LlmProvider.GEMINI -> "Google Gemini (recommended)"
                     LlmProvider.OPENROUTER -> "OpenRouter"
                     LlmProvider.CUSTOM -> "Custom endpoint"
                 }
@@ -491,9 +504,9 @@ private fun ProviderPicker(settings: AppSettings, repo: SettingsRepository) {
                     text = {
                         Text(
                             when (p) {
-                                LlmProvider.ANTHROPIC -> "Anthropic Claude (recommended)"
+                                LlmProvider.ANTHROPIC -> "Anthropic Claude"
                                 LlmProvider.OPENAI -> "OpenAI"
-                                LlmProvider.GEMINI -> "Google Gemini (free tier)"
+                                LlmProvider.GEMINI -> "Google Gemini (recommended — fastest, free tier)"
                                 LlmProvider.OPENROUTER -> "OpenRouter"
                                 LlmProvider.CUSTOM -> "Custom OpenAI-compatible endpoint"
                             }
@@ -653,7 +666,7 @@ private fun providerKeyHelp(provider: LlmProvider): ProviderKeyHelp = when (prov
         "https://platform.openai.com/api-keys",
     )
     LlmProvider.GEMINI -> ProviderKeyHelp(
-        "Gemini has a free tier (no card needed). This key is saved only for Gemini.",
+        "Recommended: Gemini is the fastest here — it finds and translates every line on the page itself. Free tier, no card needed. This key is saved only for Gemini.",
         "Create a Gemini key →",
         "https://aistudio.google.com/apikey",
     )

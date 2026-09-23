@@ -6,6 +6,7 @@ import app.mangalens.settings.LlmProvider
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -78,30 +79,82 @@ class LlmRequestTest {
         assertEquals(balanced.getInt("max_tokens") * 2, thorough.getInt("max_tokens"))
     }
 
-    // ---- Gemini ----
+    // ---- Gemini (native API) ----
+
+    private fun gemini(settings: AppSettings, images: List<String> = emptyList(), vision: Boolean = images.isNotEmpty()) =
+        LlmHttp.geminiBody(
+            settings, "SYS", "STABLE", images, "PAGE",
+            effort = LlmHttp.effortLevel(settings, vision), vision = vision,
+        )
+
+    private fun thinking(body: JSONObject): JSONObject? =
+        body.getJSONObject("generationConfig").optJSONObject("thinkingConfig")
 
     @Test
-    fun `gemini 3 keeps its default temperature and takes low or high thinking only`() {
-        val balanced = openAi(settings(LlmProvider.GEMINI, "gemini-3.8-flash"), images = listOf("P"))
-        assertFalse("Google warns lowering Gemini 3's temperature causes loops", balanced.has("temperature"))
-        assertEquals("low", balanced.getString("reasoning_effort"))
-        val thorough = openAi(settings(LlmProvider.GEMINI, "gemini-3.5-flash-lite", AiReasoning.THOROUGH), images = listOf("P"))
-        assertEquals("high", thorough.getString("reasoning_effort"))
-        assertTrue(balanced.has("max_tokens"))
+    fun `gemini gets the native shape, system prompt apart and the page last`() {
+        val body = gemini(settings(LlmProvider.GEMINI, "gemini-3.8-flash"), images = listOf("PAGEJPEG", "CROP2"))
+        assertEquals("SYS", body.getJSONObject("systemInstruction").getJSONArray("parts").getJSONObject(0).getString("text"))
+        val parts = body.getJSONArray("contents").getJSONObject(0).getJSONArray("parts")
+        assertEquals("STABLE", parts.getJSONObject(0).getString("text"))
+        assertEquals("PAGEJPEG", parts.getJSONObject(1).getJSONObject("inlineData").getString("data"))
+        assertEquals("image/jpeg", parts.getJSONObject(1).getJSONObject("inlineData").getString("mimeType"))
+        assertEquals("CROP2", parts.getJSONObject(2).getJSONObject("inlineData").getString("data"))
+        assertEquals("PAGE", parts.getJSONObject(3).getString("text"))
+        val config = body.getJSONObject("generationConfig")
+        assertEquals("application/json", config.getString("responseMimeType"))
+        assertTrue(config.getInt("maxOutputTokens") >= 16384)
+        assertFalse("the key goes in a header, the model in the URL", body.has("model"))
+        assertFalse(body.has("safetySettings"))
     }
 
     @Test
-    fun `gemini 2_5 is greedy and takes all three thinking levels`() {
-        val body = openAi(settings(LlmProvider.GEMINI, "gemini-2.5-flash"), images = listOf("P"))
-        assertEquals(0, body.getInt("temperature"))
-        assertEquals("medium", body.getString("reasoning_effort"))
+    fun `gemini 3 keeps its default temperature and thinks in levels`() {
+        val balanced = gemini(settings(LlmProvider.GEMINI, "gemini-3.8-flash"), images = listOf("P"))
+        assertFalse("Google warns lowering Gemini 3's temperature causes loops", balanced.getJSONObject("generationConfig").has("temperature"))
+        assertEquals("low", thinking(balanced)!!.getString("thinkingLevel"))
+        val thorough = gemini(settings(LlmProvider.GEMINI, "gemini-3.5-flash-lite", AiReasoning.THOROUGH), images = listOf("P"))
+        assertEquals("high", thinking(thorough)!!.getString("thinkingLevel"))
+        assertEquals(
+            thorough.getJSONObject("generationConfig").getInt("maxOutputTokens"),
+            balanced.getJSONObject("generationConfig").getInt("maxOutputTokens") * 2,
+        )
     }
 
     @Test
-    fun `gemini models without thinking get no reasoning field`() {
-        val body = openAi(settings(LlmProvider.GEMINI, "gemini-2.0-flash"))
-        assertFalse(body.has("reasoning_effort"))
-        assertEquals(0, body.getInt("temperature"))
+    fun `fast asks for minimal thinking only where the model takes it`() {
+        fun fast(model: String) = thinking(gemini(settings(LlmProvider.GEMINI, model, AiReasoning.FAST)))!!.getString("thinkingLevel")
+        assertEquals("minimal", fast("gemini-3.5-flash"))
+        assertEquals("minimal", fast("gemini-3.5-flash-lite"))
+        assertEquals("minimal", fast("gemini-3.1-flash-lite"))
+        // 3.7 and 3.8 Flash answer 400 to "minimal"; the default alias points at 3.8.
+        assertEquals("low", fast("gemini-3.8-flash"))
+        assertEquals("low", fast("gemini-3.7-flash"))
+        assertEquals("low", fast("gemini-flash-latest"))
+    }
+
+    @Test
+    fun `the default model alias counts as gemini 3`() {
+        val body = gemini(settings(LlmProvider.GEMINI, ""))
+        assertEquals("low", thinking(body)!!.getString("thinkingLevel"))
+        assertFalse(body.getJSONObject("generationConfig").has("temperature"))
+    }
+
+    @Test
+    fun `gemini 2_5 is greedy and takes a thinking budget`() {
+        val body = gemini(settings(LlmProvider.GEMINI, "gemini-2.5-flash"), images = listOf("P"))
+        assertEquals(0, body.getJSONObject("generationConfig").getInt("temperature"))
+        assertTrue(thinking(body)!!.getInt("thinkingBudget") > 0)
+        assertEquals(0, thinking(gemini(settings(LlmProvider.GEMINI, "gemini-2.5-flash", AiReasoning.FAST)))!!.getInt("thinkingBudget"))
+        assertEquals(-1, thinking(gemini(settings(LlmProvider.GEMINI, "gemini-2.5-flash", AiReasoning.THOROUGH)))!!.getInt("thinkingBudget"))
+        // 2.5 Pro cannot switch thinking off.
+        assertEquals(128, thinking(gemini(settings(LlmProvider.GEMINI, "gemini-2.5-pro", AiReasoning.FAST)))!!.getInt("thinkingBudget"))
+    }
+
+    @Test
+    fun `gemini models without thinking get no thinking config`() {
+        val body = gemini(settings(LlmProvider.GEMINI, "gemini-2.0-flash"))
+        assertNull(thinking(body))
+        assertEquals(0, body.getJSONObject("generationConfig").getInt("temperature"))
     }
 
     // ---- OpenAI ----
@@ -151,7 +204,7 @@ class LlmRequestTest {
 
     @Test
     fun `images are sent page first, close-ups after, page text last`() {
-        val body = openAi(settings(LlmProvider.GEMINI, "gemini-3.8-flash"), images = listOf("PAGEJPEG", "CROP2", "CROP5"))
+        val body = openAi(settings(LlmProvider.OPENROUTER, "google/gemini-3.8-flash"), images = listOf("PAGEJPEG", "CROP2", "CROP5"))
         val parts = body.getJSONArray("messages").getJSONObject(1).getJSONArray("content")
         assertEquals("STABLE", parts.getJSONObject(0).getString("text"))
         for ((i, expected) in listOf("PAGEJPEG", "CROP2", "CROP5").withIndex()) {

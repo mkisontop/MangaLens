@@ -18,10 +18,16 @@ object ModelCatalog {
 
     data class LiveModel(val id: String, val label: String)
 
-    /** Families that can't translate a page: no reason to offer them. */
+    /**
+     * Families that can't translate a page: speech, image and video
+     * generation, realtime audio, embeddings, agents and tool-use
+     * specialists. The live list grows new ones every few months, so the
+     * test is by name fragment rather than by exact id.
+     */
     private val EXCLUDE = listOf(
-        "embedding", "tts", "image", "audio", "live", "veo",
-        "imagen", "aqa", "robotics", "computer-use",
+        "embedding", "tts", "image", "nano-banana", "audio", "live", "transcribe",
+        "veo", "imagen", "aqa", "robotics", "computer-use", "customtools",
+        "antigravity", "deep-research", "lyria", "omni",
     )
 
     suspend fun gemini(apiKey: String): List<LiveModel> = withContext(Dispatchers.IO) {
