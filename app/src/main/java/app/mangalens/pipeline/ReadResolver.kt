@@ -292,12 +292,18 @@ internal class ReadResolver(
     }
 
     private fun free(item: PageItem): RenderBubble? {
+        // A sound effect drawn big across the art is part of the drawing:
+        // erasing it would ruin the panel, so it keeps its place and the
+        // English is noted beside it. Only a small one on plain ground is
+        // taken off and re-lettered.
+        if (item.kind == ItemKind.SFX && !smallSfx(item)) return sfxNote(item)
         val erasure = if (erasures.containsKey(item)) erasures[item] else {
             runCatching {
                 TextEraser.erase(bitmap, item.box, item.kind, item.textColor, item.outlineColor)
             }.getOrNull().also { erasures[item] = it }
         }
         val kind = if (item.kind == ItemKind.SFX) BubbleKind.SFX else BubbleKind.DIALOGUE
+        if (item.kind == ItemKind.SFX && (erasure == null || !erasure.flat)) return sfxNote(item)
         if (erasure != null) {
             return RenderBubble(
                 box = Rect(item.box),
@@ -334,7 +340,32 @@ internal class ReadResolver(
         )
     }
 
+    /** Small enough that erasing it could only ever take a sliver of art with it. */
+    private fun smallSfx(item: PageItem): Boolean =
+        item.box.height() <= bitmap.height * SMALL_SFX_HEIGHT && item.box.width() <= bitmap.width * SMALL_SFX_WIDTH
+
+    /** The English for a sound effect left in the art, noted beside it. */
+    private fun sfxNote(item: PageItem): RenderBubble {
+        val bg = PageColors.sampleBackground(bitmap, item.box)
+        val dark = PageColors.luminance(bg) < 140
+        return RenderBubble(
+            box = Rect(item.box),
+            translated = item.en.trim(),
+            original = item.src,
+            bgColor = bg,
+            textColor = if (dark) Color.WHITE else 0xFF17181C.toInt(),
+            vertical = item.vertical,
+            kind = BubbleKind.SFX,
+            style = LetterStyle.SFX_NOTE,
+            outlineColor = if (dark) 0xFF17181C.toInt() else Color.WHITE,
+        )
+    }
+
     companion object {
+        /** Shares of the page a sound effect may span and still count as small. */
+        private const val SMALL_SFX_HEIGHT = 0.07f
+        private const val SMALL_SFX_WIDTH = 0.25f
+
         fun styleOf(item: PageItem): LetterStyle = when (item.kind) {
             ItemKind.SFX -> LetterStyle.SFX
             ItemKind.THOUGHT -> LetterStyle.THOUGHT

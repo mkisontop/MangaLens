@@ -118,4 +118,16 @@ class ReadResolverTest {
         assertEquals("What?!", inBalloon[0].translated)
         assertEquals(LetterStyle.SHOUT, inBalloon[0].style)
     }
+
+    @Test
+    fun aBigSoundEffectAcrossTheArtIsNotedNotErased() {
+        // A dramatic sound effect spanning a quarter of the page: erasing it
+        // would take the drawing with it.
+        val sfx = PageItem(Rect(100, 300, 700, 560), ItemKind.SFX, "ドドン", "BA-DOOM")
+        val out = resolver().resolve(listOf(sfx))
+        assertEquals(1, out.size)
+        assertEquals(LetterStyle.SFX_NOTE, out[0].style)
+        assertEquals(null, out[0].patch)
+        assertEquals(null, out[0].balloon)
+    }
 }

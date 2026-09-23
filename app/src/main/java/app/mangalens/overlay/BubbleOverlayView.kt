@@ -38,6 +38,13 @@ enum class LetterStyle {
     /** A sound effect, lettered as one. */
     SFX,
 
+    /**
+     * A sound effect drawn into detailed art, which stays: the English is
+     * a small outlined label beside it, the way a scanlation notes the
+     * sound effects it would ruin the art to redraw.
+     */
+    SFX_NOTE,
+
     /** Lettering drawn straight onto the art, set in its own colours and outline. */
     ART,
 }
