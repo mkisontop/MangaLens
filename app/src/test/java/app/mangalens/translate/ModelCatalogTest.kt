@@ -37,9 +37,21 @@ class ModelCatalogTest {
                 model("veo-3.0-generate"),
                 model("imagen-4.0-generate"),
                 model("aqa"),
+                model("gemini-3.8-flash-image-preview"),
+                model("nano-banana-pro-preview"),
+                model("gemini-3.7-flash-live-preview"),
+                model("gemini-3.5-flash-transcribe"),
+                model("gemini-3.5-pro-computer-use-preview"),
+                model("gemini-3.8-flash-customtools"),
+                model("gemini-3.5-flash-antigravity"),
+                model("gemini-3.8-pro-deep-research-preview"),
+                model("lyria-3-preview"),
+                model("gemini-3.5-omni-preview"),
+                model("gemini-robotics-er-1.5-preview"),
+                model("gemini-flash-latest", "Gemini Flash Latest"),
             )
         )
-        assertEquals(listOf("gemini-2.5-flash"), out.map { it.id })
+        assertEquals(listOf("gemini-flash-latest", "gemini-2.5-flash"), out.map { it.id })
     }
 
     @Test
