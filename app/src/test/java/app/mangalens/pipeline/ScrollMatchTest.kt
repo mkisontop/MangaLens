@@ -98,6 +98,16 @@ class ScrollMatchTest {
     }
 
     @Test
+    fun aPageTurnedBackToIsRecognisedAsShownBefore() {
+        val a = ScrollMatch.of(screen(600))
+        assertTrue("the same frame again", ScrollMatch.of(screen(600)).unmovedFrom(a))
+        assertFalse("a frame scrolled a little is not the same", ScrollMatch.of(screen(640)).unmovedFrom(a))
+        assertFalse("another stretch of the strip is not", ScrollMatch.of(screen(2100)).unmovedFrom(a))
+        val blank = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.WHITE) }
+        assertFalse("blank paper says nothing", ScrollMatch.of(blank).unmovedFrom(ScrollMatch.of(blank)))
+    }
+
+    @Test
     fun measuringIsQuick() {
         val a = ScrollMatch.of(screen(600))
         val bmp = screen(900)

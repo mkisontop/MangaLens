@@ -25,15 +25,18 @@ the normal APK.
 
 ## How it feels
 
-1. Tap Fuki, the big yellow **GO!** balloon on the home screen → allow
-   screen capture. While translation is paused Fuki naps; tap it to wake
-   it up.
-2. Switch to Brave and read your manhwa like normal.
-3. Every time you stop scrolling, English appears **in** the page, line by
+1. Open MangaLens and do the two setup steps Fuki shows you: let it float
+   over other apps, then give it a brain — tap **Get a free key** (Google AI
+   Studio, no card needed), copy the key, and tap **Paste my key**. Fuki
+   letters a test line to show the key works.
+2. Tap Fuki, the big yellow **GO!** balloon → allow screen capture. While
+   translation is paused Fuki naps; tap it to wake it up.
+3. Switch to Brave and read your manhwa like normal.
+4. Every time you stop scrolling, English appears **in** the page, line by
    line as it is translated — each balloon wiped clean and re-lettered in a
    comic face, narration and text on the art erased and re-lettered in their
    own colours, the way a scanlation typesets it.
-4. Scroll on — the overlays clear instantly so the page underneath is never
+5. Scroll on — the overlays clear instantly so the page underneath is never
    obscured mid-motion, and the next stop translates itself. Lettering you
    already read repaints straight away wherever it has scrolled to, and a
    page you scroll back to re-paints from cache: no re-translation, no extra

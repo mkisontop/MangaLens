@@ -289,10 +289,26 @@ class SettingsRepository(private val context: Context) {
     suspend fun current(): AppSettings = flow.first()
 
     suspend fun setProvider(v: LlmProvider) = context.settingsStore.edit { it[Keys.PROVIDER] = v.name }
-    suspend fun setApiKey(provider: LlmProvider, v: String) =
+    suspend fun setApiKey(provider: LlmProvider, v: String) {
+        keepProvider(provider)
         context.credentialsStore.edit { it[Keys.apiKey(provider)] = v }
-    suspend fun setModel(provider: LlmProvider, v: String) =
+    }
+
+    suspend fun setModel(provider: LlmProvider, v: String) {
+        keepProvider(provider)
         context.settingsStore.edit { it[Keys.model(provider)] = v }
+    }
+
+    /**
+     * Writes down the provider being edited when none was ever saved. An
+     * install from before Gemini became the default is on Anthropic only
+     * as long as its Anthropic key or model is not blank; clearing the key
+     * to paste a new one would otherwise switch the reader to Gemini in the
+     * middle of typing.
+     */
+    private suspend fun keepProvider(provider: LlmProvider) {
+        context.settingsStore.edit { if (it[Keys.PROVIDER] == null) it[Keys.PROVIDER] = provider.name }
+    }
     suspend fun setCustomUrl(v: String) = context.settingsStore.edit { it[Keys.CUSTOM_URL] = v }
     suspend fun setSourceLang(v: SourceLang) = context.settingsStore.edit { it[Keys.SOURCE_LANG] = v.name }
     suspend fun setMode(v: CaptureMode) = context.settingsStore.edit { it[Keys.MODE] = v.name }

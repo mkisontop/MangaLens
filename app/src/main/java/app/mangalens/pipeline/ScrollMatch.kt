@@ -77,6 +77,23 @@ internal class ScrollMatch private constructor(
         return exact
     }
 
+    /**
+     * True when this frame shows exactly what [earlier] showed, unmoved: a
+     * page turned back to, or a scroll back to the same spot. One offset is
+     * checked, so it is cheap enough to try against several earlier frames.
+     */
+    fun unmovedFrom(earlier: ScrollMatch): Boolean {
+        if (earlier.w != w || earlier.h != h) return false
+        var n = 0
+        var hit = 0
+        for (y in 0 until h step 2) {
+            if (!drawn[y]) continue
+            n++
+            if (sameRow(y, earlier, y)) hit++
+        }
+        return n * 2 >= MIN_ROWS && hit >= n * SAME_PAGE
+    }
+
     private fun sameRow(y: Int, other: ScrollMatch, y2: Int): Boolean {
         for (b in 0 until BANDS) {
             if (abs(bands[y * BANDS + b] - other.bands[y2 * BANDS + b]) > ROW_TOLERANCE) return false
@@ -95,6 +112,9 @@ internal class ScrollMatch private constructor(
 
         /** A row whose bands differ by less than this, and match their neighbours, is blank paper. */
         private const val FLAT = 4
+
+        /** Share of the drawn rows that must match, unmoved, for a frame to be one shown before. */
+        private const val SAME_PAGE = 0.97f
 
         /** Share of the drawn rows that must line up at the offset found. */
         private const val MIN_MATCH = 0.7f

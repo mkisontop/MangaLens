@@ -131,7 +131,7 @@ internal class ItemMemory {
         val from = ArrayList<Remembered>()
         for (i in items.indices.reversed()) {
             val r = items[i]
-            val hit = r.pageW == bitmap.width && r.pageH == bitmap.height && run {
+            val hit = r.pageW == bitmap.width && r.pageH == bitmap.height && runCatching { run {
                 val cy = find(gray, r) ?: return@run false
                 val coarse = (cy - r.cy) * SCALE
                 val (dx, dy) = verify(bitmap, r, coarse) ?: return@run false
@@ -140,7 +140,7 @@ internal class ItemMemory {
                 if (box.top < 0 || box.bottom > bitmap.height) return@run true
                 if (found.none { (_, it) -> sameSpot(it.box, box) }) found.add(i to r.item.copy(box = box))
                 true
-            }
+            } }.getOrDefault(false)
             if (hit) {
                 r.missed = 0
                 from.add(r)
@@ -219,19 +219,27 @@ internal class ItemMemory {
         val box = r.item.box
         val reachX = 2
         val reachY = (SCALE * 2 + f - 1) / f
-        val left = box.left - reachX * f
-        val top = box.top + coarse - reachY * f
-        val gw = d.w + reachX * 2
-        val gh = d.h + reachY * 2
-        if (left < 0 || top < 0 || left + gw * f > bitmap.width || top + gh * f > bitmap.height) return null
+        // The search reaches a little either way of where the coarse pass
+        // put the line, less where the screen ends: lettering running to
+        // the edge of the screen — a full-width caption — is still checked.
+        val y0 = box.top + coarse
+        val xL = minOf(reachX, box.left / f)
+        val xR = minOf(reachX, (bitmap.width - box.left - d.w * f) / f)
+        val yT = minOf(reachY, y0 / f)
+        val yB = minOf(reachY, (bitmap.height - y0 - d.h * f) / f)
+        if (xL < 0 || xR < 0 || yT < 0 || yB < 0) return null
+        val left = box.left - xL * f
+        val top = y0 - yT * f
+        val gw = d.w + xL + xR
+        val gh = d.h + yT + yB
         val g = sample(bitmap, left, top, gw, gh, f)
         val t = threshold(g) ?: return null
         val ink = BooleanArray(g.size) { if (d.darkInk) g[it] < t else g[it] > t }
         var best = 0f
         var bestX = 0
         var bestY = 0
-        for (sy in 0..reachY * 2) {
-            for (sx in 0..reachX * 2) {
+        for (sy in 0..yT + yB) {
+            for (sx in 0..xL + xR) {
                 var inter = 0
                 var union = 0
                 var count = 0
@@ -259,7 +267,7 @@ internal class ItemMemory {
         }
         if (best < MATCH_JACCARD) return null
         if (!everyGlyphMatches(d, ink, gw, bestX, bestY)) return null
-        return Pair((bestX - reachX) * f, coarse + (bestY - reachY) * f)
+        return Pair((bestX - xL) * f, coarse + (bestY - yT) * f)
     }
 
     /**

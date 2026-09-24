@@ -14,6 +14,9 @@ import java.io.IOException
  */
 internal object AiFailure {
 
+    /** The cause of a failure that names nothing the reader can act on. */
+    const val UNEXPECTED = "unexpected error"
+
     /** The status in the errors providers other than Gemini raise: "Claude HTTP 429: …". */
     private val HTTP_STATUS = Regex("""\bHTTP (\d{3})\b""")
 
@@ -24,8 +27,11 @@ internal object AiFailure {
         e is GeminiModelMissing -> "model unavailable"
         e is GeminiHttpException -> "HTTP ${e.code}"
         e is IOException || e.cause is IOException -> "network"
+        // A malformed custom endpoint, or a key with characters no header
+        // may carry: both are the reader's to fix in the app.
+        e is IllegalArgumentException -> "check your key or endpoint"
         else -> when (val code = statusOf(e)) {
-            null -> "unexpected error"
+            null -> UNEXPECTED
             429 -> "rate limited"
             else -> "HTTP $code"
         }

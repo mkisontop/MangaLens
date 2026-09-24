@@ -318,7 +318,11 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
      * has stopped. Main thread only; [preparing] mirrors it for the
      * capture thread, which must cancel it the moment the screen moves.
      */
-    private class Prepared(val bitmap: Bitmap) {
+    private class Prepared(
+        val bitmap: Bitmap,
+        /** The frame's thumbnail, taken as it was grabbed, to tell at once whether the screen has moved on. */
+        val thumb: IntArray,
+    ) {
         lateinit var job: Deferred<Pair<IntArray, TranslatePipeline.Analysis>>
 
         /**
@@ -885,14 +889,15 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         val bmp = grabFrame() ?: return
         val exclusions = controller?.overlayExclusions() ?: emptyList()
         preparing = true
-        val p = Prepared(bmp)
+        val thumb = FrameStability.grayThumbOf(bmp)
+        val p = Prepared(bmp, thumb)
         val current = settings
         p.job = scope.async(Dispatchers.Default) {
             // Encoding the page for the model and reading it on-device need
             // nothing from each other: the request is prepared and sent
             // while the analysis runs. The job ends when both have.
             launch { p.adopt(pipeline.startRead(bmp, current, readScope)) }
-            FrameStability.grayThumbOf(bmp) to pipeline.analyze(bmp, current, exclusions)
+            thumb to pipeline.analyze(bmp, current, exclusions)
         }
         prepared = p
     }
@@ -1024,7 +1029,15 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                 // described the old one, and the mismatch could never be
                 // noticed.
                 var ahead: TranslatePipeline.Analysis? = null
-                val taken = takePrepared()
+                val taken = takePrepared()?.let { t ->
+                    // A frame the screen has already moved on from — the
+                    // page was still creeping when it was grabbed — is given
+                    // up at once, not after its whole analysis.
+                    if (stillOnScreen(t.thumb, latestThumb)) t else {
+                        abandon(t)
+                        null
+                    }
+                }
                 prep = taken
                 if (taken != null) {
                     val done = try {
@@ -1154,10 +1167,13 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                 } else {
                     null
                 }
-                if (rejected != null && rejected != alerted) {
-                    showAlert(rejected)
-                } else {
-                    setPill(failurePill(AiFailure.cause(e), partly = streamed.isNotEmpty()), FAILURE_MS)
+                val cause = AiFailure.cause(e)
+                when {
+                    rejected != null && rejected != alerted -> showAlert(rejected)
+                    // Not the AI's doing (on-device analysis threw, say):
+                    // the page is not blamed on it.
+                    cause == AiFailure.UNEXPECTED -> setPill("⚠ couldn't read this page — scroll a little to retry", FAILURE_MS)
+                    else -> setPill(failurePill(cause, partly = streamed.isNotEmpty()), FAILURE_MS)
                 }
             } finally {
                 // Cancellation is this loop's steady state. Every scroll

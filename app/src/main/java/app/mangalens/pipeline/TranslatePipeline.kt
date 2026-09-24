@@ -125,6 +125,9 @@ class TranslatePipeline(
         /** AI-first read cache entry schema; older shapes are dropped. */
         const val READ_CACHE_VERSION = 4
 
+        /** Frames read in full that a page turned back to is looked for among. */
+        const val RECENT_FRAMES = 6
+
         /** A scroll revealing less than this share of the screen reveals nothing worth a request. */
         const val NOTHING_NEW = 0.04f
 
@@ -146,6 +149,16 @@ class TranslatePipeline(
     /** The last frame whose lettering was read in full, for telling how far the next one scrolled. */
     @Volatile
     private var seen: Seen? = null
+        set(value) {
+            field = value
+            if (value != null) synchronized(recentSeen) {
+                recentSeen.addFirst(value)
+                while (recentSeen.size > RECENT_FRAMES) recentSeen.removeLast()
+            }
+        }
+
+    /** The last few frames read in full, newest first: a page turned back to is one of them. */
+    private val recentSeen = ArrayDeque<Seen>()
 
     /** The scroll signature measured when [startRead] last ran, and the frame it was measured on. */
     @Volatile
@@ -178,7 +191,7 @@ class TranslatePipeline(
         val match = ScrollMatch.of(bitmap)
         lastMatch = bitmap to match
         val last = seen ?: return null
-        val d = match.scrolledFrom(last.match) ?: return null
+        val d = match.scrolledFrom(last.match) ?: return earlierPage(match)
         val h = bitmap.height
         val revealed = kotlin.math.abs(d)
         if (revealed < h * NOTHING_NEW) return StripRead(null, Rect(), d, last, match)
@@ -199,10 +212,22 @@ class TranslatePipeline(
         return StripRead(inner, strip, d, last, match)
     }
 
+    /**
+     * A frame read in full a little earlier, shown again exactly as it was
+     * — the reader turned back a page — needs no request: its lines come
+     * from the cache or from memory, and it is read afresh only when
+     * neither holds all of them.
+     */
+    private fun earlierPage(match: ScrollMatch): StripRead? {
+        val again = synchronized(recentSeen) { recentSeen.drop(1).firstOrNull { match.unmovedFrom(it.match) } } ?: return null
+        return StripRead(null, Rect(), 0, again, match)
+    }
+
     /** Forgets lettering remembered from earlier stops. */
     fun forgetRecent() {
         memory.clear()
         seen = null
+        synchronized(recentSeen) { recentSeen.clear() }
     }
 
     /**
@@ -513,15 +538,16 @@ class TranslatePipeline(
                     // otherwise translated page. Anything it passed over
                     // that OCR *could* read is filled in from the text
                     // engine instead.
-                    val complete = pageBubbles + gapFill(
-                        bubbles, pageBubbles, ocrResult.lang, settings,
-                    )
-                    pageKey?.let {
-                        visionCachePut(it, bubbles, complete, bitmap.width, bitmap.height)
+                    val gap = gapFill(bubbles, pageBubbles, ocrResult.lang, settings)
+                    val complete = pageBubbles + gap.items
+                    if (gap.failure == null) {
+                        pageKey?.let { visionCachePut(it, bubbles, complete, bitmap.width, bitmap.height) }
                     }
                     return PageResult(
                         toRender(bitmap, complete, bubbles, anchorLines, ignoreTop, ignoreBottom, exclusions, detected),
                         vision.label, null,
+                        failure = gap.failure?.let(AiFailure::cause),
+                        alert = gap.failure?.takeIf(AiFailure::keyRejected)?.let { vision.label + " rejected the API key — check it in MangaLens" },
                     )
                 }
             } catch (e: CancellationException) {
@@ -578,9 +604,17 @@ class TranslatePipeline(
             analysis.ignoreTop, analysis.ignoreBottom, analysis.exclusions, analysis.panels,
         )
 
-        // Scroll-backs and re-reads: the whole page from cache, no network.
+        // Lettering remembered from earlier stops, found again on this frame.
+        var recalled: List<PageItem>? = null
+        suspend fun recall(): List<PageItem> = recalled ?: runCatching {
+            withContext(Dispatchers.Default) { memory.recall(bitmap, analysis.ignoreTop, analysis.ignoreBottom) }
+        }.getOrDefault(emptyList()).also { recalled = it }
+
+        // Scroll-backs and re-reads: the whole page from cache, no network —
+        // once the page is shown to be the one the answer was for.
         val key = if (bubbles.isNotEmpty()) visionKey(reader.cacheNamespace, lang, bubbles, bitmap) else null
         key?.let { readCacheGet(it, bubbles, bitmap.width, bitmap.height) }?.let { cached ->
+            if (!replayable(cached, bubbles, analysis.detected, recall())) return@let
             pending?.cancel()
             memory.remember(bitmap, cached)
             seen = Seen(matchOf(bitmap), cached)
@@ -588,32 +622,27 @@ class TranslatePipeline(
         }
         var read = pending ?: reader.start(this, bitmap, lang)
 
-        var recalled: List<PageItem> = emptyList()
         val streamed = ArrayList<PageItem>()
         var firstAt = -1L
+        val remembered: List<PageItem> = if (onPartial != null || read is StripRead) recall() else recalled.orEmpty()
 
         // A strip read's answers, less the halves of balloons its edge cut.
-        fun fresh(items: List<PageItem>): List<PageItem> = (read as? StripRead)?.trim(items, recalled) ?: items
+        fun fresh(items: List<PageItem>): List<PageItem> = (read as? StripRead)?.trim(items, remembered) ?: items
 
         suspend fun paint() {
             val emit = onPartial ?: return
-            val shown = resolver.resolve(Wording.keep(recalled, fresh(streamed)))
+            val shown = resolver.resolve(Wording.keep(remembered, fresh(streamed)))
             if (shown.isNotEmpty()) emit(PageResult(shown, reader.label, null))
         }
 
-        if (onPartial != null || read is StripRead) {
-            recalled = runCatching {
-                withContext(Dispatchers.Default) { memory.recall(bitmap, analysis.ignoreTop, analysis.ignoreBottom) }
-            }.getOrDefault(emptyList())
-            // A strip read counts on memory for the rest of the screen;
-            // when memory lost a line there, the whole screen is read.
-            val strip = read as? StripRead
-            if (strip != null && !strip.covered(recalled, bitmap.height, analysis.ignoreTop, analysis.ignoreBottom)) {
-                strip.cancel()
-                read = reader.start(this, bitmap, lang)
-            }
-            if (recalled.isNotEmpty()) paint()
+        // A strip read counts on memory for the rest of the screen; when
+        // memory lost a line there, the whole screen is read.
+        val strip = read as? StripRead
+        if (strip != null && !strip.covered(remembered, bitmap.height, analysis.ignoreTop, analysis.ignoreBottom)) {
+            strip.cancel()
+            read = reader.start(this, bitmap, lang)
         }
+        if (remembered.isNotEmpty()) paint()
 
         var failure: Exception? = null
         val items: List<PageItem>? = try {
@@ -628,7 +657,7 @@ class TranslatePipeline(
             // rather than waiting for the model to read it again. The
             // collector has stopped: nothing adds to the list any more.
             val shown = ArrayList(streamed)
-            if (shown.isNotEmpty()) runCatching { memory.remember(bitmap, Wording.keep(recalled, fresh(shown))) }
+            if (shown.isNotEmpty()) runCatching { memory.remember(bitmap, Wording.keep(remembered, fresh(shown))) }
             throw e
         } catch (e: Exception) {
             failure = e
@@ -641,7 +670,7 @@ class TranslatePipeline(
             // translates the page: the failure is reported, so the reader
             // knows why lettering stays raw rather than seeing some other
             // translation in the AI's place.
-            val partial = resolver.resolve(Wording.keep(recalled, streamed))
+            val partial = resolver.resolve(Wording.keep(remembered, streamed))
             val text = try {
                 aiTextTranslate(bitmap, bubbles, lang, settings, analysis.detected)
             } catch (e: CancellationException) {
@@ -660,14 +689,17 @@ class TranslatePipeline(
         }
 
         val answered = fresh(items)
-        val complete = answered + gapItems(bubbles, analysis.detected, answered + recalled, lang, settings)
-        val finalItems = Wording.keep(recalled, complete)
+        val gap = gapItems(bubbles, analysis.detected, answered + remembered, lang, settings)
+        val complete = answered + gap.items
+        val finalItems = Wording.keep(remembered, complete)
         // What is stored is what the reader sees, so the next stop and a
         // scroll-back say it in the same words. A reply that broke off is
         // shown, and remembered line by line, but never kept as the page's
         // whole answer.
         if (!read.cutOff) {
-            key?.let { readCachePut(it, bubbles, finalItems, bitmap.width, bitmap.height) }
+            // Balloons a failed gap fill left in the original are not part
+            // of the page's answer either: a scroll-back reads them again.
+            if (gap.failure == null) key?.let { readCachePut(it, bubbles, finalItems, bitmap.width, bitmap.height) }
             seen = Seen((read as? StripRead)?.match ?: matchOf(bitmap), finalItems)
         }
         memory.remember(bitmap, finalItems)
@@ -711,8 +743,26 @@ class TranslatePipeline(
             rendered, reader.label, note,
             diag = "first ${if (firstAt >= 0) "$firstAt ms" else "—"} · done ${elapsed()} ms" +
                 read.summary.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty(),
+            failure = gap.failure?.let(AiFailure::cause),
+            alert = gap.failure?.takeIf(AiFailure::keyRejected)?.let { reader.label + " rejected the API key — check it in MangaLens" },
         )
     }
+
+    /**
+     * Whether a cached answer may be replayed onto this frame. The cache key
+     * holds only the OCR regions' text, and one short line ("뭐?") reads
+     * the same on many pages, so every line of the answer must be backed
+     * by this frame: a line in a region OCR read here, or in a balloon
+     * found here, is what the key already matched; any other — narration,
+     * text on the art, a sound — must be found again stroke by stroke by
+     * scroll memory. Otherwise the page is read afresh.
+     */
+    private fun replayable(cached: List<PageItem>, bubbles: List<Bubble>, detected: List<Balloon>, recalled: List<PageItem>): Boolean =
+        cached.all { item ->
+            bubbles.any { it.text.isNotBlank() && Rect.intersects(it.box, item.box) && containedShare(item.box, it.box) > 0.5f } ||
+                detected.any { containedShare(item.box, it.box) > 0.6f } ||
+                recalled.any { r -> Rect.intersects(r.box, item.box) && iou(r.box, item.box) > 0.5f }
+        }
 
     /** [bitmap]'s scroll signature: the one [startRead] measured when it was this frame's. */
     private fun matchOf(bitmap: Bitmap): ScrollMatch =
@@ -731,7 +781,7 @@ class TranslatePipeline(
         answered: List<PageItem>,
         lang: SourceLang,
         settings: AppSettings,
-    ): List<PageItem> {
+    ): Gap<PageItem> {
         val missing = bubbles.filter { b ->
             b.kind == BubbleKind.DIALOGUE && b.text.isNotBlank() &&
                 detected.any { ReadResolver.containedShare(b.box, it.box) > 0.8f } &&
@@ -740,7 +790,7 @@ class TranslatePipeline(
                         (containedShare(a.box, b.box) > 0.3f || containedShare(b.box, a.box) > 0.3f)
                 }
         }
-        if (missing.isEmpty()) return emptyList()
+        if (missing.isEmpty()) return Gap(emptyList())
         val outcome = try {
             translation.translate(
                 missing.map { it.text }, lang, settings,
@@ -751,13 +801,20 @@ class TranslatePipeline(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            return emptyList()
+            return Gap(emptyList(), e)
         }
-        return missing.mapIndexedNotNull { k, b ->
+        return Gap(missing.mapIndexedNotNull { k, b ->
             val en = JunkFilter.accept(b.text, outcome.texts.getOrElse(k) { "" }) ?: return@mapIndexedNotNull null
             PageItem(Rect(b.box), ItemKind.SPEECH, b.text, en, vertical = b.vertical)
-        }
+        })
     }
+
+    /**
+     * Lines filled in for balloons the model passed over, and why the fill
+     * failed when it did: those balloons stay in the original, and the
+     * reader is told so rather than left to wonder.
+     */
+    private class Gap<T>(val items: List<T>, val failure: Exception? = null)
 
     private fun readCacheGet(key: String, bubbles: List<Bubble>, w: Int, h: Int): List<PageItem>? {
         if (bubbles.isEmpty()) return null
@@ -873,27 +930,31 @@ class TranslatePipeline(
         answered: List<VisionLlmEngine.VisionBubble>,
         lang: SourceLang,
         settings: AppSettings,
-    ): List<VisionLlmEngine.VisionBubble> {
+    ): Gap<VisionLlmEngine.VisionBubble> {
         val done = answered.filter { it.id >= 0 }.mapTo(HashSet()) { it.id }
         val missing = bubbles.indices.filter {
             it !in done && bubbles[it].kind == BubbleKind.DIALOGUE && bubbles[it].text.isNotBlank()
         }
-        if (missing.isEmpty()) return emptyList()
+        if (missing.isEmpty()) return Gap(emptyList())
 
-        val outcome = runCatching {
+        val outcome = try {
             translation.translate(
                 missing.map { bubbles[it].text }, lang, settings,
                 kinds = missing.map { bubbles[it].kind },
                 runs = missing.map { bubbles[it].runId },
                 parts = missing.map { bubbles[it].runPart },
             )
-        }.getOrNull() ?: return emptyList()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return Gap(emptyList(), e)
+        }
 
-        return missing.mapIndexedNotNull { k, i ->
+        return Gap(missing.mapIndexedNotNull { k, i ->
             val gated = JunkFilter.accept(bubbles[i].text, outcome.texts.getOrElse(k) { "" })
                 ?: return@mapIndexedNotNull null
             VisionLlmEngine.VisionBubble(i, 0, 0, 0, 0, bubbles[i].text, gated, sfx = false)
-        }
+        })
     }
 
     // ---- vision result mapping ----

@@ -142,6 +142,20 @@ class ItemMemoryTest {
     }
 
     @Test
+    fun aCaptionRunningToTheEdgeOfTheScreenIsFoundAgain() {
+        val (page, c) = blank()
+        // A full-width narration line: its box starts at the screen's left edge.
+        val size = 26f
+        "ABCDEFGHIJKLMNOPQRSTUVWXYZ".forEachIndexed { i, ch -> glyph(c, ch, 2f + i * size, 800f, size - 4) }
+        val caption = PageItem(Rect(0, 796, w, 826), ItemKind.NARRATION, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "At that moment...")
+        val memory = ItemMemory()
+        memory.remember(page, listOf(caption))
+        val found = memory.recall(scrolled(page, 300).first)
+        assertEquals(1, found.size)
+        assertTrue("moved up by the scroll (${found[0].box})", abs(found[0].box.top - 496) <= 4)
+    }
+
+    @Test
     fun letteringLongScrolledAwayIsForgotten() {
         val (page, c) = blank()
         val a = balloon(c, "ABCDEFG", 360f, 300f, "Where were you?")
