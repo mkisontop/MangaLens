@@ -38,6 +38,12 @@ the README.
   goes out. Never by position: two balloons side by side, a line one
   character different, or a new balloon in an old balloon's place are never
   confused, and a line shown twice is never guessed at.
+- **A small scroll reads only what it revealed.** When a webtoon stop only
+  nudged the page, the model is sent just the new strip and everything
+  already read repaints from memory at once, so the new balloon arrives
+  first — about 1.6 s after the stop on the test strip — instead of after
+  every line you have already seen. A nudge that revealed nothing new sends
+  no request.
 - **Never wipes art that looks like a balloon.** A face in line art, a
   highlight, screentone or the inside of a big glyph can pass for a balloon.
   A detection is now cleaned only when its interior holds nothing but the
@@ -50,11 +56,21 @@ the README.
 - **Sound effects like a scanlation handles them.** Only the ones that tell
   you something are translated; decorative action lettering is left alone.
   A small one on plain ground is erased and re-lettered; a big one drawn
-  across the art keeps its place and gets a small English note beside it.
+  across the art keeps its place and gets a small English note — on empty
+  ground beside it, or on the sound itself where everything around it is
+  drawn, never over a face or a figure. A heartbeat drawn four times down a
+  column is noted "BA-DUMP BA-DUMP", once, and a long column is lettered
+  down the column rather than spilling across the art beside it.
 - **Lettering styles.** Shouts heavier, thoughts in italic, narration calmer,
   sound effects bold italic and outlined; the English fades in rather than
   popping, and a machine draft appears only when the AI is slow, so a page is
   lettered once.
+- **Steadier on a scroll.** A line read again at the next stop keeps the
+  words you already saw, but a balloon the model now reads in pieces (or
+  whole) is never said twice or halved. A read abandoned by a quick scroll
+  is cancelled instead of streaming on, a reply that broke off part-way is
+  never cached as the whole page, and a rejected API key says so instead of
+  failing silently.
 - **Optional AI redraw.** Off by default. When on, an image model redraws
   detailed art under lettering drawn on it; only crops around that
   lettering are sent, the redraw is used only where it matches the art

@@ -6,10 +6,13 @@
 
 **Live on-screen translation for raw manhwa, manga and manhua on Android.**
 
-Read raws in Brave (or any app). MangaLens watches your screen, finds the speech
-bubbles, OCRs the Korean / Japanese / Chinese text on-device, translates it to
-natural English, and paints clean patches right over the bubbles — hands-free.
-Scroll and they vanish; stop and the next page translates itself.
+Read raws in Brave (or any app). MangaLens watches your screen, finds the
+lettering — speech balloons, narration, text drawn on the art, sound
+effects — translates it to natural English, and letters it back in the way a
+scanlation team would: balloons wiped and re-typeset, text on the art erased
+and re-lettered in its own colours. Hands-free: scroll and it clears, stop
+and the next page translates itself. With Gemini the first line appears
+about 1.5–2 s after you stop.
 
 **[⤓ Download the latest APK](https://github.com/mkisontop/mangalens/releases/latest/download/MangaLens.apk)**
 · [website](https://mkisontop.github.io/MangaLens/)
@@ -24,12 +27,15 @@ the normal APK.
 
 1. Tap **Start translating** → allow screen capture.
 2. Switch to Brave and read your manhwa like normal.
-3. Every time you stop scrolling (~⅓ s), English appears **in** the bubbles —
-   the balloon is wiped clean and re-lettered in a comic face, the way a
-   scanlation typesets it.
+3. Every time you stop scrolling, English appears **in** the page, line by
+   line as it is translated — each balloon wiped clean and re-lettered in a
+   comic face, narration and text on the art erased and re-lettered in their
+   own colours, the way a scanlation typesets it.
 4. Scroll on — the overlays clear instantly so the page underneath is never
-   obscured mid-motion, and the next stop translates itself. A balloon you
-   scroll back to re-paints from cache: no re-translation, no extra cost.
+   obscured mid-motion, and the next stop translates itself. Lettering you
+   already read repaints straight away wherever it has scrolled to, and a
+   page you scroll back to re-paints from cache: no re-translation, no extra
+   cost.
 
 A floating **文A** toggle is always available: **tap** = translation on/off
 (with a busy ring while a pass runs), **long-press** = quick menu (translate
@@ -74,12 +80,15 @@ signature.
 | Engine | Quality | Speed | Setup | Notes |
 |---|---|---|---|---|
 | **Free · Google** *(default)* | ★★★☆ | fast | none | Whole page in one batched request for cross-line context; junk-gated so OCR noise is never rendered. |
-| **AI Pro ✨** | ★★★★★ | instant draft, polish in ~2–5 s | API key | The scanlation-grade mode. A fast draft paints immediately, then the AI result replaces it in place — slow internet never blocks reading. **AI Vision** sends the raw page image so the model reads vertical Japanese and stylized lettering itself (Auto: only where on-device OCR struggles; Korean webtoons use tiny text-only requests). Rolling story context + a **persistent glossary** keep names, honorifics and running jokes consistent forever. Claude (Anthropic) recommended; OpenAI, Gemini, OpenRouter and any OpenAI-compatible endpoint work. **Gemini has a free tier** (aistudio.google.com/apikey — the app links you there), and a one-tap picker fetches Google's **live model list** so the newest Flash models are always offered, no app update needed. Falls back to Google automatically. |
+| **AI Pro ✨** | ★★★★★ | first line ~1.5–2 s after you stop | API key | The scanlation-grade mode. **Gemini is recommended**: it reads the page image itself the moment you stop scrolling, finds every piece of lettering (balloons, captions, text on the art, sound effects), and streams each line as it is translated — see *AI-first reading* below. **Gemini has a free tier** (aistudio.google.com/apikey — the app links you there), and a one-tap picker fetches Google's **live model list**; the default, `gemini-flash-latest`, was chosen by measurement on hard pages. Claude, OpenAI, OpenRouter and any OpenAI-compatible endpoint also work, through the classic path: a free draft first, then the AI polish (**AI Vision** sends the page where on-device OCR struggles). Rolling story context, a **persistent glossary** and a cast list keep names, honorifics and running jokes consistent. Falls back to Google automatically. |
 | **Offline** | ★★☆☆ | fast | one-time ~30 MB model per language | ML Kit on-device translation. Works with zero network. |
 
 Privacy: in AI **text** mode only bubble text leaves the device; in AI
 **Vision** mode the page image goes to the provider you chose — and nowhere
-else. The free and offline engines never send an image anywhere. Screen
+else. With Gemini, each page you stop on goes to Google as a 1280 px JPEG
+(1024 px with Data saver). The optional **AI redraw** sends only crops around
+lettering drawn on detailed art to Google's image model, and is off unless
+you turn it on. The free and offline engines never send an image anywhere. Screen
 capture and OCR always run on-device. Each AI provider has its own API-key and
 model setting; switching providers never reuses one provider's credential with
 another. OpenRouter has a dedicated key field and an in-app link to
@@ -88,6 +97,89 @@ ordinary preferences can transfer to a new device, but credentials must be
 entered again.
 
 ## How it works
+
+### AI-first reading (Gemini)
+
+```
+Frame differ ──"screen went quiet" (~150 ms)──┬──▶ Gemini reads the page image
+                                              │     (streamed; 2 racing requests,
+                                              │      the slower one cancelled)
+                                              │            │ items, one by one:
+                                              │            │ box · kind · speaker · source · English
+                                              ├──▶ Scroll memory: lettering translated at an
+                                              │     earlier stop found again by its own pixels
+                                              │     and repainted at once
+                                              └──▶ On-device OCR + balloon/panel finder
+                                                          │
+                                                          ▼
+                                  Resolver — for each item, what a letterer would do:
+                                    balloon  → wiped through its own shape, text set to it
+                                    text on the art → erased stroke by stroke, re-lettered
+                                              in its own colours and outline
+                                    small sound on plain ground → erased and re-lettered
+                                    big sound drawn into the art → kept, with a small note
+                                              on empty ground beside it or on the sound itself
+                                                          │
+                                                          ▼
+                                  Overlay: each line fades in as it streams
+```
+
+- **Nothing waits for anything else.** The request goes out about 150 ms
+  after the screen stops moving, before on-device analysis has finished, and
+  the model finds the lettering itself — vertical Japanese, stylised
+  sound effects and handwriting that OCR cannot read at all. Each line is
+  painted the moment the model has written it, dialogue first in reading
+  order. On hard test pages the first line lands about 1.1–2.3 s after the
+  request; lettering seen at an earlier scroll stop repaints in about 0.3 s.
+  Two identical requests race (the second goes out once the first has
+  finished uploading, so it never slows it) and the slower is cancelled,
+  which cuts Google's occasional multi-second stalls; after a rate limit
+  only one request is sent.
+- **Faithful by instruction, checked by experts.** The prompt carries the
+  rules a panel of reviewers (Japanese manga, Korean and Chinese, lettering)
+  set after critiquing live output: every line translated in full, nothing
+  softened or skipped; speaker voice, honorifics and names kept consistent
+  through the glossary and cast list; sound effects chosen by meaning.
+- **Balloons are cleaned only when they are balloons.** A detection is
+  wiped only if its interior holds nothing but the lettering the model
+  found there; a face, a highlight or screentone that passed for a balloon
+  is left alone and its lettering erased on its own. Two balloons drawn
+  joined keep a line each, in their own lobes.
+- **Text on the art is erased, not covered.** The eraser finds the strokes
+  from the pixels — on paper, on screentone (re-toned from the measured dot
+  lattice), on colour art by the lettering's own fill and outline — and
+  paints what was behind them; the English goes back in the original's
+  colours and outline. A long vertical column is lettered down the column,
+  so the English stays on the erased strip.
+- **Sound effects the way a scanlation handles them.** Only sounds that tell
+  the reader something are translated. A small one on plain ground is erased
+  and re-lettered. A big one drawn into the art is part of the drawing and
+  stays; its English is a small note placed on empty ground beside it (a
+  coarse map of where the page is drawn tells paper and flat tone from
+  faces, hair and hands) or, where everything around it is drawn, on the
+  sound itself — never on the picture. A sound repeated down a column is
+  said twice at most, and noted once.
+- **Scroll memory never confuses neighbours.** Remembered lettering is found
+  again by its pixels, never by position: its best match along the scroll
+  must clearly beat every other spot, and the ink there must match stroke
+  for stroke at near full resolution. Two balloons side by side, a line one
+  character different, or a new balloon scrolled into an old one's place are
+  never mistaken for each other. A line read again keeps the words the
+  reader already saw, unless the model now cuts that lettering differently.
+- **A nudge reads only what it revealed.** The scroll since the last fully
+  read frame is measured to the pixel from the frames themselves; when the
+  page only moved a little, the model is sent just the newly revealed strip
+  (with a margin for a balloon the last stop cut in half), and the rest of
+  the screen repaints from memory. The new balloon is then the model's
+  first answer instead of its last, the upload is a fraction of the page,
+  and a nudge that revealed next to nothing sends no request at all. If
+  memory has lost any line outside the strip, the whole screen is read.
+- **Optional AI redraw.** Off by default. When on, lettering drawn on
+  detailed art is sent as crops to an image model, whose redraw is used only
+  inside each letter's mask and only where it agrees with the art just
+  around it; after two refusals it rests for 15 minutes.
+
+### The classic path (Google, offline and other AI providers)
 
 ```
 MediaProjection (screen capture)
@@ -428,8 +520,9 @@ Reading settings.
 
 **Battery?** Use "Tap to translate" mode — capture idles until you tap.
 
-**Slow internet?** You still read at full speed: the free draft is instant and
-the AI polish arrives whenever it arrives. Turn on **Data saver** to shrink
+**Slow internet?** You still read: lettering seen at an earlier stop
+repaints from memory at once, and when the AI is slow to answer a free draft
+fills in while you wait. Turn on **Data saver** to shrink
 vision uploads, or set AI Vision to **Text only** for requests a few KB big.
 
 **Which languages?** Korean, Japanese (incl. reasonable vertical text), Chinese

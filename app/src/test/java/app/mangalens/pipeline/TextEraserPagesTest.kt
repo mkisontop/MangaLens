@@ -22,7 +22,7 @@ import org.robolectric.annotation.GraphicsMode
  * Erases every item a model found on real test pages and writes the result
  * to build/eraser-preview/ for judging by eye, with per-item timings. The
  * pages and the recorded model answers live outside the repository (set
- * MANGALENS_PAGES to their directory); without them the test is skipped.
+ * MANGALENS_RECORDED to their directory); without them the test is skipped.
  *
  * Balloon-held text is erased here too, although the balloon path usually
  * cleans it in the app: it is a useful stress test either way.
@@ -32,8 +32,8 @@ import org.robolectric.annotation.GraphicsMode
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class TextEraserPagesTest {
 
-    /** Recorded answers and a pages/ directory, from MANGALENS_ERASER_DATA; the test is skipped without it. */
-    private val dataDir = File(System.getenv("MANGALENS_ERASER_DATA").orEmpty())
+    /** Recorded model answers and a pages/ directory, from MANGALENS_RECORDED; skipped without it. */
+    private val dataDir = File(System.getenv("MANGALENS_RECORDED").orEmpty())
     private val outputDir = File("build/eraser-preview").apply { mkdirs() }
 
     private class Item(val box: Rect, val kind: ItemKind, val src: String)

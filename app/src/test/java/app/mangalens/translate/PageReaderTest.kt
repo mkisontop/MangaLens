@@ -802,7 +802,8 @@ class PageReaderTest {
 
     // ---- recorded answers from the real model ----
 
-    private val scratch = File("/tmp/claude-0/-home-user-MangaLens/3346ff7e-fafd-51e2-a77f-50f3d88a1700/scratchpad")
+    /** Recorded model answers and a pages/ directory, from MANGALENS_RECORDED; skipped without it. */
+    private val scratch = File(System.getenv("MANGALENS_RECORDED").orEmpty())
 
     /**
      * Replays Gemini's recorded answers for the hard test pages through the

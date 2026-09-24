@@ -29,10 +29,8 @@ import org.robolectric.annotation.GraphicsMode
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class RealPageLetteringTest {
 
-    private val scratch = File(
-        System.getenv("MANGALENS_PAGES")
-            ?: "/tmp/claude-0/-home-user-MangaLens/3346ff7e-fafd-51e2-a77f-50f3d88a1700/scratchpad",
-    )
+    /** Recorded model answers and a pages/ directory, from MANGALENS_RECORDED; skipped without it. */
+    private val scratch = File(System.getenv("MANGALENS_RECORDED").orEmpty())
     private val outputDir = File("build/render-preview").apply { mkdirs() }
 
     /** Pages wider than this are halved, like a phone showing a print-resolution scan. */
