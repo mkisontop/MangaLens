@@ -263,14 +263,19 @@ private fun TimingSection(settings: AppSettings, sink: SettingsSink) {
     Helper("How long a page sits still before I read it.")
 }
 
-/** "Gemini · key saved ✓", or what is still missing, in the header of the folded AI brain. */
-internal fun aiBrainSummary(s: AppSettings): Pair<String, Boolean> {
+/**
+ * "Gemini · key saved ✓", or what is still missing, in the header of the
+ * folded AI brain. [refused] is whether the provider turned away the key
+ * held now: setup then asks for a new key, and a header still ticking it
+ * off would contradict it.
+ */
+internal fun aiBrainSummary(s: AppSettings, refused: Boolean = false): Pair<String, Boolean> {
     val label = LlmHttp.providerLabel(s)
-    val ready = LlmHttp.setupNeeded(s) == null
-    return if (s.provider == LlmProvider.CUSTOM) {
-        (if (ready) "$label · endpoint set ✓" else "$label · no endpoint yet") to ready
-    } else {
-        (if (ready) "$label · key saved ✓" else "$label · no key yet") to ready
+    val custom = s.provider == LlmProvider.CUSTOM
+    return when {
+        LlmHttp.setupNeeded(s) != null -> (if (custom) "$label · no endpoint yet" else "$label · no key yet") to false
+        refused -> (if (custom) "$label · token refused" else "$label · key refused") to false
+        else -> (if (custom) "$label · endpoint set ✓" else "$label · key saved ✓") to true
     }
 }
 
@@ -289,7 +294,7 @@ private fun AiBrain(
     val interaction = remember { MutableInteractionSource() }
     val sink2 = rememberSink(interaction)
     val chevron = animateFloatAsState(if (open) 180f else 0f, if (reduced) snap() else tween(200), label = "chevron")
-    val (summary, ready) = aiBrainSummary(drafts.settings)
+    val (summary, ready) = aiBrainSummary(drafts.settings, sayHi.rejects(drafts.settings))
     Column(modifier.fillMaxWidth()) {
         PopSurface(Modifier.fillMaxWidth(), RoundedCornerShape(20.dp), color = pop.surface, sunk = { sink2.value }) {
             Row(
@@ -515,10 +520,10 @@ private fun AiBrainBody(settings: AppSettings, sink: SettingsSink, drafts: AiDra
     val testing = sayHi.phase == SayHi.Phase.Running
     StickerButton(
         if (testing) "Testing…" else "Say hi (test translation)",
-        { if (!testing) sayHi.run(drafts.settings) },
+        { if (!testing && !sayHi.runIfReady(drafts.settings)) view.buzz(Buzz.REJECT) },
         style = StickerStyle.Surface,
     )
-    SayHiResult(sayHi.phase, onRetry = { sayHi.run(drafts.settings) })
+    SayHiResult(sayHi.phase, onRetry = { sayHi.runIfReady(drafts.settings) })
 }
 
 /**

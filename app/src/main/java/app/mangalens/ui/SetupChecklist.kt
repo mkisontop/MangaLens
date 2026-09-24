@@ -73,7 +73,7 @@ private enum class TicketState { CURRENT, TODO, DONE }
  * next undone step — so the screen only ever asks for one thing. Fuki wakes
  * a step at a time as the tickets are done. The checklist stays up after
  * the last step (the caller's latch) so the reader sees it finish and taps
- * "All set" themselves.
+ * "All set, let's read!" themselves.
  *
  * The brain step counts as done only once the test line has answered: a
  * key still being tried might yet be refused, and a checklist that ticked
@@ -161,7 +161,7 @@ internal fun SetupChecklist(
             color = pop.inkSoft,
         )
         Spacer(Modifier.height(16.dp))
-        Pips(doneCount, grow = fontScale.coerceIn(1f, 1.6f))
+        Pips(listOf(overlayGranted, brainDone), grow = fontScale.coerceIn(1f, 1.6f))
         Spacer(Modifier.height(12.dp))
 
         Ticket(
@@ -201,7 +201,7 @@ internal fun SetupChecklist(
             headerTrailing = if (custom) null else ({ TextLink("Change", { tapped = 2 }) }),
             done = {
                 DoneLine(if (custom) "Done! Endpoint saved." else "Done! $label key saved.")
-                SayHiResult(sayHi.phase, onRetry = { sayHi.run(drafts.settings) })
+                SayHiResult(sayHi.phase, onRetry = { sayHi.runIfReady(drafts.settings) })
             },
         ) {
             BrainStep(settings, drafts, sayHi, onOpenAiTweaks)
@@ -214,22 +214,27 @@ internal fun SetupChecklist(
         ) {
             Column(Modifier.bringIntoViewRequester(requesters[2])) {
                 Spacer(Modifier.height(20.dp))
-                StickerButton("All set!", onAllSet, height = 64.dp)
+                StickerButton("All set, let's read!", onAllSet, height = 64.dp)
             }
         }
     }
 }
 
-/** Setup progress as pips; they grow with the font so they never look lost beside large text. */
+/**
+ * Setup progress as pips, one per step in ticket order, so a filled pip
+ * always sits over a done ticket: after the overlay permission is taken
+ * back, the second pip stays filled and the first goes empty, rather than
+ * a count that would suggest step 1 is the one done. They grow with the
+ * font so they never look lost beside large text.
+ */
 @Composable
-private fun Pips(done: Int, grow: Float) {
+private fun Pips(steps: List<Boolean>, grow: Float) {
     val pop = LocalPop.current
     Row(
         verticalAlignment = Alignment.CenterVertically,
         modifier = Modifier.semantics(mergeDescendants = true) { },
     ) {
-        for (i in 0 until 2) {
-            val filled = i < done
+        for (filled in steps) {
             Box(
                 Modifier
                     .size(12.dp * grow)
@@ -245,7 +250,7 @@ private fun Pips(done: Int, grow: Float) {
             Spacer(Modifier.width(6.dp))
         }
         Spacer(Modifier.width(4.dp))
-        Text("$done of 2 done", style = MaterialTheme.typography.labelMedium, color = pop.inkSoft)
+        Text("${steps.count { it }} of ${steps.size} done", style = MaterialTheme.typography.labelMedium, color = pop.inkSoft)
     }
 }
 
@@ -516,7 +521,7 @@ private fun ColumnScope.BrainStep(
             color = pop.inkSoft,
         )
     }
-    SayHiResult(phase, onRetry = { sayHi.run(drafts.settings) })
+    SayHiResult(phase, onRetry = { sayHi.runIfReady(drafts.settings) })
     Spacer(Modifier.height(8.dp))
     TextLink("Type it instead", {
         notice = null

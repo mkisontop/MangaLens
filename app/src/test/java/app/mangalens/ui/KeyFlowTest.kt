@@ -127,6 +127,47 @@ class KeyFlowTest {
     }
 
     @Test
+    fun `a test with no key or endpoint never reaches the AI and offers no retry`() {
+        var calls = 0
+        val hi = sayHi { calls++; "hi" }
+        assertFalse(hi.runIfReady(AppSettings()))
+        assertEquals(0, calls)
+        val failed = hi.phase as SayHi.Phase.Failed
+        assertEquals("Paste your Gemini key above first, then say hi.", failed.message)
+        assertFalse(failed.rejected)
+        assertFalse(failed.retry)
+        assertFalse(hi.rejects(AppSettings()))
+
+        assertFalse(hi.runIfReady(AppSettings(provider = LlmProvider.CUSTOM, apiKey = key)))
+        assertEquals("Add your endpoint URL above first, then say hi.", (hi.phase as SayHi.Phase.Failed).message)
+        assertEquals(0, calls)
+
+        assertTrue(hi.runIfReady(AppSettings(apiKey = key)))
+        assertEquals(1, calls)
+        assertEquals(SayHi.Phase.Ok("hi"), hi.phase)
+    }
+
+    @Test
+    fun `saving a custom token with no endpoint yet asks for the endpoint`() {
+        var calls = 0
+        val hi = sayHi { calls++; "hi" }
+        val drafts = AiDrafts(AppSettings(provider = LlmProvider.CUSTOM), RecordingSink())
+        assertEquals(PasteCheck.OK, drafts.submitKey(key, hi))
+        assertEquals(0, calls)
+        assertEquals("Add your endpoint URL above first, then say hi.", (hi.phase as SayHi.Phase.Failed).message)
+    }
+
+    @Test
+    fun `only a failure that trying again could fix offers a retry`() {
+        val refused = sayHi { throw GeminiHttpException(400, "API key not valid. Please pass a valid API key.") }
+        refused.run(AppSettings(apiKey = key))
+        assertFalse((refused.phase as SayHi.Phase.Failed).retry)
+        val busy = sayHi { throw GeminiRateLimited("quota") }
+        busy.run(AppSettings(apiKey = key))
+        assertTrue((busy.phase as SayHi.Phase.Failed).retry)
+    }
+
+    @Test
     fun `a slow answer times out instead of cancelling the test quietly`() {
         val hi = SayHi(CoroutineScope(Dispatchers.Unconfined)) { withTimeout(1) { delay(5_000); "late" } }
         hi.run(AppSettings(apiKey = key))

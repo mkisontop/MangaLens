@@ -33,6 +33,7 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxHeight
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
@@ -541,87 +542,96 @@ private fun <T> PopTileBox(option: PopTile<T>, selected: Boolean, onClick: () ->
         label = "tile",
     )
     val fg = if (selected) pop.onPunch else pop.ink
-    PopSurface(
-        modifier,
-        RoundedCornerShape(18.dp),
-        fill = { fill.value },
-        sunk = { sink.value },
-        depth = 4.dp,
-        stroke = 2.5.dp,
-        contentColor = fg,
-    ) {
-        Box(
-            Modifier.selectable(selected, interaction, indication = null, role = Role.RadioButton) {
-                view.buzz(Buzz.TICK)
-                onClick()
-            }
+    Box(modifier) {
+        PopSurface(
+            Modifier.fillMaxSize(),
+            RoundedCornerShape(18.dp),
+            fill = { fill.value },
+            sunk = { sink.value },
+            depth = TILE_DEPTH,
+            stroke = 2.5.dp,
+            contentColor = fg,
         ) {
-            Column(
-                Modifier
-                    .align(Alignment.Center)
-                    .heightIn(min = minHeight)
-                    .padding(horizontal = 8.dp, vertical = 8.dp),
-                horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.Center,
+            Box(
+                Modifier.selectable(selected, interaction, indication = null, role = Role.RadioButton) {
+                    view.buzz(Buzz.TICK)
+                    onClick()
+                }
             ) {
-                if (option.glyph != null) {
-                    // A fixed box, so ★, 한, 日 and 中 — each from its own
-                    // fallback font — put the captions under them on one line.
-                    val box = with(LocalDensity.current) { 36.sp.toDp() }
-                    Box(Modifier.height(box), contentAlignment = Alignment.Center) {
+                Column(
+                    Modifier
+                        .align(Alignment.Center)
+                        .heightIn(min = minHeight)
+                        .padding(horizontal = 8.dp, vertical = 8.dp),
+                    horizontalAlignment = Alignment.CenterHorizontally,
+                    verticalArrangement = Arrangement.Center,
+                ) {
+                    if (option.glyph != null) {
+                        // A fixed box, so ★, 한, 日 and 中 — each from its own
+                        // fallback font — put the captions under them on one line.
+                        val box = with(LocalDensity.current) { 36.sp.toDp() }
+                        Box(Modifier.height(box), contentAlignment = Alignment.Center) {
+                            Text(
+                                option.glyph,
+                                fontFamily = FontFamily.Default,
+                                fontSize = 28.sp,
+                                lineHeight = 32.sp,
+                                color = fg,
+                                modifier = Modifier
+                                    .wrapContentHeight(unbounded = true)
+                                    .clearAndSetSemantics { },
+                            )
+                        }
+                    }
+                    Text(
+                        option.title,
+                        style = if (option.glyph != null) MaterialTheme.typography.labelMedium else MaterialTheme.typography.titleMedium,
+                        color = fg,
+                        textAlign = TextAlign.Center,
+                    )
+                    if (option.caption != null) {
                         Text(
-                            option.glyph,
-                            fontFamily = FontFamily.Default,
-                            fontSize = 28.sp,
-                            lineHeight = 32.sp,
-                            color = fg,
-                            modifier = Modifier
-                                .wrapContentHeight(unbounded = true)
-                                .clearAndSetSemantics { },
+                            option.caption,
+                            style = MaterialTheme.typography.labelMedium,
+                            color = if (selected) pop.onPunch else pop.inkSoft,
+                            textAlign = TextAlign.Center,
                         )
                     }
                 }
-                Text(
-                    option.title,
-                    style = if (option.glyph != null) MaterialTheme.typography.labelMedium else MaterialTheme.typography.titleMedium,
-                    color = fg,
-                    textAlign = TextAlign.Center,
-                )
-                if (option.caption != null) {
-                    Text(
-                        option.caption,
-                        style = MaterialTheme.typography.labelMedium,
-                        color = if (selected) pop.onPunch else pop.inkSoft,
-                        textAlign = TextAlign.Center,
-                    )
-                }
             }
-            // Half off the corner, like a sticker slapped on a sticker, and
-            // clear of the tile's own words.
-            AnimatedVisibility(
-                visible = selected,
-                modifier = Modifier.align(Alignment.TopEnd).offset(x = 6.dp, y = (-6).dp),
-                enter = if (reduced) scaleIn(snap()) else scaleIn(spring(dampingRatio = 0.5f, stiffness = 600f)),
-                exit = fadeOut(snap()),
+        }
+        // Half off the corner, like a sticker slapped on a sticker, and
+        // clear of the tile's own words. It sits beside the tile rather than
+        // inside it because the face draws its outline over its content: a
+        // badge inside would wear the tile's edge across its check. A
+        // selected tile is always fully sunk, so the badge is placed against
+        // the sunk face, [TILE_DEPTH] down from the top of this box.
+        AnimatedVisibility(
+            visible = selected,
+            modifier = Modifier.align(Alignment.TopEnd).offset(x = 6.dp, y = TILE_DEPTH - 6.dp),
+            enter = if (reduced) scaleIn(snap()) else scaleIn(spring(dampingRatio = 0.5f, stiffness = 600f)),
+            exit = fadeOut(snap()),
+        ) {
+            Box(
+                Modifier
+                    .size(18.dp)
+                    .drawWithCache {
+                        val sw = 2.dp.toPx()
+                        onDrawBehind {
+                            drawCircle(pop.zap)
+                            drawCircle(pop.stroke, radius = size.minDimension / 2f - sw / 2f, style = Stroke(sw))
+                        }
+                    },
+                contentAlignment = Alignment.Center,
             ) {
-                Box(
-                    Modifier
-                        .size(18.dp)
-                        .drawWithCache {
-                            val sw = 2.dp.toPx()
-                            onDrawBehind {
-                                drawCircle(pop.zap)
-                                drawCircle(pop.stroke, radius = size.minDimension / 2f - sw / 2f, style = Stroke(sw))
-                            }
-                        },
-                    contentAlignment = Alignment.Center,
-                ) {
-                    Icon(Icons.Filled.Check, contentDescription = null, tint = pop.onZap, modifier = Modifier.size(12.dp))
-                }
+                Icon(Icons.Filled.Check, contentDescription = null, tint = pop.onZap, modifier = Modifier.size(12.dp))
             }
         }
     }
 }
+
+/** How far a tile stands off its shadow; a selected tile sinks this far. */
+private val TILE_DEPTH = 4.dp
 
 // ---- slider ----
 

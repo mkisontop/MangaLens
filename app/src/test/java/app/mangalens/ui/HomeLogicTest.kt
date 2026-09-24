@@ -151,6 +151,25 @@ class HomeLogicTest {
             "Custom AI · endpoint set ✓" to true,
             aiBrainSummary(AppSettings(provider = LlmProvider.CUSTOM, customUrl = "http://127.0.0.1/v1/chat")),
         )
+        // A key the provider turned away is not ticked off, so the header agrees with setup.
+        val keyed = AppSettings(apiKey = "test-key-" + "x".repeat(24))
+        assertEquals("Gemini · key refused" to false, aiBrainSummary(keyed, refused = true))
+        assertEquals("Claude · key refused" to false, aiBrainSummary(keyed.copy(provider = LlmProvider.ANTHROPIC), refused = true))
+        // With nothing saved, what is missing wins over an old refusal.
+        assertEquals("Gemini · no key yet" to false, aiBrainSummary(AppSettings(), refused = true))
+    }
+
+    @Test
+    fun `the test line says what to fill in before it goes to the network`() {
+        assertEquals("Paste your Gemini key above first, then say hi.", sayHiBlocker(AppSettings()))
+        assertEquals(
+            "Paste your OpenRouter key above first, then say hi.",
+            sayHiBlocker(AppSettings(provider = LlmProvider.OPENROUTER)),
+        )
+        assertEquals("Add your endpoint URL above first, then say hi.", sayHiBlocker(AppSettings(provider = LlmProvider.CUSTOM)))
+        assertNull(sayHiBlocker(AppSettings(apiKey = "test-key-" + "x".repeat(24))))
+        // A custom endpoint's token is optional; the URL is what it needs.
+        assertNull(sayHiBlocker(AppSettings(provider = LlmProvider.CUSTOM, customUrl = "http://127.0.0.1/v1/chat")))
     }
 
     @Test

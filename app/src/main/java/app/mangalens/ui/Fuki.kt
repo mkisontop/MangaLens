@@ -394,7 +394,7 @@ internal fun FukiStage(
                             stateDescription = "Paused"
                         }
                         Stage.SETUP, Stage.LOADING ->
-                            contentDescription = if (setupDone >= 2) "Fuki is awake. Tap All set below."
+                            contentDescription = if (setupDone >= 2) "Fuki is awake. Tap “All set, let's read!” below."
                             else "Fuki is asleep. Finish the steps below to start."
                     }
                 }

@@ -171,7 +171,7 @@ internal class AiDrafts(initial: AppSettings, private val sink: SettingsSink) {
         val k = raw.trim()
         acceptKey(k)
         sink.setApiKey(provider, k)
-        sayHi.run(settings)
+        sayHi.runIfReady(settings)
         return check
     }
 }
@@ -206,7 +206,12 @@ internal class SayHi(
         data object Idle : Phase
         data object Running : Phase
         data class Ok(val text: String) : Phase
-        data class Failed(val message: String, val rejected: Boolean) : Phase
+        /**
+         * The test did not letter the line. [rejected] means the provider
+         * turned the key away; [retry] is false when trying the same thing
+         * again cannot help, so no "Try again" is offered.
+         */
+        data class Failed(val message: String, val rejected: Boolean, val retry: Boolean = !rejected) : Phase
     }
 
     var phase by mutableStateOf<Phase>(Phase.Idle)
@@ -234,6 +239,32 @@ internal class SayHi(
                 Phase.Failed(friendlyTestFailure(AiFailure.cause(e), label), AiFailure.keyRejected(e))
             }
         }
+    }
+
+    /**
+     * Fails the test without asking the AI, for a test that could not
+     * start: Fuki says what to fill in first. Nothing was tried, so no
+     * earlier refusal is held against the key any more.
+     */
+    fun needs(message: String) {
+        job?.cancel()
+        tried = null
+        phase = Phase.Failed(message, rejected = false, retry = false)
+    }
+
+    /**
+     * Runs the test when [s] has what it needs, otherwise says what is
+     * missing (see [sayHiBlocker]). False when it could not start, so the
+     * caller can buzz.
+     */
+    fun runIfReady(s: AppSettings): Boolean {
+        val blocker = sayHiBlocker(s)
+        if (blocker != null) {
+            needs(blocker)
+            return false
+        }
+        run(s)
+        return true
     }
 
     /**
@@ -304,7 +335,7 @@ internal fun SayHiResult(phase: SayHi.Phase, onRetry: () -> Unit, modifier: Modi
                         Text(phase.message, style = MaterialTheme.typography.bodyLarge, color = pop.punchText)
                     }
                 }
-                if (!phase.rejected) {
+                if (phase.retry) {
                     Spacer(Modifier.height(12.dp))
                     StickerButton("Try again", onRetry, style = StickerStyle.Surface, height = 48.dp)
                 }

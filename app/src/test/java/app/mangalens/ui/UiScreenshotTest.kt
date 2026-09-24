@@ -175,7 +175,7 @@ class UiScreenshotTest {
         sayHi.phase = SayHi.Phase.Ok(LETTERED)
         ui = ui.copy(settings = keyed)
         compose.waitForIdle()
-        compose.onNodeWithText("All set!").performScrollTo()
+        compose.onNodeWithText("All set, let's read!").performScrollTo()
         both("05-demo-after")
     }
 
@@ -256,6 +256,35 @@ class UiScreenshotTest {
     }
 
     @Test
+    fun `14b tweaks after a refused key`() {
+        attempt = { throw GeminiHttpException(400, "API key not valid. Please pass a valid API key.") }
+        home(HomeUiState(keyed, overlayGranted = true, browserName = "Brave"))
+        sayHi.run(keyed)
+        compose.waitForIdle()
+        compose.onNodeWithContentDescription("Tweaks:", substring = true).performScrollTo().performClick()
+        // The folded header agrees with setup: the key is not ticked off.
+        compose.onNodeWithText("Gemini · key refused").performScrollTo()
+        both("14b-tweaks-key-refused")
+    }
+
+    @Test
+    fun `14c tweaks, say hi before a custom endpoint is set`() {
+        home(
+            HomeUiState(
+                AppSettings(provider = LlmProvider.CUSTOM), overlayGranted = true, browserName = "Brave",
+                versionName = "0.11.0",
+            )
+        )
+        compose.onNodeWithContentDescription("Tweaks:", substring = true).performScrollTo().performClick()
+        compose.onNodeWithText("AI brain").performScrollTo().performClick()
+        compose.onNodeWithText("Say hi (test translation)").performScrollTo().performClick()
+        compose.onNodeWithText("Add your endpoint URL above first, then say hi.").assertExists()
+        // Down to the footer, which the tall renders cannot reach.
+        compose.onNodeWithText("MangaLens 0.11.0", substring = true).performScrollTo()
+        both("14c-tweaks-say-hi-blocked")
+    }
+
+    @Test
     fun `15 celebration, light`() = celebration(false)
 
     @Test
@@ -270,7 +299,7 @@ class UiScreenshotTest {
         ui = ui.copy(settings = keyed)
         Snapshot.sendApplyNotifications()
         compose.mainClock.advanceTimeBy(600)
-        compose.onNodeWithText("All set!").performScrollTo().performClick()
+        compose.onNodeWithText("All set, let's read!").performScrollTo().performClick()
         compose.mainClock.advanceTimeBy(520)
         capture("15-celebration-" + if (isDark) "dark" else "light")
     }

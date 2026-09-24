@@ -81,6 +81,18 @@ internal fun friendlyTestFailure(cause: String, provider: String): String = when
     else -> "Something went wrong ($cause). Try again?"
 }
 
+/**
+ * Why the Tweaks test cannot ask the AI yet, in Fuki's words, or null
+ * when it can. A missing key or endpoint is caught here rather than sent:
+ * a blank key comes back as a refusal and a blank URL as an odd error,
+ * and neither tells the reader the real fix, which is to fill the field in.
+ */
+internal fun sayHiBlocker(s: AppSettings): String? = when {
+    LlmHttp.setupNeeded(s) == null -> null
+    s.provider == LlmProvider.CUSTOM -> "Add your endpoint URL above first, then say hi."
+    else -> "Paste your ${LlmHttp.providerLabel(s)} key above first, then say hi."
+}
+
 /** The one-line summary on the home screen's Tweaks sticker. */
 internal fun tweaksSummary(s: AppSettings): String {
     val lang = when (s.sourceLang) {
