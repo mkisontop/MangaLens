@@ -30,6 +30,9 @@ internal object BalloonTrust {
      */
     private const val MAX_TEXTURE = 9f
 
+    /** Length to thickness past which a text box is a line, with a direction to run on in. */
+    private const val LINE_ASPECT = 1.5f
+
     /** Mask cells next to the outside skipped, so the balloon's own outline never counts. */
     private const val EDGE_CELLS = 2
 
@@ -47,7 +50,15 @@ internal object BalloonTrust {
         val deep = erode(interior, mw, mh, EDGE_CELLS)
         val grown = text.map { t ->
             val m = (minOf(t.width(), t.height()) * 0.2f).toInt() + 4
-            Rect(t.left - m, t.top - m, t.right + m, t.bottom + m)
+            // And a glyph further along the line at either end: the model's
+            // box often stops one character short of a column, and that
+            // character is lettering, not art in the balloon.
+            val glyph = minOf(t.width(), t.height())
+            when {
+                t.height() > t.width() * LINE_ASPECT -> Rect(t.left - m, t.top - m - glyph, t.right + m, t.bottom + m + glyph)
+                t.width() > t.height() * LINE_ASPECT -> Rect(t.left - m - glyph, t.top - m, t.right + m + glyph, t.bottom + m)
+                else -> Rect(t.left - m, t.top - m, t.right + m, t.bottom + m)
+            }
         }
         val left = box.left.coerceAtLeast(0)
         val right = box.right.coerceAtMost(bitmap.width)

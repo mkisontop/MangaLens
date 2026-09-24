@@ -72,6 +72,21 @@ class BalloonTrustTest {
     }
 
     @Test
+    fun aGlyphTheModelsBoxStoppedShortOfIsStillLettering() {
+        // A column of four glyphs; the model's box covers only the first three.
+        val column = Rect(280, 150, 320, 290)
+        val glyphs = page(Color.WHITE) { c ->
+            c.drawColor(Color.TRANSPARENT)
+        }.also { bmp ->
+            val c = Canvas(bmp)
+            c.drawOval(RectF(region), Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE })
+            val ink = Paint().apply { color = Color.BLACK }
+            for (k in 0 until 4) c.drawRect(284f, 154f + k * 46, 316f, 190f + k * 46, ink)
+        }
+        assertTrue(BalloonTrust.holdsOnly(glyphs, detection(), listOf(column)))
+    }
+
+    @Test
     fun aFaceIsNotABalloon() {
         val face = page(Color.WHITE) { c ->
             val line = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 4f; color = Color.BLACK }
