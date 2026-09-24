@@ -369,13 +369,19 @@ internal class ReadResolver(
         return b.mask[my * b.maskW + mx]
     }
 
-    /** Intersection over the smaller of the two areas. */
+    /**
+     * Intersection over union: the same balloon found twice covers the same
+     * ground. Over the smaller area alone, the white counter of a big glyph
+     * that detection passed for a balloon matched the whole burst around it,
+     * and the burst was lettered into the counter.
+     */
     private fun overlap(a: Rect, b: Rect): Float {
         val ix = minOf(a.right, b.right) - maxOf(a.left, b.left)
         val iy = minOf(a.bottom, b.bottom) - maxOf(a.top, b.top)
         if (ix <= 0 || iy <= 0) return 0f
-        val smaller = minOf(a.width().toLong() * a.height(), b.width().toLong() * b.height())
-        return if (smaller <= 0L) 0f else (ix.toLong() * iy).toFloat() / smaller
+        val inter = ix.toLong() * iy
+        val union = a.width().toLong() * a.height() + b.width().toLong() * b.height() - inter
+        return if (union <= 0L) 0f else inter.toFloat() / union
     }
 
     /** The lettering found in a balloon a drifted line was put back into, for its trust check. */
@@ -545,8 +551,8 @@ internal class ReadResolver(
         private const val MAX_DRIFT = 0.15f
         private const val SMALL_SFX_WIDTH = 0.25f
 
-        /** Overlap past which a balloon found from its lettering is one already detected. */
-        private const val SAME_BALLOON = 0.6f
+        /** Intersection over union past which a balloon found from its lettering is one already detected. */
+        private const val SAME_BALLOON = 0.5f
 
         /** How far past the model's box, in its narrow dimension, erased ink still counts as the lettering's. */
         private const val INK_REACH = 0.35f

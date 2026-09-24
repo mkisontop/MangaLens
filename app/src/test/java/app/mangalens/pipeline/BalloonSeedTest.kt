@@ -100,6 +100,28 @@ class BalloonSeedTest {
     }
 
     @Test
+    fun aGlyphCounterPassedForABalloonDoesNotTakeTheLine() {
+        // A burst's big lettering; detection took the white inside of one
+        // glyph for a balloon of its own. The line belongs to the burst.
+        val oval = RectF(250f, 400f, 650f, 700f)
+        var text = Rect()
+        val page = blank { c ->
+            tone(c)
+            c.drawOval(oval, paper)
+            c.drawOval(oval, outline)
+            text = column(c, 330f, 520f, 1, 70f, Paint(ink).apply { strokeWidth = 9f })
+            text.union(column(c, 410f, 520f, 1, 70f, Paint(ink).apply { strokeWidth = 9f }, seed = 4))
+            text.union(column(c, 490f, 520f, 1, 70f, Paint(ink).apply { strokeWidth = 9f }, seed = 6))
+        }
+        val counter = Rect(text.left + 6, text.top + 4, text.left + 30, text.top + 40)
+        val fake = app.mangalens.ocr.Balloon(counter, 6, 9, BooleanArray(54) { true }, inverted = false)
+        val item = PageItem(text, ItemKind.SPEECH, "破天印！", "Sky-Shattering Seal!")
+        val out = ReadResolver(page, listOf(fake), emptyList(), 0, 0, emptyList()).resolve(listOf(item))
+        val balloon = out.single().balloon
+        assertTrue("lettered into ${balloon?.box}", balloon != null && balloon.box.width() > 300 && balloon.box.height() > 220)
+    }
+
+    @Test
     fun aFaceBesideTheTextIsStillArt() {
         val oval = RectF(200f, 200f, 700f, 700f)
         var text = Rect()
