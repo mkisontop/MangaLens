@@ -125,6 +125,61 @@ class ItemMemoryTest {
     }
 
     @Test
+    fun aLineReachingIntoTheTopBandIsStillRepainted() {
+        // The band at the top is left to the status bar; a line reaching into
+        // it but mostly below is lettered, as a fresh read would letter it.
+        val (page, c) = blank()
+        val a = balloon(c, "ABCDEFG", 360f, 700f, "Where were you?")
+        val memory = ItemMemory()
+        memory.remember(page, listOf(a))
+        val found = memory.recall(scrolled(page, a.box.top - 20).first, ignoreTop = 40)
+        assertEquals(listOf(a.en), found.map { it.en })
+    }
+
+    @Test
+    fun aLineTheScreenEdgeCutsComesBackWhereTheScrollPutIt() {
+        val (page, c) = blank()
+        val a = balloon(c, "ABCDEFG", 360f, 700f, "Where were you?")
+        val b = balloon(c, "HIJKL", 300f, 1100f, "Nowhere.")
+        val memory = ItemMemory()
+        memory.remember(page, listOf(a, b))
+        // Scrolled until a quarter of the first line is above the screen.
+        val dy = a.box.top + a.box.height() / 4
+        val next = scrolled(page, dy).first
+        assertEquals("a line partly off the screen cannot be searched for", listOf(b.en), memory.recall(next).map { it.en })
+        val cut = memory.recallCut(next, listOf(a, b), -dy)
+        assertEquals(listOf(a.en), cut.map { it.en })
+        val box = cut.single().box
+        assertEquals("the part still on screen", 0, box.top)
+        assertTrue("$box", abs(box.bottom - (a.box.bottom - dy)) <= 2 && abs(box.left - a.box.left) <= 4)
+    }
+
+    @Test
+    fun aCutLineSomethingNowCoversIsNotRecalled() {
+        val (page, c) = blank()
+        val a = balloon(c, "ABCDEFG", 360f, 700f, "Where were you?")
+        val memory = ItemMemory()
+        memory.remember(page, listOf(a))
+        val dy = a.box.top + a.box.height() / 4
+        val (next, nc) = scrolled(page, dy)
+        // A toolbar slid in over the top of the screen.
+        nc.drawRect(0f, 0f, w.toFloat(), 60f, Paint().apply { color = Color.rgb(40, 40, 48) })
+        assertTrue(memory.recallCut(next, listOf(a), -dy).isEmpty())
+    }
+
+    @Test
+    fun onlyLinesOfTheFrameReadLastAreCarriedByItsScroll() {
+        // A memory from some earlier frame has its own coordinates: the
+        // scroll measured from the last frame says nothing about where it is.
+        val (page, c) = blank()
+        val a = balloon(c, "ABCDEFG", 360f, 700f, "Where were you?")
+        val memory = ItemMemory()
+        memory.remember(page, listOf(a))
+        val dy = a.box.top + a.box.height() / 4
+        assertTrue(memory.recallCut(scrolled(page, dy).first, emptyList(), -dy).isEmpty())
+    }
+
+    @Test
     fun aBalloonReadAsTwoPiecesComesBackWholeAndInOrder() {
         val (page, c) = blank()
         // One balloon, its two lines reported as two items whose boxes graze.

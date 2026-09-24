@@ -140,8 +140,13 @@ class TranslatePipeline(
         /** Margin above a revealed strip, for a balloon the last stop showed only half of. */
         const val STRIP_MARGIN = 0.25f
 
-        /** A strip taller than this share of the screen is read as the whole screen. */
-        const val MAX_STRIP = 0.7f
+        /**
+         * A strip taller than this share of the screen is read as the whole
+         * screen. None is: told the rows it newly shows, the model reads a
+         * tall strip's new lines first all the same, and a strip up to the
+         * whole screen is still shorter to answer than a screen read afresh.
+         */
+        const val MAX_STRIP = 1.0f
 
         /**
          * How far into the margin, as a share of the screen, the rows the
@@ -735,7 +740,22 @@ class TranslatePipeline(
 
         val streamed = ArrayList<PageItem>()
         var firstAt = -1L
-        val remembered: List<PageItem> = if (onPartial != null || read is StripRead) recall() else recalled.orEmpty()
+        val remembered: List<PageItem> = if (onPartial != null || read is StripRead) {
+            // A strip's read leaves the rest of the screen to memory, the
+            // lines its edge now cuts included: the page moved by a measured
+            // scroll, and those are looked for where it put them.
+            val cut = (read as? StripRead)?.let { s ->
+                runCatching {
+                    withContext(Dispatchers.Default) {
+                        memory.recallCut(bitmap, s.since.items, -s.scrolled, analysis.ignoreTop, analysis.ignoreBottom)
+                    }
+                }.getOrDefault(emptyList())
+            }.orEmpty()
+            val whole = recall()
+            whole + cut.filter { c -> whole.none { Rect.intersects(it.box, c.box) } }
+        } else {
+            recalled.orEmpty()
+        }
 
         // A strip read's answers, less the halves of balloons its edge cut.
         fun fresh(items: List<PageItem>): List<PageItem> = (read as? StripRead)?.trim(items, remembered) ?: items

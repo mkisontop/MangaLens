@@ -165,7 +165,9 @@ internal class ItemMemory {
                 }
                 val (dx, dy) = at ?: return@run false
                 val box = Rect(r.item.box).apply { offset(dx, dy) }
-                if (box.top < ignoreTop || box.bottom > bitmap.height - ignoreBottom) return@run true
+                // Lettering reaching into a band is lettered as a read letters
+                // it; only lettering wholly inside one is left alone.
+                if (box.bottom <= ignoreTop || box.top >= bitmap.height - ignoreBottom) return@run true
                 if (box.top < 0 || box.bottom > bitmap.height) return@run true
                 if (found.none { (_, it) -> sameSpot(it.box, box) }) found.add(i to r.item.copy(box = box))
                 true
@@ -183,6 +185,106 @@ internal class ItemMemory {
         recalledOn = WeakReference(bitmap)
         recalledFrom = from
         return found.sortedBy { it.first }.map { it.second }
+    }
+
+    /**
+     * Lines of [last], the frame read before this one, that the edge of
+     * [bitmap] now cuts. Lettering only partly on screen cannot be searched
+     * for, but the page moved [dy] rows since [last] (a measured scroll), so
+     * each such line is looked for there alone, and taken when the part on
+     * screen — at least [minShare] of it — reproduces its strokes, as
+     * [recall] demands of a whole line. A line
+     * something else now covers, a toolbar, does not match and is left out.
+     * Returned at the part of their new boxes still on screen: the reader
+     * saw them lettered, and they scroll away lettered.
+     */
+    @Synchronized
+    fun recallCut(
+        bitmap: Bitmap,
+        last: List<PageItem>,
+        dy: Int,
+        ignoreTop: Int = 0,
+        ignoreBottom: Int = 0,
+        minShare: Float = CUT_MIN_SHARE,
+    ): List<PageItem> {
+        val out = ArrayList<PageItem>()
+        for (r in items) {
+            if (r.pageW != bitmap.width || r.pageH != bitmap.height) continue
+            if (last.none { it === r.item }) continue
+            val box = Rect(r.item.box).apply { offset(0, dy) }
+            if (box.top >= 0 && box.bottom <= bitmap.height) continue
+            val shown = minOf(box.bottom, bitmap.height) - maxOf(box.top, 0)
+            if (shown < box.height() * minShare) continue
+            // Not one wholly inside a band, which a read would not letter either.
+            if (box.bottom <= ignoreTop || box.top >= bitmap.height - ignoreBottom) continue
+            val at = runCatching { verifyCut(bitmap, r, dy) }.getOrNull() ?: continue
+            // Lettered like any line on screen: on the part of it still there.
+            val moved = Rect(r.item.box).apply {
+                offset(at.first, at.second)
+                if (!intersect(0, 0, bitmap.width, bitmap.height)) return@apply
+            }
+            if (moved.height() < 4) continue
+            if (out.none { sameSpot(it.box, moved) }) out.add(r.item.copy(box = moved))
+        }
+        return out
+    }
+
+    /**
+     * [verify] for lettering the frame's edge cuts: its detail's rows that
+     * are on screen, at the rows the scroll put them on (give or take a
+     * cell), must reproduce its strokes line and glyph alike.
+     */
+    private fun verifyCut(bitmap: Bitmap, r: Remembered, dy: Int): Pair<Int, Int>? {
+        val d = r.detail
+        val f = d.f
+        val box = r.item.box
+        val reachX = 2
+        val xL = minOf(reachX, box.left / f)
+        val xR = minOf(reachX, (bitmap.width - box.left - d.w * f) / f)
+        if (xL < 0 || xR < 0) return null
+        val left = box.left - xL * f
+        val gw = d.w + xL + xR
+        val minRows = maxOf(MIN_CELLS, (GLYPH_PX / f).coerceAtLeast(4))
+        var best = 0f
+        var bestAt: Pair<Int, Int>? = null
+        for (sy in -1..1) {
+            val top = box.top + dy + sy * f
+            // The detail's rows lying wholly on screen.
+            val y0 = if (top < 0) (-top + f - 1) / f else 0
+            val y1 = minOf(d.h, (bitmap.height - top) / f)
+            if (y1 - y0 < minRows) continue
+            var dInk = 0
+            for (y in y0 until y1) for (x in 0 until d.w) if (d.ink[y * d.w + x]) dInk++
+            if (dInk == 0) continue
+            val g = sample(bitmap, left, top + y0 * f, gw, y1 - y0, f)
+            val t = threshold(g) ?: continue
+            val ink = BooleanArray(g.size) { if (d.darkInk) g[it] < t else g[it] > t }
+            for (sx in 0..xL + xR) {
+                var inter = 0
+                var union = 0
+                var count = 0
+                for (y in y0 until y1) {
+                    val gr = (y - y0) * gw + sx
+                    val dr = y * d.w
+                    for (x in 0 until d.w) {
+                        val a = d.ink[dr + x]
+                        val b = ink[gr + x]
+                        if (b) count++
+                        if (a && b) inter++
+                        if (a || b) union++
+                    }
+                }
+                if (union == 0) continue
+                val ratio = count.toFloat() / dInk
+                if (ratio < 0.8f || ratio > 1.25f) continue
+                val j = inter.toFloat() / union
+                if (j > best && everyGlyphMatches(d, ink, gw, sx, -y0, y0, y1)) {
+                    best = j
+                    bestAt = Pair((sx - xL) * f, dy + sy * f)
+                }
+            }
+        }
+        return bestAt?.takeIf { best >= MATCH_JACCARD }
     }
 
     /** Most of the smaller box lies in the larger: one piece of lettering, not neighbours. */
@@ -305,16 +407,24 @@ internal class ItemMemory {
      * checked tile by tile, each tile about a glyph across: every tile with
      * ink in it must match on its own.
      */
-    private fun everyGlyphMatches(d: Detail, ink: BooleanArray, gw: Int, sx: Int, sy: Int): Boolean {
+    private fun everyGlyphMatches(
+        d: Detail,
+        ink: BooleanArray,
+        gw: Int,
+        sx: Int,
+        sy: Int,
+        from: Int = 0,
+        to: Int = d.h,
+    ): Boolean {
         val tile = (GLYPH_PX / d.f).coerceAtLeast(4)
-        var ty = 0
-        while (ty < d.h) {
+        var ty = from
+        while (ty < to) {
             var tx = 0
             while (tx < d.w) {
                 var inter = 0
                 var union = 0
                 var cells = 0
-                for (y in ty until minOf(ty + tile, d.h)) {
+                for (y in ty until minOf(ty + tile, to)) {
                     val gr = (y + sy) * gw + sx
                     val dr = y * d.w
                     for (x in tx until minOf(tx + tile, d.w)) {
@@ -471,5 +581,12 @@ internal class ItemMemory {
 
         /** Overlap every glyph-sized tile must reach on its own. */
         const val TILE_JACCARD = 0.6f
+
+        /**
+         * The least of a line the frame's edge cuts that must be on screen
+         * for it to be recalled: its whole English then still fits, legibly,
+         * in what is left of it.
+         */
+        const val CUT_MIN_SHARE = 0.5f
     }
 }
