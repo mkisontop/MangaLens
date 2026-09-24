@@ -94,6 +94,26 @@ internal class ScrollMatch private constructor(
         return n * 2 >= MIN_ROWS && hit >= n * SAME_PAGE
     }
 
+    /**
+     * Whether rows [top] until [bottom] of this frame still show what
+     * [earlier] showed [d] rows further down, [d] being the scroll
+     * [scrolledFrom] measured. What is drawn there moved with the page; a
+     * bar that slid over those rows since, or art that changed under them,
+     * does not line up. False when nothing is drawn there to tell by.
+     */
+    fun keeps(earlier: ScrollMatch, d: Int, top: Int, bottom: Int): Boolean {
+        if (earlier.w != w || earlier.h != h) return false
+        var n = 0
+        var hit = 0
+        for (y in top.coerceAtLeast(0) until bottom.coerceAtMost(h)) {
+            val y2 = y + d
+            if (y2 !in 0 until h || !drawn[y]) continue
+            n++
+            if (sameRow(y, earlier, y2)) hit++
+        }
+        return n > 0 && hit >= n * KEPT
+    }
+
     private fun sameRow(y: Int, other: ScrollMatch, y2: Int): Boolean {
         for (b in 0 until BANDS) {
             if (abs(bands[y * BANDS + b] - other.bands[y2 * BANDS + b]) > ROW_TOLERANCE) return false
@@ -118,6 +138,9 @@ internal class ScrollMatch private constructor(
 
         /** Share of the drawn rows that must line up at the offset found. */
         private const val MIN_MATCH = 0.7f
+
+        /** Share of the drawn rows in a stretch that must line up for [keeps]. */
+        private const val KEPT = 0.8f
 
         /** Another offset scoring this close to the best one makes the answer a guess. */
         private const val RIVAL = 0.6f

@@ -80,6 +80,40 @@ class ScrollMatchTest {
         assertEquals("without browser bars too", 140, ScrollMatch.of(screen(740, bars = false)).scrolledFrom(ScrollMatch.of(screen(600, bars = false))))
     }
 
+    /** Whether the strip has anything drawn in rows [y0] until [y1]. */
+    private fun inked(y0: Int, y1: Int): Boolean {
+        val row = IntArray(w)
+        for (y in y0 until y1) {
+            strip.getPixels(row, 0, w, 0, y, w, 1)
+            if (row.any { it != Color.WHITE }) return true
+        }
+        return false
+    }
+
+    @Test
+    fun onlyRowsThatScrolledWithThePageAreKept() {
+        val a = ScrollMatch.of(screen(600))
+        val later = screen(933)
+        // The reader's toolbar slid down over the top of the page since.
+        Canvas(later).drawRect(0f, 90f, w.toFloat(), 300f, Paint().apply { color = Color.rgb(40, 40, 48) })
+        val b = ScrollMatch.of(later)
+        val d = b.scrolledFrom(a) ?: error("the scroll is still measured past the toolbar")
+        assertEquals(333, d)
+        assertFalse("under the toolbar", b.keeps(a, d, 120, 280))
+        // Stretches of the page the scroll carried, wherever something is
+        // drawn: below the toolbar, and above where the earlier frame's
+        // bottom bar hid the page (row 1130 then, 797 now).
+        val span = 320 until 797 - 60
+        val kept = (span step 40).filter { y -> inked(933 + y, 933 + y + 60) }
+        assertTrue(kept.size >= 4)
+        for (y in kept) {
+            assertTrue("rows $y+ moved with the page", b.keeps(a, d, y, y + 60))
+            assertFalse("rows $y+ at the wrong scroll", b.keeps(a, d + 45, y, y + 60))
+        }
+        val blank = (span step 20).firstOrNull { y -> !inked(933 + y, 933 + y + 60) }
+        if (blank != null) assertFalse("nothing drawn there, nothing to tell by", b.keeps(a, d, blank, blank + 60))
+    }
+
     @Test
     fun aDifferentPageIsNotAScroll() {
         val a = ScrollMatch.of(screen(600))

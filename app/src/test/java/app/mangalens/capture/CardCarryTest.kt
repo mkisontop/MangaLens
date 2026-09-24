@@ -90,5 +90,8 @@ class CardCarryTest {
         )
         val back = CardCarry.carried(cards, -400, h, ignoreTop = 48, ignoreBottom = 32)
         assertEquals(listOf(Rect(100, 400, 300, 460), Rect(100, 1100, 300, 1160)), back.map { it.box })
+        // A toolbar over the rows one of them moved to: that one stays for the read.
+        val covered = CardCarry.carried(cards, -400, h, ignoreTop = 48, ignoreBottom = 32) { it.top > 1000 }
+        assertEquals(listOf(Rect(100, 1100, 300, 1160)), covered.map { it.box })
     }
 }

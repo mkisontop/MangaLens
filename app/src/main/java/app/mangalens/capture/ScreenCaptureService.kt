@@ -1049,10 +1049,13 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
     private fun carry(frame: Bitmap): List<RenderBubble> {
         val before = shownOn ?: return emptyList()
         if (lastShown.isEmpty()) return emptyList()
-        val d = pipeline.signatureOf(frame)?.scrolledFrom(before) ?: return emptyList()
+        val now = pipeline.signatureOf(frame) ?: return emptyList()
+        val d = now.scrolledFrom(before) ?: return emptyList()
         val ignoreTop = (frame.height * settings.ignoreTopPct).toInt()
         val ignoreBottom = (frame.height * settings.ignoreBottomPct).toInt()
-        return CardCarry.carried(lastShown, -d, frame.height, ignoreTop, ignoreBottom)
+        return CardCarry.carried(lastShown, -d, frame.height, ignoreTop, ignoreBottom) { box ->
+            now.keeps(before, d, box.top, box.bottom)
+        }
     }
 
     /**
