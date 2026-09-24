@@ -42,10 +42,17 @@ internal object BalloonSeed {
     }
 
     /** Most grid cells the search covers; the cell size grows to stay under it. */
-    private const val MAX_CELLS = 200_000
+    private const val MAX_CELLS = 120_000
 
-    /** Search area around the lettering, as a share of the box's longer side, plus a fixed margin in pixels. */
-    private const val REACH = 0.8f
+    /**
+     * Search area round the lettering, plus [REACH_PX] pixels: across the
+     * text, the larger of these shares of its long and short sides — a box
+     * round one column of a four-column balloon still reaches the far
+     * columns — and along it, a share of its long side.
+     */
+    private const val REACH_ACROSS = 0.55f
+    private const val REACH_SHORT = 2.4f
+    private const val REACH_ALONG = 0.4f
     private const val REACH_PX = 24
 
     /** Darkest pixel this far under the paper makes a cell ink: a wall the flood stops at. */
@@ -96,8 +103,16 @@ internal object BalloonSeed {
      */
     fun find(bitmap: Bitmap, box: Rect): Balloon? {
         if (box.width() < 4 || box.height() < 4) return null
-        val reach = (max(box.width(), box.height()) * REACH).toInt() + REACH_PX
-        val roi = Rect(box.left - reach, box.top - reach, box.right + reach, box.bottom + reach)
+        // Room for the balloon round the text: a column's balloon is a few
+        // columns wider than it and not much taller; a line's, the reverse.
+        val long = max(box.width(), box.height())
+        val short = minOf(box.width(), box.height())
+        val across = (max(long * REACH_ACROSS, short * REACH_SHORT)).toInt() + REACH_PX
+        val along = (long * REACH_ALONG).toInt() + REACH_PX
+        val tall = box.height() >= box.width()
+        val rx = if (tall) across else along
+        val ry = if (tall) along else across
+        val roi = Rect(box.left - rx, box.top - ry, box.right + rx, box.bottom + ry)
         if (!roi.intersect(0, 0, bitmap.width, bitmap.height)) return null
         val cell = ceil(sqrt(roi.width().toDouble() * roi.height() / MAX_CELLS)).toInt().coerceAtLeast(1)
         val g = Grid.of(bitmap, roi, cell)

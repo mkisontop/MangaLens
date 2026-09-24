@@ -28,7 +28,9 @@ the normal APK.
 1. Open MangaLens and do the two setup steps Fuki shows you: let it float
    over other apps, then give it a brain — tap **Get a free key** (Google AI
    Studio, no card needed), copy the key, and tap **Paste my key**. Fuki
-   letters a test line to show the key works.
+   letters a test line to show the key works. A third, optional step —
+   **Make the English solid** — is worth the minute it takes (see
+   [Solid lettering](#solid-lettering)).
 2. Tap Fuki, the big yellow **GO!** balloon → allow screen capture. While
    translation is paused Fuki naps; tap it to wake it up.
 3. Switch to Brave and read your manhwa like normal.
@@ -59,6 +61,24 @@ directly.
 3. Open MangaLens and follow Fuki's two steps: allow "Display over other
    apps", then get a free Gemini key and tap **Paste my key**. Fuki proves the
    key by lettering a Korean line, and you're ready to tap **GO!**.
+4. Optional but recommended: **Make the English solid** — switch MangaLens on
+   in Android's Accessibility settings (below).
+
+### Solid lettering
+
+Since Android 12, an app's overlay that lets your taps and scrolls through to
+the app underneath is drawn at no more than 80% opacity. Every cleaned
+balloon then shows a faint grey ghost of the original under the English, and
+black lettering turns dark grey. Android draws an **accessibility** overlay at
+full strength, so MangaLens asks to be switched on under Settings →
+Accessibility → MangaLens. That switch only lets it draw: it receives no
+accessibility events, cannot read the screen's contents, and cannot tap or
+type for you. Without it MangaLens still works, just with the ghost.
+
+Installed the APK from a browser or file manager on Android 13+? Android marks
+the switch as a "Restricted setting" at first: open MangaLens's **App info**,
+tap **⋮ → Allow restricted settings**, then switch it on. Fuki's setup step
+and the **Solid lettering** row in Tweaks walk you through both.
 
 Updating is automatic-ish: the app makes one anonymous check against this
 repository's latest release when you open it, and shows a small **NEW!**
@@ -533,15 +553,18 @@ not the normal download.
 you're not in a Brave *private* tab — private tabs set `FLAG_SECURE`, which
 makes the captured screen black.
 
+**A faint grey ghost of the original under the English?** That is Android's
+80% cap on pass-through overlays — turn on [solid lettering](#solid-lettering).
+
 **The browser bar gets translated?** Raise **Skip the top of the screen** in
-Tweaks → Look.
+Tweaks → More options.
 
 **Battery?** Use "Tap to translate" mode — capture idles until you tap.
 
 **Slow internet?** Lettering seen at an earlier stop repaints from memory at
 once, and new lines appear one by one as the AI writes them — there is no
-machine draft to fill in while you wait. Turn on **Data saver** to shrink
-vision uploads, or set AI Vision to **Text only** for requests a few KB big.
+machine draft to fill in while you wait. Turn on **Data saver** in Tweaks →
+More options to shrink page uploads.
 With no connection at all nothing new is translated, and the status pill
 says the AI couldn't read the page, and why.
 

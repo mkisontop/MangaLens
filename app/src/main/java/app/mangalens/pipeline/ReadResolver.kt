@@ -114,8 +114,8 @@ internal class ReadResolver(
                     // wash and reads as texture. Found again from its own
                     // lettering outward — walled, convex, paper round the text
                     // — it is a balloon, and the wash is cleaned with its tone.
-                    (vouched(balloon, group.map { usable[it] }) &&
-                        BalloonTrust.holdsOnly(bitmap, balloon, lettering, BalloonTrust.SEEN_THROUGH_TEXTURE))
+                    (BalloonTrust.holdsOnly(bitmap, balloon, lettering, BalloonTrust.SEEN_THROUGH_TEXTURE) &&
+                        vouched(balloon, group.map { usable[it] }))
             }
             trace?.invoke(
                 "${group.joinToString(" + ") { usable[it].src.take(8).replace('\n', ' ') }}: " +
