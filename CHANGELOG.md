@@ -1,5 +1,46 @@
 # Changelog
 
+## 1.0.1
+
+Cleaner pages: every balloon is wiped whole, the English can be solid black
+on white, lettering stays where it belongs, and the translation reads like an
+English scanlation rather than a translation of one.
+
+**Download:** `MangaLens.apk` below updates 0.9.2 and newer in place.
+
+- **Solid lettering (no more grey ghost).** Since Android 12 an app overlay
+  that lets taps through is drawn at no more than 80% opacity, so every
+  cleaned balloon showed a faint grey ghost of the original and the English
+  was dark grey. Turn on the new optional setup step **Make the English
+  solid** (or the **Solid lettering** row in Tweaks): MangaLens is switched on
+  under Accessibility, and Android then draws its lettering at full strength.
+  The switch only lets it draw — it gets no accessibility events, can't read
+  the screen and can't tap for you. Android 13+ may first ask you to allow
+  restricted settings in App info; the step shows how.
+- **Whole balloons, every time.** When the model's box around a vertical
+  balloon's text missed a column — the short first one, a lone last glyph —
+  that column stayed on the page beside the English, and the English was
+  squeezed into one column. The missing column is now recognised as the
+  same line, and the whole balloon is cleaned and lettered.
+- **Balloons the detector used to miss** — see-through ones with the art
+  showing faintly through, ones breaking a panel border, ones cut by the page
+  edge, bursts around big lettering — are now found from their own lettering
+  outward, cleaned whole and lettered into their shape.
+- **Lettering stays where it belongs.** English set over text on the art is
+  centred on that text (a stray stroke of art no longer drags it a line
+  away) and stays inside its own panel. Inside a dense balloon the type may go
+  a step smaller before it would spill over the outline, and words that
+  still cannot fit are haloed in the balloon's paper. Thoughts are lettered in
+  bold italic, dialogue's weight, instead of a faint thin italic.
+- **A scanlator's English.** The AI is asked for natural, idiomatic English in
+  each character's voice rather than word-for-word structure: no calques,
+  the plain words of English adult comics instead of clinical ones, and a
+  proofread of every line — while still adding nothing the source doesn't say.
+- **Simpler Tweaks.** Tweaks shows the language, hands-free, text size and a
+  Your AI card that says whether your key works (Test it, Change key).
+  Timing, data saver, thinking time, the model (Automatic by default), other
+  AI providers and diagnostics wait under **More options**.
+
 ## 1.0.0
 
 MangaLens 1.0: translation is AI-only and straight — no machine draft, no
