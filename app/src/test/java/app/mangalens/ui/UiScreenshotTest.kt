@@ -190,7 +190,7 @@ class UiScreenshotTest {
         var turnOn = 0
         var appInfo = 0
         actions = HomeActions(onTurnOnSolid = { turnOn++ }, onOpenAppInfo = { appInfo++ })
-        home(HomeUiState(AppSettings(), overlayGranted = true, browserName = "Brave"))
+        home(HomeUiState(AppSettings(), overlayGranted = true, solidOffered = true, browserName = "Brave"))
         sayHi.phase = SayHi.Phase.Ok(LETTERED)
         ui = ui.copy(settings = keyed)
         compose.waitForIdle()
@@ -205,7 +205,7 @@ class UiScreenshotTest {
 
     @Test
     fun `05c setup, solid lettering on`() {
-        home(HomeUiState(AppSettings(), overlayGranted = true, solidLettering = true, browserName = "Brave"))
+        home(HomeUiState(AppSettings(), overlayGranted = true, solidOffered = true, solidLettering = true, browserName = "Brave"))
         sayHi.phase = SayHi.Phase.Ok(LETTERED)
         ui = ui.copy(settings = keyed)
         compose.waitForIdle()
@@ -216,7 +216,7 @@ class UiScreenshotTest {
     }
 
     @Test
-    fun `05d on Android 11 there is nothing to make solid`() {
+    fun `05d without the lettering host, or on Android 11, there is nothing to make solid`() {
         home(HomeUiState(AppSettings(), overlayGranted = true, solidOffered = false, browserName = "Brave"))
         sayHi.phase = SayHi.Phase.Ok(LETTERED)
         ui = ui.copy(settings = keyed)
@@ -337,7 +337,7 @@ class UiScreenshotTest {
     fun `14d tweaks, solid lettering off, then on`() {
         var turnOn = 0
         actions = HomeActions(onTurnOnSolid = { turnOn++ })
-        home(HomeUiState(keyed, overlayGranted = true, browserName = "Brave"))
+        home(HomeUiState(keyed, overlayGranted = true, solidOffered = true, browserName = "Brave"))
         compose.onNodeWithContentDescription("Tweaks:", substring = true).performScrollTo().performClick()
         compose.onNodeWithText("Greyed out? Allow it in App info ↗").performScrollTo()
         compose.onNodeWithContentDescription("Turn on solid lettering in Accessibility").performClick()
@@ -354,7 +354,7 @@ class UiScreenshotTest {
     @Test
     fun `14f tweaks, solid lettering off at double font size`() {
         // Large text stacks the button under the words instead of squeezing them.
-        home(HomeUiState(keyed, overlayGranted = true, browserName = "Brave"), fontScale = 2f)
+        home(HomeUiState(keyed, overlayGranted = true, solidOffered = true, browserName = "Brave"), fontScale = 2f)
         compose.onNodeWithContentDescription("Tweaks:", substring = true).performScrollTo().performClick()
         compose.onNodeWithText("Greyed out? Allow it in App info ↗").performScrollTo()
         both("14f-tweaks-solid-font-2x")

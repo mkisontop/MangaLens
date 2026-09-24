@@ -36,17 +36,12 @@
             android:exported="false"
             android:foregroundServiceType="mediaProjection" />
 
-        <!-- Solid lettering: the lettering's window, and nothing else. -->
-        <service
-            android:name=".overlay.LetteringHostService"
-            android:exported="true"
-            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
-            <intent-filter>
-                <action android:name="android.accessibilityservice.AccessibilityService" />
-            </intent-filter>
-            <meta-data
-                android:name="android.accessibilityservice"
-                android:resource="@xml/lettering_host" />
-        </service>
+        <!--
+            No accessibility service (LetteringHostService, solid lettering):
+            Play Protect's enhanced fraud protection refuses to install a
+            sideloaded app that declares one, whatever it does, and MangaLens
+            is installed from its download link. LetteringHostTest and the
+            release workflow keep it that way.
+        -->
     </application>
 </manifest>

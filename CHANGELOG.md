@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.0.2
+
+Installs again. Where Play Protect's enhanced fraud protection is on, 1.0.1
+was refused outright ("App blocked to protect your device"), because of the
+accessibility service it added for solid lettering: Play Protect blocks any
+app installed from a browser or file manager that declares one, whatever the
+service does. That service is gone; everything else in 1.0.1 is here.
+
+**Download:** `MangaLens.apk` below updates 0.9.2 and newer in place.
+
+- **No accessibility service.** The optional setup step **Make the English
+  solid** and the **Solid lettering** row in Tweaks went with it. If you had
+  switched it on in 1.0.1, there is nothing to undo: Android forgets the
+  switch along with the service.
+- On Android 12 and later a faint trace of the original can show under the
+  English again, as it did before 1.0.1: Android draws an overlay that lets
+  your taps through at no more than 80% strength.
+- The release build now refuses to publish an APK that declares anything
+  Play Protect blocks sideloaded installs for.
+
 ## 1.0.1
 
 Cleaner pages: every balloon is wiped whole, the English can be solid black

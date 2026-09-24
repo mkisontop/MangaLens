@@ -21,6 +21,11 @@ import android.view.accessibility.AccessibilityEvent
  * (res/xml/lettering_host.xml) asks for no events, no window content and
  * no gestures; while it is connected it lends its window manager to
  * [LetteringHost], and [OverlayController] letters through that.
+ *
+ * The published APK does not declare it (see [LetteringHost.declared]):
+ * Play Protect blocks installing a sideloaded app with any accessibility
+ * service. A build that declares it again in the manifest gets solid
+ * lettering back, setup step and all.
  */
 class LetteringHostService : AccessibilityService() {
 

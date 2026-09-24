@@ -152,6 +152,17 @@ jobs:
             exit 1
           fi
 
+          # Play Protect's enhanced fraud protection refuses to install a
+          # sideloaded app that declares any of these, and MangaLens is only
+          # ever sideloaded: 1.0.1 could not be installed where it is on.
+          blocked="$("$aapt" dump xmltree "$unsigned" AndroidManifest.xml |
+            grep -oE 'android\.permission\.(BIND_ACCESSIBILITY_SERVICE|BIND_NOTIFICATION_LISTENER_SERVICE|RECEIVE_SMS|READ_SMS)' |
+            sort -u || true)"
+          if [ -n "$blocked" ]; then
+            echo "::error::The APK declares what Play Protect blocks sideloaded installs for: $blocked"
+            exit 1
+          fi
+
           previous="$RUNNER_TEMP/previous-release.apk"
           if ! curl --fail --location --silent --show-error \
             "https://github.com/mkisontop/mangalens/releases/latest/download/MangaLens.apk" \

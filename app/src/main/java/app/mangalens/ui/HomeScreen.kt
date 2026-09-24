@@ -110,11 +110,12 @@ internal data class HomeUiState(
     val paused: Boolean = false,
     val overlayGranted: Boolean = false,
     /**
-     * Whether "Make the English solid" is offered at all: Android 12 and
-     * later hold a see-through overlay to 80% opacity, and before that the
-     * lettering is drawn as painted, so there is nothing to switch on.
+     * Whether "Make the English solid" is offered at all: only by a build
+     * that declares the lettering host (see [LetteringHost.declared]), and
+     * only on Android 12 and later, which hold a see-through overlay to 80%
+     * opacity; before that the lettering is drawn as painted.
      */
-    val solidOffered: Boolean = Build.VERSION.SDK_INT >= 31,
+    val solidOffered: Boolean = false,
     /** MangaLens is on in Accessibility, so the lettering is drawn at full strength. */
     val solidLettering: Boolean = false,
     /** "Brave" when it is installed, else null and the copy says "your browser". */
@@ -178,6 +179,7 @@ fun HomeScreen(
             delay(1000)
         }
     }
+    val solidOffered = remember { Build.VERSION.SDK_INT >= 31 && LetteringHost.declared(context) }
     // Solid lettering is switched on in Settings, so it is checked again
     // each time the reader comes back.
     var solidLettering by remember { mutableStateOf(LetteringHost.isOn(context)) }
@@ -215,6 +217,7 @@ fun HomeScreen(
                 running = running,
                 paused = paused,
                 overlayGranted = overlayGranted,
+                solidOffered = solidOffered,
                 solidLettering = solidLettering,
                 browserName = browserName,
                 startRefused = startRefused,

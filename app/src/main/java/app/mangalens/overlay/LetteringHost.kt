@@ -57,6 +57,18 @@ object LetteringHost {
     }
 
     /**
+     * Whether this build declares [LetteringHostService] at all. The APK
+     * published for download does not: Play Protect's enhanced fraud
+     * protection refuses to install a sideloaded app that declares an
+     * accessibility service, whatever the service does. Without it there
+     * is nothing to switch on, so solid lettering is not offered.
+     */
+    fun declared(context: Context): Boolean = runCatching {
+        @Suppress("DEPRECATION") // The flags overload is API 33+.
+        context.packageManager.getServiceInfo(ComponentName(context, LetteringHostService::class.java), 0)
+    }.isSuccess
+
+    /**
      * Whether solid lettering is on: the reader has switched the service on
      * in Accessibility, or the system has it connected. The setting alone
      * counts too: the system connects a switched-on service a moment after

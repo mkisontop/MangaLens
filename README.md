@@ -19,7 +19,7 @@ about 1.5–2 s after you stop.
 · [all releases](https://github.com/mkisontop/mangalens/releases)
 · [changelog](CHANGELOG.md)
 
-Current release: **1.0.1**. Still on 0.9.1? Follow the
+Current release: **1.0.2**. Still on 0.9.1? Follow the
 [one-time update instructions](#one-time-update-from-091) instead of using
 the normal APK.
 
@@ -28,9 +28,7 @@ the normal APK.
 1. Open MangaLens and do the two setup steps Fuki shows you: let it float
    over other apps, then give it a brain — tap **Get a free key** (Google AI
    Studio, no card needed), copy the key, and tap **Paste my key**. Fuki
-   letters a test line to show the key works. A third, optional step —
-   **Make the English solid** — is worth the minute it takes (see
-   [Solid lettering](#solid-lettering)).
+   letters a test line to show the key works.
 2. Tap Fuki, the big yellow **GO!** balloon → allow screen capture. While
    translation is paused Fuki naps; tap it to wake it up.
 3. Switch to Brave and read your manhwa like normal.
@@ -61,24 +59,12 @@ directly.
 3. Open MangaLens and follow Fuki's two steps: allow "Display over other
    apps", then get a free Gemini key and tap **Paste my key**. Fuki proves the
    key by lettering a Korean line, and you're ready to tap **GO!**.
-4. Optional but recommended: **Make the English solid** — switch MangaLens on
-   in Android's Accessibility settings (below).
 
-### Solid lettering
-
-Since Android 12, an app's overlay that lets your taps and scrolls through to
-the app underneath is drawn at no more than 80% opacity. Every cleaned
-balloon then shows a faint grey ghost of the original under the English, and
-black lettering turns dark grey. Android draws an **accessibility** overlay at
-full strength, so MangaLens asks to be switched on under Settings →
-Accessibility → MangaLens. That switch only lets it draw: it receives no
-accessibility events, cannot read the screen's contents, and cannot tap or
-type for you. Without it MangaLens still works, just with the ghost.
-
-Installed the APK from a browser or file manager on Android 13+? Android marks
-the switch as a "Restricted setting" at first: open MangaLens's **App info**,
-tap **⋮ → Allow restricted settings**, then switch it on. Fuki's setup step
-and the **Solid lettering** row in Tweaks walk you through both.
+MangaLens asks for nothing Play Protect blocks a sideloaded app for: no
+accessibility service, no notification access, no SMS. 1.0.1 had an
+accessibility service, and where Play Protect's enhanced fraud protection is
+on it could not be installed at all ("App blocked to protect your device");
+1.0.2 and later install normally.
 
 Updating is automatic-ish: the app makes one anonymous check against this
 repository's latest release when you open it, and shows a small **NEW!**
@@ -554,7 +540,14 @@ you're not in a Brave *private* tab — private tabs set `FLAG_SECURE`, which
 makes the captured screen black.
 
 **A faint grey ghost of the original under the English?** That is Android's
-80% cap on pass-through overlays — turn on [solid lettering](#solid-lettering).
+cap on overlays that let your taps through: since Android 12 they are drawn
+at no more than 80% strength, so a trace of what is underneath shows. 1.0.1
+got around it with an accessibility service, which Play Protect refuses to
+install from a download, so 1.0.2 dropped it.
+
+**"App blocked to protect your device" when installing?** That was 1.0.1 and
+its accessibility service. Download the latest APK again: 1.0.2 and later
+install normally.
 
 **The browser bar gets translated?** Raise **Skip the top of the screen** in
 Tweaks → More options.

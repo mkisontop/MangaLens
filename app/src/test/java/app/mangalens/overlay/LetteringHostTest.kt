@@ -2,6 +2,7 @@ package app.mangalens.overlay
 
 import android.content.ComponentName
 import android.content.Context
+import android.content.pm.PackageManager
 import android.provider.Settings
 import android.view.Display
 import android.view.View
@@ -55,6 +56,27 @@ class LetteringHostTest {
                 service,
             ),
         )
+    }
+
+    @Test
+    fun `the download declares nothing Play Protect blocks a sideload for`() {
+        // Enhanced fraud protection refuses a browser- or file-manager-installed
+        // app with any of these, whatever it does with them: 1.0.1 could not
+        // be installed at all where it is on.
+        val info = context.packageManager.getPackageInfo(
+            context.packageName,
+            PackageManager.GET_SERVICES or PackageManager.GET_PERMISSIONS,
+        )
+        val guarded = setOf(
+            "android.permission.BIND_ACCESSIBILITY_SERVICE",
+            "android.permission.BIND_NOTIFICATION_LISTENER_SERVICE",
+        )
+        val services = info.services.orEmpty().filter { it.permission in guarded }.map { it.name }
+        assertEquals(emptyList<String>(), services)
+        val sms = info.requestedPermissions.orEmpty().filter { it == "android.permission.RECEIVE_SMS" || it == "android.permission.READ_SMS" }
+        assertEquals(emptyList<String>(), sms)
+        // So solid lettering is not offered: there is no service to switch on.
+        assertFalse(LetteringHost.declared(context))
     }
 
     @Test
