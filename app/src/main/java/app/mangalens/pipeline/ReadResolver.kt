@@ -433,9 +433,7 @@ internal class ReadResolver(
         val cx = item.box.centerX()
         val cy = item.box.centerY()
         found.firstOrNull { onMask(it, cx, cy) }?.let { return it }
-        val fresh = seedCache.getOrPut(item.box) {
-            runCatching { BalloonSeed.find(bitmap, item.box) }.getOrNull()
-        } ?: return null
+        val fresh = seedFor(item.box) ?: return null
         // The same balloon a detection already holds, found again from inside.
         (claimed + whole).firstOrNull { d -> overlap(d.box, fresh.box) > SAME_BALLOON }?.let { return it }
         return fresh
@@ -464,15 +462,25 @@ internal class ReadResolver(
         if (balloon in seedCache.values) return true
         return items.any { item ->
             if (item.kind != ItemKind.SPEECH && item.kind != ItemKind.THOUGHT) return@any false
-            val found = seedCache.getOrPut(item.box) {
-                runCatching { BalloonSeed.find(bitmap, item.box) }.getOrNull()
-            }
+            val found = seedFor(item.box)
             found != null && overlap(found.box, balloon.box) > SAME_BALLOON
         }
     }
 
     /** Searches from lettering outward, by the lettering's box: a page re-resolved one item longer searches once. */
     private val seedCache = HashMap<Rect, Balloon?>()
+
+    /**
+     * [seedCache]'s search from [box]. A search that found nothing is kept
+     * too: getOrPut takes a stored null for none and searched again on
+     * every re-resolve, 25-90 ms (server) per streamed item on 2 pages in 5.
+     */
+    private fun seedFor(box: Rect): Balloon? {
+        if (seedCache.containsKey(box)) return seedCache[box]
+        val found = runCatching { BalloonSeed.find(bitmap, box) }.getOrNull()
+        seedCache[Rect(box)] = found
+        return found
+    }
 
     /** True when (x, y) lies on [b]'s interior mask. */
     private fun onMask(b: Balloon, x: Int, y: Int): Boolean {
