@@ -81,6 +81,12 @@ class TranslatePipeline(
         val balloons: List<Rect> = emptyList(),
         /** Panels read off the page, likewise. */
         val panels: List<Rect> = emptyList(),
+        /**
+         * A problem the reader has to act on, such as an API key the
+         * provider rejected: shown even when the status pill is otherwise
+         * hidden, since nothing on the page would say why it stays untranslated.
+         */
+        val alert: String? = null,
     )
 
     /**

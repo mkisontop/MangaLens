@@ -654,6 +654,14 @@ interface PendingRead {
     val summary: String get() = ""
 
     /**
+     * True once a finished read is known to have ended early: the reply
+     * stopped before the model was done (an output filter tripping part-way,
+     * the token cap) or its JSON broke off. Its items are real but not the
+     * whole page, so they are shown but never kept as the page's answer.
+     */
+    val cutOff: Boolean get() = false
+
+    /**
      * Hands every item already received to [onItem], then each new one as
      * it lands, and returns the complete list once the reply has finished.
      * Throws when the read failed — a [CancellationException] when it was
