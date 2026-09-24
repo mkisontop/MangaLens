@@ -24,14 +24,19 @@ class ArtMap internal constructor(
     private val cols: Int,
     private val rows: Int,
     private val drawn: BooleanArray,
+    /** Rows the page has moved down since it was measured. */
+    private val offsetY: Int = 0,
 ) {
+
+    /** This map for the page moved [dy] rows down, as a scroll moves it. */
+    fun shifted(dy: Int): ArtMap = ArtMap(cell, cols, rows, drawn, offsetY + dy)
 
     /** Share of the cells under [r] that hold line work; 1 for a rectangle off the page. */
     fun drawnShare(r: RectF): Float {
         val c0 = (r.left / cell).toInt().coerceAtLeast(0)
-        val r0 = (r.top / cell).toInt().coerceAtLeast(0)
+        val r0 = ((r.top - offsetY) / cell).toInt().coerceAtLeast(0)
         val c1 = ((r.right - 1) / cell).toInt().coerceAtMost(cols - 1)
-        val r1 = ((r.bottom - 1) / cell).toInt().coerceAtMost(rows - 1)
+        val r1 = ((r.bottom - offsetY - 1) / cell).toInt().coerceAtMost(rows - 1)
         if (c1 < c0 || r1 < r0) return 1f
         var n = 0
         var hit = 0

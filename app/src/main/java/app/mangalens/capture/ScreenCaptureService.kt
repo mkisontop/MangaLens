@@ -39,6 +39,7 @@ import app.mangalens.overlay.Hyphenation
 import app.mangalens.overlay.OverlayController
 import app.mangalens.overlay.RenderBubble
 import app.mangalens.pipeline.AiFailure
+import app.mangalens.pipeline.ScrollMatch
 import app.mangalens.pipeline.TranslatePipeline
 import app.mangalens.pipeline.UpgradeMerge
 import app.mangalens.settings.AppSettings
@@ -431,6 +432,13 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
     private var alertUntil = 0L
 
     private var lastShown: List<RenderBubble> = emptyList()
+
+    /**
+     * The scroll signature of the frame [lastShown] was lettered for, so the
+     * next stop can carry those cards across a measured scroll; null when
+     * unknown. Main thread only.
+     */
+    private var shownOn: ScrollMatch? = null
     private var capW = 0
     private var capH = 0
 
@@ -1035,6 +1043,19 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
     }
 
     /**
+     * [lastShown], moved to where the scroll since it was lettered put its
+     * lettering on [frame]; empty when that scroll is not known.
+     */
+    private fun carry(frame: Bitmap): List<RenderBubble> {
+        val before = shownOn ?: return emptyList()
+        if (lastShown.isEmpty()) return emptyList()
+        val d = pipeline.signatureOf(frame)?.scrolledFrom(before) ?: return emptyList()
+        val ignoreTop = (frame.height * settings.ignoreTopPct).toInt()
+        val ignoreBottom = (frame.height * settings.ignoreBottomPct).toInt()
+        return CardCarry.carried(lastShown, -d, frame.height, ignoreTop, ignoreBottom)
+    }
+
+    /**
      * Hands over the frame read ahead, or null when there is none. The
      * caller owns it from here, and must adopt or [abandon] it however it
      * ends. Main thread only.
@@ -1100,6 +1121,9 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
             var firstLineAt = -1L
             // The lines on screen so far, as they streamed in.
             var streamed: List<RenderBubble> = emptyList()
+            // The last stop's cards, moved by the scroll, standing in until
+            // this pass letters the same lines itself.
+            var carried: List<RenderBubble> = emptyList()
             try {
                 // A long enough break since the last translated page means the
                 // next one probably belongs to a different series.
@@ -1130,6 +1154,21 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                     }
                 }
                 prep = taken
+                if (taken != null && auto) {
+                    // A scroll cleared the cards. Those still on screen come
+                    // back now, where the measured scroll put their lettering,
+                    // rather than once the page is analysed, memory has found
+                    // them again and each is re-lettered: on a phone, most of
+                    // a second more of a raw page after every nudge.
+                    carried = carry(taken.bitmap)
+                    if (carried.isNotEmpty()) {
+                        firstLineAt = SystemClock.uptimeMillis()
+                        lastShown = carried
+                        shownOn = pipeline.signatureOf(taken.bitmap)
+                        suppressUntil = SystemClock.uptimeMillis() + 600
+                        paintCards(carried, taken.bitmap)
+                    }
+                }
                 if (taken != null) {
                     val done = try {
                         taken.job.await()
@@ -1149,7 +1188,10 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                         ahead = done.second
                     } else {
                         // The screen moved under the reading, or it failed.
+                        // What was carried was for that frame: the fresh one
+                        // is grabbed clean of it, and letters its own lines.
                         abandon(taken)
+                        carried = emptyList()
                     }
                 }
                 val analysis: TranslatePipeline.Analysis = ahead ?: run {
@@ -1187,9 +1229,13 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                             if (isActive && state == State.TRANSLATING) {
                                 if (firstLineAt < 0 && partial.bubbles.isNotEmpty()) firstLineAt = SystemClock.uptimeMillis()
                                 streamed = partial.bubbles
-                                lastShown = partial.bubbles
+                                // Carried cards give way to the lines this
+                                // pass letters over them, and stay until then.
+                                val shown = UpgradeMerge.merge(carried, partial.bubbles)
+                                lastShown = shown
+                                shownOn = bmp?.let(pipeline::signatureOf)
                                 suppressUntil = SystemClock.uptimeMillis() + 600
-                                paintCards(partial.bubbles, bmp)
+                                paintCards(shown, bmp)
                                 if (partial.note == "cleaning art…") {
                                     setPill("✨ cleaning art…")
                                     spoke = true
@@ -1201,8 +1247,11 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                 if (!isActive) return@launch
                 // The finished answer replaces the lines it covers and never
                 // erases the ones it doesn't: the reader may be reading them.
+                // Cards carried from the last stop go now: the answer holds
+                // every line this stop read or remembered.
                 val shown = UpgradeMerge.merge(streamed, result.bubbles)
                 lastShown = shown
+                shownOn = bmp?.let(pipeline::signatureOf)
                 suppressUntil = SystemClock.uptimeMillis() + 500
                 paintCards(shown, bmp)
                 state = State.SHOWING
@@ -1237,6 +1286,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                 } else if (result.diag != null) {
                     val now = SystemClock.uptimeMillis()
                     val waited = (if (firstLineAt >= 0) "stop→1st line ${firstLineAt - stopAt} ms · " else "") +
+                        (if (carried.isNotEmpty()) "carried ${carried.size} · " else "") +
                         "stop→done ${now - stopAt} ms"
                     setPill("${result.engineLabel.ifBlank { "—" }} · $waited · ${result.diag} · ${works.describe()}")
                 } else if (failure != null) {

@@ -182,6 +182,13 @@ class TranslatePipeline(
     @Volatile
     private var lastMatch: Pair<Bitmap, ScrollMatch>? = null
 
+    /**
+     * [bitmap]'s scroll signature, when the read started for it measured
+     * one (AI-first reads do, before they send); null otherwise. Never
+     * measured here: this is for the main thread.
+     */
+    internal fun signatureOf(bitmap: Bitmap): ScrollMatch? = lastMatch?.takeIf { it.first === bitmap }?.second
+
     /** Whether pages are read AI-first under [settings]. */
     fun readsAiFirst(settings: AppSettings): Boolean =
         settings.aiVision != AiVisionMode.OFF && settings.apiKey.isNotBlank() && PageReader.supports(settings)

@@ -104,7 +104,20 @@ data class RenderBubble(
      * the border into the next one. Null when the page's panels were not read.
      */
     val panel: Rect? = null,
-)
+) {
+    /** This card for the page moved [dy] rows down: everything it places moves with it. */
+    fun shiftedBy(dy: Int): RenderBubble {
+        fun moved(r: Rect) = Rect(r).apply { offset(0, dy) }
+        return copy(
+            box = moved(box),
+            balloon = balloon?.let { it.copy(box = moved(it.box)) },
+            patchRect = patchRect?.let(::moved),
+            art = art?.shifted(dy),
+            otherPanels = otherPanels.map(::moved),
+            panel = panel?.let(::moved),
+        )
+    }
+}
 
 /**
  * Full-screen, untouchable layer that puts the English on the page.
