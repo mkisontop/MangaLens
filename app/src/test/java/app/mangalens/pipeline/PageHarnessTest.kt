@@ -18,6 +18,8 @@ import app.mangalens.translate.GlossaryStore
 import app.mangalens.translate.StoryContext
 import app.mangalens.translate.TranslationCache
 import app.mangalens.translate.TranslationService
+import app.mangalens.translate.ItemKind
+import app.mangalens.translate.PageItem
 import java.io.File
 import java.io.FileOutputStream
 import kotlinx.coroutines.runBlocking
@@ -99,42 +101,140 @@ class PageHarnessTest {
                 )
                 r
             }
-            for (b in result.bubbles) {
-                val where = when {
-                    b.balloon != null -> "balloon"
-                    b.patch != null -> "erased"
-                    else -> "card"
-                }
-                println("    [${b.style} $where] ${b.original.replace('\n', ' ').take(40)} => ${b.translated}")
-            }
-            // Letter at the density a phone showing this page would have:
-            // about 400 dp across, as on a real screen.
-            RuntimeEnvironment.setQualifiers("+" + densityFor(page.width))
-            val view = BubbleOverlayView(RuntimeEnvironment.getApplication()).apply { layout(0, 0, page.width, page.height) }
-            view.setBubbles(result.bubbles)
-            // Pixels, not density-scaled: the page and the overlay share the screen's coordinates.
-            val translated = Bitmap.createBitmap(page.width, page.height, Bitmap.Config.ARGB_8888)
-                .apply { density = Bitmap.DENSITY_NONE }
-            Canvas(translated).apply {
-                drawBitmap(page, 0f, 0f, null)
-                // A view with no window draws its final, fully faded-in state.
-                view.draw(this)
-            }
-            val pair = Bitmap.createBitmap(page.width * 2 + 16, page.height, Bitmap.Config.ARGB_8888)
-                .apply { density = Bitmap.DENSITY_NONE }
-            Canvas(pair).apply {
-                drawColor(Color.DKGRAY)
-                drawBitmap(page, 0f, 0f, null)
-                drawBitmap(translated, page.width + 16f, 0f, null)
-            }
             val stem = file.nameWithoutExtension
-            save(translated, File(out, "$stem.png"))
-            save(pair, File(out, "$stem-pair.png"))
-            // Balloons found on-device, for judging what the resolver had to work with.
-            val marked = page.copy(Bitmap.Config.ARGB_8888, true).apply { density = Bitmap.DENSITY_NONE }
-            val stroke = Paint().apply { style = Paint.Style.STROKE; strokeWidth = 3f; color = Color.MAGENTA }
-            Canvas(marked).apply { for (r in result.balloons) drawRect(Rect(r), stroke) }
-            save(marked, File(out, "$stem-balloons.png"))
+            File(out, "$stem-items.json").writeText(itemsJson(pipeline.lastItems))
+            render(page, result.bubbles, result.balloons, stem, out)
+        }
+    }
+
+    /**
+     * The live run's recorded items, replayed offline: every page in
+     * MANGALENS_PAGES with a `<page>-items.json` in MANGALENS_ITEMS (as
+     * [translateRealPages] writes them) goes through analysis, the resolver,
+     * erasure and the overlay exactly as a live pass would, with no network
+     * and no key. The same answer every time, so a change to erasure or
+     * placement can be judged on its own.
+     */
+    @Test
+    fun replayRecordedPages() {
+        val dir = System.getenv("MANGALENS_PAGES")?.let(::File)
+        val itemsDir = System.getenv("MANGALENS_ITEMS")?.let(::File)
+        assumeTrue("MANGALENS_PAGES not set", dir != null && dir.isDirectory)
+        assumeTrue("MANGALENS_ITEMS not set", itemsDir != null && itemsDir.isDirectory)
+        val only = System.getenv("MANGALENS_ONLY").orEmpty()
+        val out = File("build/harness").apply { mkdirs() }
+        val app = RuntimeEnvironment.getApplication()
+        val settings = AppSettings(provider = LlmProvider.GEMINI, apiKey = "replay", aiVision = AiVisionMode.AUTO, diagnostics = true)
+        val pages = dir!!.listFiles { f -> f.extension.lowercase() in setOf("jpg", "jpeg", "png", "webp") }!!
+            .filter { only.isBlank() || it.name.contains(only) }
+            .sortedBy { it.name }
+        for (file in pages) {
+            val recorded = File(itemsDir, file.nameWithoutExtension + "-items.json")
+            if (!recorded.isFile) continue
+            val cache = TranslationCache()
+            val glossary = GlossaryStore(app)
+            val cast = CastBook(app)
+            val pipeline = TranslatePipeline(NoOcr(), TranslationService(cache, glossary, cast), cache, glossary, cast)
+            val page = BitmapFactory.decodeFile(file.path, BitmapFactory.Options().apply {
+                inPreferredConfig = Bitmap.Config.ARGB_8888
+            }).apply { density = Bitmap.DENSITY_NONE }
+            val items = parseItems(recorded.readText())
+            val t0 = System.nanoTime()
+            val analysis = runBlocking { pipeline.analyze(page, settings) }
+            val resolver = ReadResolver(
+                page, analysis.detected, analysis.anchorLines,
+                analysis.ignoreTop, analysis.ignoreBottom, analysis.exclusions, analysis.panels,
+            )
+            ReadResolver.trace = { println("    [resolve] $it") }
+            BalloonSeed.trace = { println("    [seed] $it") }
+            val bubbles = resolver.resolve(items)
+            ReadResolver.trace = null
+            BalloonSeed.trace = null
+            println("[replay] ${file.name}: ${items.size} items -> ${bubbles.size} cards in ${(System.nanoTime() - t0) / 1_000_000} ms")
+            render(page, bubbles, analysis.detected.map { it.box }, file.nameWithoutExtension, out)
+        }
+    }
+
+    /** Prints how each line was replaced and writes the translated page, the erasure alone and the placements. */
+    private fun render(page: Bitmap, bubbles: List<app.mangalens.overlay.RenderBubble>, balloons: List<Rect>, stem: String, out: File) {
+        for (b in bubbles) {
+            val where = when {
+                b.balloon != null -> "balloon"
+                b.patch != null -> "erased"
+                else -> "card"
+            }
+            println("    [${b.style} $where] ${b.original.replace('\n', ' ').take(40)} => ${b.translated}")
+        }
+        // Letter at the density a phone showing this page would have:
+        // about 400 dp across, as on a real screen.
+        RuntimeEnvironment.setQualifiers("+" + densityFor(page.width))
+        val view = BubbleOverlayView(RuntimeEnvironment.getApplication()).apply { layout(0, 0, page.width, page.height) }
+        view.setBubbles(bubbles)
+        // Pixels, not density-scaled: the page and the overlay share the screen's coordinates.
+        val translated = Bitmap.createBitmap(page.width, page.height, Bitmap.Config.ARGB_8888)
+            .apply { density = Bitmap.DENSITY_NONE }
+        Canvas(translated).apply {
+            drawBitmap(page, 0f, 0f, null)
+            // A view with no window draws its final, fully faded-in state.
+            view.draw(this)
+        }
+        val pair = Bitmap.createBitmap(page.width * 2 + 16, page.height, Bitmap.Config.ARGB_8888)
+            .apply { density = Bitmap.DENSITY_NONE }
+        Canvas(pair).apply {
+            drawColor(Color.DKGRAY)
+            drawBitmap(page, 0f, 0f, null)
+            drawBitmap(translated, page.width + 16f, 0f, null)
+        }
+        save(translated, File(out, "$stem.png"))
+        save(pair, File(out, "$stem-pair.png"))
+        // What erasure alone left of the page, and where each line was
+        // lettered, for measuring against a page's ground truth.
+        val cleaned = page.copy(Bitmap.Config.ARGB_8888, true).apply { density = Bitmap.DENSITY_NONE }
+        view.drawCleanings(Canvas(cleaned))
+        save(cleaned, File(out, "$stem-clean.png"))
+        File(out, "$stem-letters.json").writeText(placementsJson(view))
+        // Balloons found on-device, for judging what the resolver had to work with.
+        val marked = page.copy(Bitmap.Config.ARGB_8888, true).apply { density = Bitmap.DENSITY_NONE }
+        val stroke = Paint().apply { style = Paint.Style.STROKE; strokeWidth = 3f; color = Color.MAGENTA }
+        Canvas(marked).apply { for (r in balloons) drawRect(Rect(r), stroke) }
+        save(marked, File(out, "$stem-balloons.png"))
+    }
+
+    private fun itemsJson(items: List<PageItem>): String {
+        val arr = org.json.JSONArray()
+        for (it in items) {
+            arr.put(
+                org.json.JSONObject()
+                    .put("box", org.json.JSONArray(listOf(it.box.left, it.box.top, it.box.right, it.box.bottom)))
+                    .put("kind", it.kind.name)
+                    .put("src", it.src)
+                    .put("en", it.en)
+                    .put("who", it.who)
+                    .put("vertical", it.vertical)
+                    .put("loud", it.loud)
+                    .put("text_color", it.textColor ?: org.json.JSONObject.NULL)
+                    .put("outline_color", it.outlineColor ?: org.json.JSONObject.NULL),
+            )
+        }
+        return arr.toString(1)
+    }
+
+    private fun parseItems(json: String): List<PageItem> {
+        val arr = org.json.JSONArray(json)
+        return (0 until arr.length()).map { i ->
+            val o = arr.getJSONObject(i)
+            val b = o.getJSONArray("box")
+            PageItem(
+                box = Rect(b.getInt(0), b.getInt(1), b.getInt(2), b.getInt(3)),
+                kind = ItemKind.valueOf(o.getString("kind")),
+                src = o.getString("src"),
+                en = o.getString("en"),
+                who = o.optString("who"),
+                vertical = o.optBoolean("vertical"),
+                textColor = if (o.isNull("text_color")) null else o.getInt("text_color"),
+                outlineColor = if (o.isNull("outline_color")) null else o.getInt("outline_color"),
+                loud = o.optBoolean("loud"),
+            )
         }
     }
 
@@ -208,6 +308,31 @@ class PageHarnessTest {
     }
 
     /** The density bucket that makes a page [widthPx] wide about 400 dp across. */
+    /** Each placed line as JSON: how it was replaced, its boxes, and where its lettering landed. */
+    private fun placementsJson(view: BubbleOverlayView): String {
+        val arr = org.json.JSONArray()
+        fun box(r: Rect?) = r?.let { org.json.JSONArray(listOf(it.left, it.top, it.right, it.bottom)) }
+        for ((b, ink) in view.placements()) {
+            arr.put(
+                org.json.JSONObject()
+                    .put("path", when {
+                        b.balloon != null -> "balloon"
+                        b.patch != null -> "erased"
+                        b.style == app.mangalens.overlay.LetterStyle.SFX_NOTE -> "note"
+                        else -> "card"
+                    })
+                    .put("style", b.style.name)
+                    .put("box", box(b.box))
+                    .put("balloon", box(b.balloon?.box))
+                    .put("patch", box(b.patchRect))
+                    .put("ink", org.json.JSONArray(listOf(ink.left, ink.top, ink.right, ink.bottom)))
+                    .put("src", b.original)
+                    .put("en", b.translated),
+            )
+        }
+        return arr.toString(1)
+    }
+
     private fun densityFor(widthPx: Int): String {
         val want = widthPx / 400f
         return listOf(1f to "mdpi", 1.5f to "hdpi", 2f to "xhdpi", 3f to "xxhdpi", 4f to "xxxhdpi")

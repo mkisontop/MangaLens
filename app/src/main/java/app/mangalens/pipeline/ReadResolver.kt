@@ -67,6 +67,18 @@ internal class ReadResolver(
                 claimed.add(it)
             }
         }
+        // Balloons page-wide detection missed — see-through ones, ones
+        // breaking a border or cut by the page edge — found from their
+        // lettering outward.
+        val seededHere = ArrayList<Balloon>()
+        for (i in usable.indices) {
+            if (home[i] != null) continue
+            seeded(usable[i], seededHere, claimed)?.let {
+                home[i] = it
+                claimed.add(it)
+                if (it !in seededHere) seededHere.add(it)
+            }
+        }
         val byBalloon = IdentityHashMap<Balloon, MutableList<Int>>()
         home.forEachIndexed { i, b -> if (b != null) byBalloon.getOrPut(b) { mutableListOf() }.add(i) }
 
@@ -78,6 +90,7 @@ internal class ReadResolver(
             val balloon = home[i]
             val group = balloon?.let { byBalloon[it] }
             if (balloon == null || group == null) {
+                trace?.invoke("${usable[i].src.take(8).replace('\n', ' ')}: no balloon (${usable[i].kind})")
                 done[i] = true
                 free(usable[i])?.let {
                     out.add(it)
@@ -96,8 +109,18 @@ internal class ReadResolver(
                 .filter { home[it] == null && usable[it].kind == ItemKind.SFX && containedShare(usable[it].box, balloon.box) > 0.8f }
                 .map { usable[it].box }
             val trusted = trust.getOrPut(trustKey(balloon, lettering)) {
-                BalloonTrust.holdsOnly(bitmap, balloon, lettering)
+                BalloonTrust.holdsOnly(bitmap, balloon, lettering) ||
+                    // A see-through balloon: the art shows faintly through its
+                    // wash and reads as texture. Found again from its own
+                    // lettering outward — walled, convex, paper round the text
+                    // — it is a balloon, and the wash is cleaned with its tone.
+                    (vouched(balloon, group.map { usable[it] }) &&
+                        BalloonTrust.holdsOnly(bitmap, balloon, lettering, BalloonTrust.SEEN_THROUGH_TEXTURE))
             }
+            trace?.invoke(
+                "${group.joinToString(" + ") { usable[it].src.take(8).replace('\n', ' ') }}: " +
+                    (if (balloon in seedCache.values) "seeded" else "detected") + " ${balloon.box} trusted=$trusted",
+            )
             if (!trusted) {
                 for (k in group) {
                     free(usable[k])?.let {
@@ -299,6 +322,62 @@ internal class ReadResolver(
         return found.first
     }
 
+    /**
+     * The balloon [item] is lettered in when page-wide detection found
+     * none: one already found for another line of this page when the
+     * item sits in it, a detected balloon that turns out to be the same
+     * one, or a fresh search from its lettering outward. Only dialogue and
+     * thoughts have balloons to find.
+     */
+    private fun seeded(item: PageItem, found: List<Balloon>, claimed: Set<Balloon>): Balloon? {
+        if (item.kind != ItemKind.SPEECH && item.kind != ItemKind.THOUGHT) return null
+        val cx = item.box.centerX()
+        val cy = item.box.centerY()
+        found.firstOrNull { onMask(it, cx, cy) }?.let { return it }
+        val fresh = seedCache.getOrPut(item.box) {
+            runCatching { BalloonSeed.find(bitmap, item.box) }.getOrNull()
+        } ?: return null
+        // The same balloon a detection already holds, found again from inside.
+        (claimed + detected).firstOrNull { d -> overlap(d.box, fresh.box) > SAME_BALLOON }?.let { return it }
+        return fresh
+    }
+
+    /**
+     * True when a search from [items]' own lettering outward finds
+     * [balloon] too: a detection that holds up as a balloon however it is
+     * looked for.
+     */
+    private fun vouched(balloon: Balloon, items: List<PageItem>): Boolean {
+        if (balloon in seedCache.values) return true
+        return items.any { item ->
+            if (item.kind != ItemKind.SPEECH && item.kind != ItemKind.THOUGHT) return@any false
+            val found = seedCache.getOrPut(item.box) {
+                runCatching { BalloonSeed.find(bitmap, item.box) }.getOrNull()
+            }
+            found != null && overlap(found.box, balloon.box) > SAME_BALLOON
+        }
+    }
+
+    /** Searches from lettering outward, by the lettering's box: a page re-resolved one item longer searches once. */
+    private val seedCache = HashMap<Rect, Balloon?>()
+
+    /** True when (x, y) lies on [b]'s interior mask. */
+    private fun onMask(b: Balloon, x: Int, y: Int): Boolean {
+        if (!b.box.contains(x, y) || b.maskW < 1 || b.maskH < 1) return false
+        val mx = ((x - b.box.left).toLong() * b.maskW / b.box.width().coerceAtLeast(1)).toInt().coerceIn(0, b.maskW - 1)
+        val my = ((y - b.box.top).toLong() * b.maskH / b.box.height().coerceAtLeast(1)).toInt().coerceIn(0, b.maskH - 1)
+        return b.mask[my * b.maskW + mx]
+    }
+
+    /** Intersection over the smaller of the two areas. */
+    private fun overlap(a: Rect, b: Rect): Float {
+        val ix = minOf(a.right, b.right) - maxOf(a.left, b.left)
+        val iy = minOf(a.bottom, b.bottom) - maxOf(a.top, b.top)
+        if (ix <= 0 || iy <= 0) return 0f
+        val smaller = minOf(a.width().toLong() * a.height(), b.width().toLong() * b.height())
+        return if (smaller <= 0L) 0f else (ix.toLong() * iy).toFloat() / smaller
+    }
+
     /** The lettering found in a balloon a drifted line was put back into, for its trust check. */
     private val drift = IdentityHashMap<Balloon, Rect>()
 
@@ -444,12 +523,19 @@ internal class ReadResolver(
     private val art: ArtMap by lazy { ArtMap.of(bitmap) }
 
     companion object {
+        /** How each line was placed, for the page harness; null in the app. */
+        @Volatile
+        internal var trace: ((String) -> Unit)? = null
+
         /** Shares of the page a sound effect may span and still count as small. */
         private const val SMALL_SFX_HEIGHT = 0.07f
 
         /** Furthest a line's box may have drifted from its balloon, as a share of the page's height. */
         private const val MAX_DRIFT = 0.15f
         private const val SMALL_SFX_WIDTH = 0.25f
+
+        /** Overlap past which a balloon found from its lettering is one already detected. */
+        private const val SAME_BALLOON = 0.6f
 
         fun styleOf(item: PageItem): LetterStyle = when (item.kind) {
             ItemKind.SFX -> LetterStyle.SFX

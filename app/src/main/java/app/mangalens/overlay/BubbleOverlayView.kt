@@ -165,6 +165,8 @@ class BubbleOverlayView(context: Context) : View(context) {
     )
 
     private class Placed(
+        /** The bubble this was placed for. */
+        val source: RenderBubble,
         val lettering: Lettering,
         /** Vertical nudge off earlier lettering. */
         val dy: Float,
@@ -503,7 +505,7 @@ class BubbleOverlayView(context: Context) : View(context) {
             val since = if (now == 0L) 0L else shownSince[shown] ?: shownNear(shown) ?: now
             nextShown[shown] = since
 
-            out.add(Placed(l, dy, bounds, stamp, stampDst, patch, patchDst, since))
+            out.add(Placed(b, l, dy, bounds, stamp, stampDst, patch, patchDst, since))
             // A cleaned balloon claims all of itself; free lettering only its text,
             // since a patch is background anyone may letter over.
             occupied.add(if (stamp != null) bounds else claim)
@@ -523,7 +525,7 @@ class BubbleOverlayView(context: Context) : View(context) {
             val shown = Shown(Rect(b.box), b.translated)
             val since = if (now == 0L) 0L else shownSince[shown] ?: shownNear(shown) ?: now
             nextShown[shown] = since
-            out.add(Placed(l, 0f, RectF(l.inkRect), null, null, null, null, since))
+            out.add(Placed(b, l, 0f, RectF(l.inkRect), null, null, null, null, since))
             occupied.add(RectF(l.inkRect))
         }
         letterings = nextLetterings
@@ -645,7 +647,7 @@ class BubbleOverlayView(context: Context) : View(context) {
     /** Ends any fade in progress: everything shows at full strength from the next draw. */
     fun finishFades() {
         if (placed.none { it.since != 0L }) return
-        placed = placed.map { Placed(it.lettering, it.dy, it.bounds, it.stamp, it.stampDst, it.patch, it.patchDst, 0L) }
+        placed = placed.map { Placed(it.source, it.lettering, it.dy, it.bounds, it.stamp, it.stampDst, it.patch, it.patchDst, 0L) }
         for (k in shownSince.keys) shownSince[k] = 0L
         invalidate()
     }
@@ -1652,6 +1654,11 @@ class BubbleOverlayView(context: Context) : View(context) {
         for (i in 0 until debug.size) canvas.drawRect(debug[i], debugPaint)
         val list = placed
         if (list.isEmpty()) return
+        drawCleanings(canvas, list)
+        drawLettering(canvas, list)
+    }
+
+    private fun drawCleanings(canvas: Canvas, list: List<Placed>) {
         for (i in 0 until list.size) {
             val p = list[i]
             if (p.stamp != null && p.stampDst != null) {
@@ -1667,6 +1674,16 @@ class BubbleOverlayView(context: Context) : View(context) {
                 canvas.drawRoundRect(wipe, dp(3f), dp(3f), bgPaint)
             }
         }
+    }
+
+    /** The cleanings alone, no English: what erasure left of the page, for the page harness to measure. */
+    internal fun drawCleanings(canvas: Canvas) = drawCleanings(canvas, placed)
+
+    /** Each placed bubble with the rectangle its lettering's ink covers, nudge included. */
+    internal fun placements(): List<Pair<RenderBubble, RectF>> =
+        placed.map { it.source to RectF(it.lettering.inkRect).apply { offset(0f, it.dy) } }
+
+    private fun drawLettering(canvas: Canvas, list: List<Placed>) {
         val now = if (list.any { it.since != 0L }) clock() else 0L
         var fading = false
         val radius = dp(9f)

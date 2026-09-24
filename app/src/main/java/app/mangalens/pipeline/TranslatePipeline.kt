@@ -703,6 +703,7 @@ class TranslatePipeline(
             seen = Seen((read as? StripRead)?.match ?: matchOf(bitmap), finalItems)
         }
         memory.remember(bitmap, finalItems)
+        lastItems = finalItems
         var rendered = resolver.resolve(finalItems)
 
         // Lettering on detailed art has only been smoothed over locally.
@@ -815,6 +816,11 @@ class TranslatePipeline(
      * reader is told so rather than left to wonder.
      */
     private class Gap<T>(val items: List<T>, val failure: Exception? = null)
+
+    /** The items the last completed pass resolved, for the page harness to record and replay. */
+    @Volatile
+    internal var lastItems: List<PageItem> = emptyList()
+        private set
 
     private fun readCacheGet(key: String, bubbles: List<Bubble>, w: Int, h: Int): List<PageItem>? {
         if (bubbles.isEmpty()) return null
