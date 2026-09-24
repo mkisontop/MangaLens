@@ -339,6 +339,36 @@ class TextEraserTest {
     }
 
     @Test
+    fun `white letters edged in black and glowing on a night sky come off, glow and all`() {
+        // The black edge is barely darker than the sky, too near it to count
+        // as ink; left behind, it and the glow would outline the words.
+        val page = blank(color = Color.rgb(48, 48, 52))
+        val c = Canvas(page)
+        val rnd = Random(9)
+        val star = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(230, 230, 230) }
+        repeat(90) { c.drawCircle(rnd.nextFloat() * page.width, rnd.nextFloat() * page.height, 0.8f + rnd.nextFloat(), star) }
+        val sky = page.copyOf()
+        val paint = textPaint(60f, Color.WHITE)
+        val glow = Paint(paint).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = 18f
+            color = Color.argb(150, 200, 200, 200)
+            maskFilter = android.graphics.BlurMaskFilter(9f, android.graphics.BlurMaskFilter.Blur.NORMAL)
+        }
+        c.drawText("NOISE", 100f, 190f, glow)
+        val box = letter(page, "NOISE", 100f, 190f, paint, outline = Color.rgb(6, 6, 8), stroke = 6f)
+        val e = TextEraser.erase(page, box, ItemKind.THOUGHT)
+        assertNotNull(e)
+        val after = applied(page, e!!)
+        preview("edged_glow_on_sky", page, after, e)
+        val white = { b: Bitmap -> pixels(b, box).count { lum(it) > 200 } }
+        val black = { b: Bitmap -> pixels(b, box).count { lum(it) < 20 } }
+        assertTrue("letters left: ${white(after)} px vs ${white(sky)} stars", white(after) <= white(sky) + box.width() * box.height() / 200)
+        assertTrue("edge left: ${black(after)} px", black(after) < box.width() * box.height() / 200)
+        assertOutsideMaskUntouched(page, after, e)
+    }
+
+    @Test
     fun `text in a white strip between black panels keeps its paper`() {
         // Paper as tight round the words as a halo, but straight-edged: the
         // gaps among the letters are paper, not art, and the strip stays white.

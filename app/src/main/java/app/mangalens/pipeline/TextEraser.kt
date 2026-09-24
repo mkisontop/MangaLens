@@ -184,6 +184,12 @@ object TextEraser {
     /** How far a pixel may stray from a lettering colour and still be that colour. */
     private const val COLOUR_TOL = 48
 
+    /** Share of a lettering's pixels that may be neither its colours nor a blend of them with the paper. */
+    private const val MAX_FOREIGN = 0.1f
+
+    /** Share of a fill's edge an outline lies against; art only ever touches a stretch of it. */
+    private const val WRAPPED = 0.7f
+
     /** Lettering covers less of its box than this; more is the art or the paper, mistaken. */
     private const val MAX_COVER = 0.7f
 
@@ -374,27 +380,65 @@ object TextEraser {
             for (i in 0 until n) if (letters[i]) maxDist = max(maxDist, dist[i])
             val core = BooleanArray(n) { letters[it] && dist[it] >= maxDist * 2 / 3 }
             val fill = dominantColour(px, core)
-            val outline = findOutline(px, reg, letters, fill, background, ringShare, outlineColor, fitted = true)
+            var outline = findOutline(px, reg, letters, fill, background, ringShare, outlineColor, fitted = true)
             // Every stroke pixel is the fill, the outline, or an anti-aliased
             // blend of them with each other or the paper. Every other pixel
             // is enough to judge by.
-            var foreign = 0
-            var total = 0
-            for (i in 0 until n step 2) {
-                if (!letters[i]) continue
-                total++
+            fun unexplained(i: Int, o: Int?): Boolean {
                 val p = px[i]
-                if (dist(p, fill) < COLOUR_TOL || (outline != null && dist(p, outline) < COLOUR_TOL)) continue
+                if (dist(p, fill) < COLOUR_TOL || (o != null && dist(p, o) < COLOUR_TOL)) return false
                 val under = rgb(paper[3 * i], paper[3 * i + 1], paper[3 * i + 2])
-                if (blend(p, fill, under)) continue
-                if (outline != null && (blend(p, outline, under) || blend(p, fill, outline))) continue
-                foreign++
+                if (blend(p, fill, under)) return false
+                return !(o != null && (blend(p, o, under) || blend(p, fill, o)))
             }
-            if (foreign > total / 10) return null
+            fun foreign(o: Int?): Float {
+                var odd = 0
+                var total = 0
+                for (i in 0 until n step 2) {
+                    if (!letters[i]) continue
+                    total++
+                    if (unexplained(i, o)) odd++
+                }
+                return if (total == 0) 0f else odd.toFloat() / total
+            }
+            var stray = foreign(outline)
+            var edgedPastPaper = false
+            if (stray > MAX_FOREIGN && outline == null) {
+                // An outline on the far side of the paper from the fill — black
+                // round white letters on a dark ground, white round black ones
+                // on grey — stands off the paper just as the fill does, so it
+                // is taken into the letters rather than found round them: what
+                // the fill and the paper leave unexplained, when it is one
+                // colour clearly not the fill's, is that outline.
+                val odd = BooleanArray(n) { letters[it] && unexplained(it, null) }
+                val c = dominantColour(px, odd)
+                // Only an outline the paper lies between it and the fill.
+                val beyond = dist(c, background) >= 20 && blend(background, fill, c)
+                if (dist(c, fill) >= 80 && beyond && wraps(letters, fill, c) >= WRAPPED) {
+                    val left = foreign(c)
+                    if (left <= MAX_FOREIGN) {
+                        outline = c
+                        stray = left
+                        edgedPastPaper = true
+                    }
+                }
+            }
+            if (stray > MAX_FOREIGN) return null
             val faint = max(8, noise + 4)
-            val art = BooleanArray(n) { raw[it] && !letters[it] }
+            // Such an edge is too near the ground to count as ink, and the
+            // lettering often glows as well, a soft haze round the edge. Both
+            // belong to it — all it touches that its colours explain — and
+            // left on the art would outline the words.
+            val lettering = if (!edgedPastPaper) letters else {
+                val o = outline ?: fill
+                val part = BooleanArray(n) {
+                    raw[it] && !letters[it] && !unexplained(it, o)
+                }
+                hysteresis(letters, part, w, h, 3 * halfStroke(letters, w, h) + 4)
+            }
+            val art = BooleanArray(n) { raw[it] && !lettering[it] }
             val weak = BooleanArray(n) { dist[it] > faint && !art[it] }
-            val mask = dilate(hysteresis(letters, weak, w, h, 3), w, h, 1)
+            val mask = dilate(hysteresis(lettering, weak, w, h, 3), w, h, 1)
             for (i in 0 until n) if (art[i]) mask[i] = false
             // The paper right beside a stroke still carries its ringing:
             // rebuilt from, it would paint a faint copy of the text back.
@@ -418,6 +462,29 @@ object TextEraser {
                 tone = tone?.spacing ?: 0,
                 untoned = tone?.let { t -> dilate(pieces(ink, w, h) { it >= t.dot }, w, h, 2) },
             )
+        }
+
+        /**
+         * How much of the edge of [letters]' [fill] lies against [outline]:
+         * all round for an outline, which wraps every stroke; a stretch here
+         * and there for art that merely touches the lettering.
+         */
+        private fun wraps(letters: BooleanArray, fill: Int, outline: Int): Float {
+            val isFill = BooleanArray(n) { letters[it] && dist(px[it], fill) < COLOUR_TOL }
+            val against = dilate(BooleanArray(n) { dist(px[it], outline) < COLOUR_TOL }, w, h, 2)
+            var edge = 0
+            var touching = 0
+            for (i in 0 until n) {
+                if (!isFill[i]) continue
+                val x = i % w
+                val y = i / w
+                val onEdge = (x > 0 && !isFill[i - 1]) || (x < w - 1 && !isFill[i + 1]) ||
+                    (y > 0 && !isFill[i - w]) || (y < h - 1 && !isFill[i + w])
+                if (!onEdge) continue
+                edge++
+                if (against[i]) touching++
+            }
+            return if (edge == 0) 0f else touching.toFloat() / edge
         }
 
         /**
