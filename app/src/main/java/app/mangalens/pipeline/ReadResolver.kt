@@ -411,12 +411,16 @@ internal class ReadResolver(
                 kotlin.math.hypot((b.box.exactCenterX() - box.exactCenterX()).toDouble(), (b.box.exactCenterY() - box.exactCenterY()).toDouble()) <= reach
         }
         if (near.isEmpty()) return null
-        // Clean lettering where the box says: the box was right after all.
         val here = if (erasures.containsKey(item)) erasures[item] else {
             runCatching { TextEraser.erase(bitmap, item.box, item.kind, item.textColor, item.outlineColor) }
                 .getOrNull().also { erasures[item] = it }
         }
-        if (here != null && here.flat && here.busy < 0.3f) return null
+        // Clean lettering where the box says: the box was right after all —
+        // unless it is far too little of it. A face in line art on white
+        // skin reads as clean lettering too, but as a handful of marks
+        // where the line has a character for each.
+        val clean = here != null && here.flat && here.busy < 0.3f
+        if (clean && !scant(here!!, item)) return null
         // The nearest, counting lettering of another size as further off:
         // a box drifts with its line's size, and when a whole panel's boxes
         // slid, the balloon nearest a line's box can be its neighbour's.
@@ -427,8 +431,59 @@ internal class ReadResolver(
                     kotlin.math.exp(sizeGap(block, box))
             }
             ?: return null
+        if (clean && sizeGap(found.second, box) > SAME_SIZE) return null
         drift[found.first] = found.second
         return found.first
+    }
+
+    /** Characters in [item]'s source: what a line of its lettering is made of. */
+    private fun glyphs(item: PageItem): Int = item.src.count { !it.isWhitespace() }
+
+    /** True when [e] found under [item]'s box under half as many separate marks as the line has characters. */
+    private fun scant(e: Erasure, item: PageItem): Boolean = marks(e, item.box) * 2 < glyphs(item)
+
+    /**
+     * Separate marks in [e]'s mask in and just round [box]: its strokes'
+     * connected pieces, 8-neighbour, of a few pixels or more.
+     */
+    private fun marks(e: Erasure, box: Rect): Int {
+        val w = e.rect.width()
+        val h = e.rect.height()
+        if (w <= 0 || h <= 0) return 0
+        val m = (minOf(box.width(), box.height()) * INK_REACH).toInt() + 2
+        val x0 = (box.left - m - e.rect.left).coerceIn(0, w)
+        val y0 = (box.top - m - e.rect.top).coerceIn(0, h)
+        val x1 = (box.right + m - e.rect.left).coerceIn(0, w)
+        val y1 = (box.bottom + m - e.rect.top).coerceIn(0, h)
+        val seen = BooleanArray(w * h)
+        val stack = IntArray(w * h)
+        var count = 0
+        for (y in y0 until y1) for (x in x0 until x1) {
+            val start = y * w + x
+            if (!e.mask[start] || seen[start]) continue
+            var top = 0
+            var size = 0
+            stack[top++] = start
+            seen[start] = true
+            while (top > 0) {
+                val p = stack[--top]
+                size++
+                val px = p % w
+                val py = p / w
+                for (dy in -1..1) for (dx in -1..1) {
+                    val nx = px + dx
+                    val ny = py + dy
+                    if (nx < x0 || ny < y0 || nx >= x1 || ny >= y1) continue
+                    val q = ny * w + nx
+                    if (e.mask[q] && !seen[q]) {
+                        seen[q] = true
+                        stack[top++] = q
+                    }
+                }
+            }
+            if (size >= MIN_MARK_PX) count++
+        }
+        return count
     }
 
     /** A line [drifted] put back into its balloon, and how far its box had slid from the lettering there. */
@@ -439,15 +494,15 @@ internal class ReadResolver(
      * together. [drifted] puts back the lines whose boxes landed on bare
      * art, but a box that landed on art passing for a balloon — a face,
      * features and all under the box — is held there, and the face was
-     * wiped. When two lines within a panel's reach of one — twice as far
-     * as a box may drift — were put back by the same shift, a line held
+     * wiped. When two lines within a panel's reach of one were put back
+     * by the same shift, a line held
      * by a detection that holds no block of lettering moves by that shift
      * too, into a balloon no line claims whose lettering is its line's
      * size.
      */
     private fun slideAlong(usable: List<PageItem>, home: MutableList<Balloon?>, claimed: MutableSet<Balloon>, slid: List<Slide>) {
         if (slid.size < 2) return
-        val reach = bitmap.height * MAX_DRIFT * 2
+        val reach = bitmap.height * PANEL_REACH
         for (i in usable.indices) {
             val held = home[i] ?: continue
             if (slid.any { it.item == i }) continue
@@ -739,14 +794,20 @@ internal class ReadResolver(
         private const val SMALL_SFX_HEIGHT = 0.07f
 
         /** Furthest a line's box may have drifted from its balloon, as a share of the page's height. */
-        private const val MAX_DRIFT = 0.15f
+        private const val MAX_DRIFT = 0.2f
         private const val SMALL_SFX_WIDTH = 0.25f
 
         /** Mask cells a joined balloon's lobe reaches into its neighbour's, so the two cleanings overlap. */
         private const val SEAM_CELLS = 2
 
+        /** How far, as a share of the page's height, lines may be and still be one panel's for [slideAlong]. */
+        private const val PANEL_REACH = 0.3f
+
         /** Pixels two slides may differ by, at least, and still be the one shift of a panel. */
         private const val SLIDE_TOLERANCE_PX = 24
+
+        /** Pixels a piece of a mask needs to count as a mark of lettering rather than a speck. */
+        private const val MIN_MARK_PX = 6
 
         /** [sizeGap] within which a balloon's lettering is a line's own size. */
         private const val SAME_SIZE = 0.5

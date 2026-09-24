@@ -311,6 +311,42 @@ class ReadResolverTest {
         }
     }
 
+    /**
+     * A box drifted onto a face drawn in line art on white skin: to the
+     * eraser that is clean lettering on paper, so the line was lettered
+     * over the face and its balloon left raw. Two eyes and a mouth are far
+     * too few marks for a twelve-character line, and the balloon below
+     * holds lettering of the line's size.
+     */
+    @Test
+    fun aFaceUnderADriftedBoxIsNotTakenForItsLettering() {
+        val oval = Rect(300, 500, 500, 820)
+        val balloon = detection(oval, oval)
+        val bmp = Bitmap.createBitmap(800, 1400, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+        c.drawColor(Color.WHITE)
+        val stroke = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            style = android.graphics.Paint.Style.STROKE; strokeWidth = 4f; color = Color.BLACK
+        }
+        c.drawOval(android.graphics.RectF(oval), stroke.apply { strokeWidth = 5f })
+        val ink = android.graphics.Paint().apply { color = Color.BLACK }
+        // Two columns of six glyphs, two strokes each.
+        for (col in 0 until 2) for (g in 0 until 6) {
+            val x = 365f + col * 40
+            val y = 560f + g * 36
+            c.drawRect(x, y, x + 26, y + 5, ink)
+            c.drawRect(x + 10, y + 8, x + 16, y + 28, ink)
+        }
+        // The face the box landed on, 250 px higher.
+        stroke.strokeWidth = 4f
+        c.drawOval(android.graphics.RectF(362f, 330f, 388f, 350f), stroke)
+        c.drawOval(android.graphics.RectF(404f, 330f, 430f, 350f), stroke)
+        c.drawArc(android.graphics.RectF(380f, 430f, 412f, 450f), 0f, 180f, false, stroke)
+        val line = PageItem(Rect(360, 305, 436, 520), ItemKind.SPEECH, "確かに原理的\nには可能かも", "In theory it might be possible.", vertical = true)
+        val out = ReadResolver(bmp, listOf(balloon), emptyList(), 0, 0, emptyList()).resolve(listOf(line))
+        assertTrue("lettered in its balloon, not over the face", out.single().balloon === balloon)
+    }
+
     @Test
     fun cleanLetteringWhereTheBoxSaysKeepsItThere() {
         // Plain paper with the line drawn right where the box is, and a
