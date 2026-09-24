@@ -304,6 +304,61 @@ class TextEraserTest {
         assertOutsideMaskUntouched(page, after, e)
     }
 
+    /** Black hair: near-black with pale highlight strands, as inked hair is drawn. */
+    private fun hair(page: Bitmap, seed: Int, strands: Int = 200) {
+        val c = Canvas(page)
+        c.drawColor(Color.rgb(16, 16, 20))
+        val strand = Paint(Paint.ANTI_ALIAS_FLAG)
+        val rnd = Random(seed)
+        repeat(strands) {
+            val g = 190 + rnd.nextInt(60)
+            strand.color = Color.rgb(g, g, g)
+            strand.strokeWidth = 1.5f + rnd.nextFloat() * 2f
+            val x = rnd.nextFloat() * page.width
+            val y = rnd.nextFloat() * page.height
+            c.drawLine(x, y, x + 20f + rnd.nextFloat() * 60f, y + 40f + rnd.nextFloat() * 80f, strand)
+        }
+    }
+
+    @Test
+    fun `black text in a white halo over hair goes with its halo`() {
+        // The halo is the only paper near the words; filled with it, the
+        // text would stay on the hair as a white ghost of itself.
+        val page = blank()
+        hair(page, 2)
+        val art = page.copyOf()
+        val box = letter(page, "WHAT", 90f, 190f, textPaint(64f, Color.BLACK), outline = Color.WHITE, stroke = 12f)
+        val e = TextEraser.erase(page, box, ItemKind.THOUGHT)
+        assertNotNull(e)
+        val after = applied(page, e!!)
+        preview("halo_on_hair", page, after, e)
+        assertFalse("rebuilt from the hair, not exact", e.flat)
+        val pale = { b: Bitmap -> pixels(b, box).count { lum(it) > 160 } }
+        assertTrue("white halo left: ${pale(after)} px vs ${pale(art)} in the hair", pale(after) <= pale(art) + box.width() * box.height() / 50)
+        assertOutsideMaskUntouched(page, after, e)
+    }
+
+    @Test
+    fun `text in a white strip between black panels keeps its paper`() {
+        // Paper as tight round the words as a halo, but straight-edged: the
+        // gaps among the letters are paper, not art, and the strip stays white.
+        val page = blank(color = Color.rgb(16, 16, 20))
+        Canvas(page).drawRect(180f, 0f, 300f, 320f, Paint().apply { color = Color.WHITE })
+        hair(page, 5, strands = 70)
+        Canvas(page).drawRect(200f, 0f, 280f, 320f, Paint().apply { color = Color.WHITE })
+        val paint = textPaint(40f, Color.BLACK)
+        val boxes = listOf(letter(page, "N", 225f, 110f, paint), letter(page, "O", 225f, 160f, paint), letter(page, "!", 232f, 210f, paint))
+        val box = Rect(boxes[0]).apply { boxes.forEach { union(it) } }
+        val e = TextEraser.erase(page, box, ItemKind.THOUGHT)
+        assertNotNull(e)
+        val after = applied(page, e!!)
+        preview("strip_between_panels", page, after, e)
+        assertTrue("on paper, exact", e.flat)
+        val dark = pixels(after, box).count { lum(it) < 200 }
+        assertTrue("the strip stays white: $dark dark px", dark < box.width() * box.height() / 100)
+        assertOutsideMaskUntouched(page, after, e)
+    }
+
     @Test
     fun `a missed balloon's box that also takes in the figure and the burst's rays erases only the text`() {
         // A white burst balloon over a figure's textured clothes, cut off by

@@ -258,10 +258,11 @@ object TextEraser {
         val strokes = (if (flatShare < FLAT_SHARE) null else {
             scene.onPaper(fit, percentile(resHist, ringCount, 0.9f), outlineColor, robustTexture)
         })
-            ?: scene.onInnerPaper(outlineColor)
+            ?: scene.onInnerPaper(outlineColor, texture)
             ?: scene.onArt(textColor, outlineColor, grow, texture).also { flat = false }
             ?: scene.onInk(textColor, grow)
             ?: return null
+        if (!strokes.exact) flat = false
         if (strokes.tone > 0) retoned(chan, strokes, zone, w, h)?.let { (wide, out) ->
             return Cleaned(out, wide, true, background, strokes.fill or OPAQUE, strokes.outline?.or(OPAQUE), strokes.busy)
         }
@@ -290,6 +291,8 @@ object TextEraser {
         val tone: Int = 0,
         /** On a screentone, the pixels that are not tone: strokes and art the tone may not be copied from. */
         val untoned: BooleanArray? = null,
+        /** Rebuilt from paper, and so exactly; false where art was guessed at. */
+        val exact: Boolean = true,
     )
 
     /**
@@ -425,7 +428,7 @@ object TextEraser {
          * around the strokes — the white fill of outlined sound-effect
          * glyphs is as common, but broken up glyph by glyph.
          */
-        fun onInnerPaper(outlineColor: Int?): Strokes? {
+        fun onInnerPaper(outlineColor: Int?, texture: Float): Strokes? {
             val hist = IntArray(4096)
             var boxCount = 0
             for (i in 0 until n) if (zone[i] == BOX) { hist[bin(px[i])]++; boxCount++ }
@@ -451,7 +454,84 @@ object TextEraser {
             // Lettering in a missed balloon stands in its paper; the art
             // the box also caught — a figure's clothes, a burst's rays —
             // stands on the art.
-            return onPaper(fit, percentile(hist2, k, 0.9f), outlineColor, sum.toFloat() / max(1, k), within = near)
+            val strokes = onPaper(fit, percentile(hist2, k, 0.9f), outlineColor, sum.toFloat() / max(1, k), within = near)
+                ?: return null
+            return haloed(strokes, paper, texture) ?: strokes
+        }
+
+        /**
+         * Lettering whose paper is only its own outline: black text in a
+         * white halo over hair or a tone, which [onInnerPaper] takes for text
+         * in a knocked-out patch. Filled with that paper, the halo would stay
+         * on the art as a white ghost of the text. It is told apart by the
+         * art showing among the letters, where a balloon or a caption box
+         * has only paper, and by the paper ending within an outline's width
+         * of the strokes all round. The halo is then taken with them, and
+         * both are rebuilt from the art beyond.
+         */
+        private fun haloed(strokes: Strokes, paper: Int, texture: Float): Strokes? {
+            val mask = strokes.mask
+            val isPaper = BooleanArray(n) { dist(px[it], paper) < PAPER_TOL }
+            var x0 = w
+            var y0 = h
+            var x1 = -1
+            var y1 = -1
+            for (i in 0 until n) {
+                if (!mask[i] || zone[i] == RING) continue
+                x0 = min(x0, i % w)
+                x1 = max(x1, i % w)
+                y0 = min(y0, i / w)
+                y1 = max(y1, i / w)
+            }
+            if (x1 < 0) return null
+            val clear = dilate(mask, w, h, 1)
+            var free = 0
+            var art = 0
+            for (y in y0..y1) {
+                for (x in x0..x1) {
+                    val i = y * w + x
+                    if (clear[i]) continue
+                    free++
+                    if (!isPaper[i]) art++
+                }
+            }
+            if (free == 0 || art < free * HALO_ART) return null
+            // Paper's share of each ring round the strokes, a pixel wide, as
+            // far out as an outline is ever drawn: under a stroke's width and
+            // a half. A white strip or a balloon's paper reaches further.
+            val reach = max(4, halfStroke(mask, w, h) * 3 / 2 + 2)
+            val share = FloatArray(reach + HALO_BEYOND_RINGS + 1) { -1f }
+            var inside = mask
+            for (d in 1 until share.size) {
+                val grown = dilate(mask, w, h, d)
+                var all = 0
+                var paperAt = 0
+                for (i in 0 until n) {
+                    if (!grown[i] || inside[i]) continue
+                    all++
+                    if (isPaper[i]) paperAt++
+                }
+                inside = grown
+                if (all > 0) share[d] = paperAt.toFloat() / all
+            }
+            // The halo ends at the first ring that is mostly not paper, and
+            // what lies beyond it is the art, not more paper.
+            val width = (1..reach).firstOrNull { share[it] in 0f..HALO_EDGE } ?: return null
+            val beyond = (width + 1..width + HALO_BEYOND_RINGS).map { share[it] }.filter { it >= 0f }
+            if (beyond.isEmpty() || beyond.average() > HALO_BEYOND) return null
+            val within = dilate(mask, w, h, width)
+            val halo = BooleanArray(n) { mask[it] || (isPaper[it] && within[it]) }
+            // With the rim where the halo blends into the art.
+            val wide = dilate(halo, w, h, 2)
+            val band = dilate(wide, w, h, 1)
+            return Strokes(
+                mask = wide,
+                known = BooleanArray(n) { !band[it] },
+                fill = strokes.fill,
+                outline = paper,
+                busy = (0.35f + (texture - 3f) / 30f).coerceIn(0f, 1f),
+                exact = false,
+            )
         }
 
         /**
@@ -611,6 +691,22 @@ object TextEraser {
      * shares; a piece that far inside the box is a glyph the box cut short.
      */
     private const val CUT_GLYPH = 0.6f
+
+    /**
+     * Share of the gaps among the letters that is art rather than paper,
+     * past which the paper round them is their halo; a balloon, a caption
+     * box or a white strip between panels holds next to none.
+     */
+    private const val HALO_ART = 0.35f
+
+    /** Share of a ring round the strokes that is still paper, below which the halo has ended. */
+    private const val HALO_EDGE = 0.6f
+
+    /** The most of the rings just beyond a halo that may be paper; more is paper the text sits in. */
+    private const val HALO_BEYOND = 0.5f
+
+    /** Rings past a halo's edge that must show the art. */
+    private const val HALO_BEYOND_RINGS = 4
 
     /** Largest colour step between neighbours within one shaded fill. */
     private const val SHADE_STEP = 16
