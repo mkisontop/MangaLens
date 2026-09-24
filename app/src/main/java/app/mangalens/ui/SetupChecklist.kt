@@ -1,5 +1,6 @@
 package app.mangalens.ui
 
+import android.os.Build
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.Spring
@@ -69,11 +70,14 @@ private enum class TicketState { CURRENT, TODO, DONE }
 
 /**
  * First run: a sleeping Fuki and two tickets, "Let me float" and "Give me
- * a brain". One ticket is open at a time — the one tapped, otherwise the
- * next undone step — so the screen only ever asks for one thing. Fuki wakes
- * a step at a time as the tickets are done. The checklist stays up after
- * the last step (the caller's latch) so the reader sees it finish and taps
- * "All set, let's read!" themselves.
+ * a brain", then on Android 12 and later ([solidOffered]) an optional
+ * third, "Make the English solid". One ticket is open at a time — the one
+ * tapped, otherwise the next undone step — so the screen only ever asks
+ * for one thing. Fuki wakes a step at a time as the first two are done;
+ * the third is recommended, never required, so "All set, let's read!"
+ * shows as soon as the first two are, with the third open above it. The
+ * checklist stays up after the last step (the caller's latch) so the
+ * reader sees it finish and taps "All set, let's read!" themselves.
  *
  * The brain step counts as done only once the test line has answered: a
  * key still being tried might yet be refused, and a checklist that ticked
@@ -87,10 +91,14 @@ internal fun SetupChecklist(
     sayHi: SayHi,
     overlayGranted: Boolean,
     aiReady: Boolean,
+    solidOffered: Boolean,
+    solidLettering: Boolean,
     browser: String,
     onGrantOverlay: () -> Unit,
     onOpenAiTweaks: () -> Unit,
     onOpenOtherAi: () -> Unit,
+    onTurnOnSolid: () -> Unit,
+    onOpenAppInfo: () -> Unit,
     onAllSet: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -105,13 +113,16 @@ internal fun SetupChecklist(
     // opens by itself.
     LaunchedEffect(overlayGranted) { if (overlayGranted && tapped == 1) tapped = null }
     LaunchedEffect(brainDone, sayHi.phase) { if (brainDone && tapped == 2) tapped = null }
+    LaunchedEffect(solidLettering) { if (solidLettering && tapped == 3) tapped = null }
     val current = when {
         !overlayGranted -> 1
         !brainDone -> 2
+        solidOffered && !solidLettering -> 3
         else -> null
     }
     val expanded = tapped ?: current
-    val requesters = remember { listOf(BringIntoViewRequester(), BringIntoViewRequester(), BringIntoViewRequester()) }
+    // One per ticket, then "All set".
+    val requesters = remember { List(4) { BringIntoViewRequester() } }
     val doneCount = (if (overlayGranted) 1 else 0) + (if (brainDone) 1 else 0)
     var cheers by remember { mutableIntStateOf(0) }
     LaunchedEffect(sayHi.phase) { if (sayHi.phase is SayHi.Phase.Ok) cheers++ }
@@ -127,7 +138,8 @@ internal fun SetupChecklist(
             FukiStage(
                 Stage.SETUP, 104.dp, sfx = null,
                 onClick = {
-                    val target = expanded?.let { it - 1 } ?: if (doneCount == 2) 2 else 1
+                    // Awake, Fuki points at "All set", as it says; the optional ticket sits just above.
+                    val target = tapped?.let { it - 1 } ?: if (doneCount == 2) 3 else (current ?: 1) - 1
                     scope.launch { requesters[target].bringIntoView() }
                 },
                 setupDone = doneCount,
@@ -208,12 +220,28 @@ internal fun SetupChecklist(
             BrainStep(settings, drafts, sayHi, onOpenAiTweaks, onOpenOtherAi)
         }
 
+        if (solidOffered) {
+            Spacer(Modifier.height(16.dp))
+            Ticket(
+                number = 3,
+                title = "Make the English solid",
+                tag = "Optional",
+                state = stateOf(3, solidLettering),
+                expanded = expanded == 3,
+                requester = requesters[2],
+                onHeaderClick = { tapped = 3 },
+                done = { DoneLine("Done! My English is solid now.") },
+            ) {
+                SolidStep(onTurnOnSolid, onOpenAppInfo)
+            }
+        }
+
         AnimatedVisibility(
             visible = overlayGranted && brainDone,
             enter = expandVertically(tween(220)) + fadeIn(tween(220)),
             exit = shrinkVertically(tween(150)) + fadeOut(tween(150)),
         ) {
-            Column(Modifier.bringIntoViewRequester(requesters[2])) {
+            Column(Modifier.bringIntoViewRequester(requesters[3])) {
                 Spacer(Modifier.height(20.dp))
                 StickerButton("All set, let's read!", onAllSet, height = 64.dp)
             }
@@ -265,6 +293,7 @@ private fun DoneLine(text: String, modifier: Modifier = Modifier) {
  * step folds down to a single line on a pale yellow card, so what is
  * left to do stands out at a glance. A folded ticket's header is a
  * button, and the whole ticket sinks into its shadow while pressed.
+ * [tag] is a word under the title, such as "Optional".
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -275,6 +304,7 @@ private fun Ticket(
     expanded: Boolean,
     requester: BringIntoViewRequester,
     onHeaderClick: () -> Unit,
+    tag: String? = null,
     headerTrailing: (@Composable () -> Unit)? = null,
     done: @Composable ColumnScope.() -> Unit,
     body: @Composable ColumnScope.() -> Unit,
@@ -312,7 +342,7 @@ private fun Ticket(
                             onHeaderClick()
                         }
                         .semantics(mergeDescendants = true) {
-                            contentDescription = "Step $number, $title"
+                            contentDescription = "Step $number, $title" + (tag?.let { ", ${it.lowercase()}" } ?: "")
                             stateDescription = when (state) {
                                 TicketState.DONE -> "Done"
                                 TicketState.CURRENT -> "Next"
@@ -324,12 +354,12 @@ private fun Ticket(
                 ) {
                     StepBadge(number, state)
                     Spacer(Modifier.width(12.dp))
-                    Text(
-                        title,
-                        style = MaterialTheme.typography.titleLarge,
-                        color = pop.ink,
-                        modifier = Modifier.weight(1f).clearAndSetSemantics { },
-                    )
+                    Column(Modifier.weight(1f).clearAndSetSemantics { }) {
+                        Text(title, style = MaterialTheme.typography.titleLarge, color = pop.ink)
+                        if (tag != null) {
+                            Text(tag, style = MaterialTheme.typography.labelMedium, color = pop.inkSoft)
+                        }
+                    }
                 }
                 if (folded && headerTrailing != null) {
                     Spacer(Modifier.width(8.dp))
@@ -551,5 +581,48 @@ private fun ColumnScope.BrainStep(
     }
     if (provider == LlmProvider.GEMINI) {
         TextLink("Use Claude, OpenAI or another AI →", onOpenOtherAi)
+    }
+}
+
+/**
+ * Step 3, optional. Android keeps an overlay that lets touches through at
+ * most 80% solid, so a faint ghost of the original shows under every line;
+ * switched on in Accessibility, MangaLens letters in a window that is
+ * drawn as painted. On Android 13 and later a sideloaded app's switch is
+ * greyed out as a restricted setting until App info allows it, so that
+ * way round is spelled out too.
+ */
+@Composable
+private fun ColumnScope.SolidStep(onTurnOnSolid: () -> Unit, onOpenAppInfo: () -> Unit) {
+    val pop = LocalPop.current
+    Text(
+        "Android lets a see-through overlay be at most 80% solid, so the original text shows faintly under my English. " +
+            "Turn MangaLens on in Accessibility and I letter at full strength.",
+        style = MaterialTheme.typography.bodyLarge,
+        color = pop.inkSoft,
+    )
+    Spacer(Modifier.height(6.dp))
+    Text(
+        "This switch only lets me draw: it can't read your screen or tap anything.",
+        style = MaterialTheme.typography.bodyMedium,
+        color = pop.inkSoft,
+    )
+    Spacer(Modifier.height(12.dp))
+    StickerButton("Turn it on ↗", onTurnOnSolid)
+    Spacer(Modifier.height(8.dp))
+    Text(
+        "Find MangaLens in the list, switch it on and tap Allow, then come back.",
+        style = MaterialTheme.typography.bodyMedium,
+        color = pop.inkSoft,
+    )
+    if (Build.VERSION.SDK_INT >= 33) {
+        Spacer(Modifier.height(12.dp))
+        Text(
+            "Switch greyed out as a “Restricted setting”? Open App info, tap ⋮ → Allow restricted settings, then try again.",
+            style = MaterialTheme.typography.bodyMedium,
+            color = pop.inkSoft,
+        )
+        Spacer(Modifier.height(8.dp))
+        StickerButton("Open App info ↗", onOpenAppInfo, style = StickerStyle.Surface, height = 48.dp)
     }
 }

@@ -88,7 +88,9 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.DialogProperties
 import androidx.compose.ui.window.DialogWindowProvider
+import androidx.lifecycle.compose.LifecycleResumeEffect
 import app.mangalens.capture.ScreenCaptureService
+import app.mangalens.overlay.LetteringHost
 import app.mangalens.settings.AppSettings
 import app.mangalens.settings.CaptureMode
 import app.mangalens.settings.SettingsRepository
@@ -107,6 +109,14 @@ internal data class HomeUiState(
     val running: Boolean = false,
     val paused: Boolean = false,
     val overlayGranted: Boolean = false,
+    /**
+     * Whether "Make the English solid" is offered at all: Android 12 and
+     * later hold a see-through overlay to 80% opacity, and before that the
+     * lettering is drawn as painted, so there is nothing to switch on.
+     */
+    val solidOffered: Boolean = Build.VERSION.SDK_INT >= 31,
+    /** MangaLens is on in Accessibility, so the lettering is drawn at full strength. */
+    val solidLettering: Boolean = false,
     /** "Brave" when it is installed, else null and the copy says "your browser". */
     val browserName: String? = null,
     /** The last GO ended at the screen-capture dialog's Cancel. */
@@ -123,6 +133,10 @@ internal class HomeActions(
     val onGrantOverlay: () -> Unit = {},
     val onTogglePause: () -> Unit = {},
     val onOpenBrowser: () -> Unit = {},
+    /** Accessibility settings, where solid lettering is switched on. */
+    val onTurnOnSolid: () -> Unit = {},
+    /** App info, where Android 13 and later allow a restricted setting. */
+    val onOpenAppInfo: () -> Unit = {},
 )
 
 private enum class Page { HOME, TWEAKS }
@@ -143,6 +157,8 @@ fun HomeScreen(
     onGrantOverlay: () -> Unit,
     onTogglePause: () -> Unit,
     onOpenBrowser: () -> Unit,
+    onTurnOnSolid: () -> Unit,
+    onOpenAppInfo: () -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -161,6 +177,13 @@ fun HomeScreen(
             reducedMotion = animationsOff(context)
             delay(1000)
         }
+    }
+    // Solid lettering is switched on in Settings, so it is checked again
+    // each time the reader comes back.
+    var solidLettering by remember { mutableStateOf(LetteringHost.isOn(context)) }
+    LifecycleResumeEffect(Unit) {
+        solidLettering = LetteringHost.isOn(context)
+        onPauseOrDispose { }
     }
 
     // One anonymous check per app open; a sticker only when a newer release exists.
@@ -182,8 +205,8 @@ fun HomeScreen(
     val sink = remember(repo, scope) { RepoSink(scope, repo) }
     val drafts = rememberAiDrafts(settings ?: AppSettings(), sink)
     val sayHi = remember(scope) { SayHi(scope) }
-    val actions = remember(onStart, onStop, onGrantOverlay, onTogglePause, onOpenBrowser) {
-        HomeActions(onStart, onStop, onGrantOverlay, onTogglePause, onOpenBrowser)
+    val actions = remember(onStart, onStop, onGrantOverlay, onTogglePause, onOpenBrowser, onTurnOnSolid, onOpenAppInfo) {
+        HomeActions(onStart, onStop, onGrantOverlay, onTogglePause, onOpenBrowser, onTurnOnSolid, onOpenAppInfo)
     }
     CompositionLocalProvider(LocalReducedMotion provides reducedMotion) {
         HomeContent(
@@ -192,6 +215,7 @@ fun HomeScreen(
                 running = running,
                 paused = paused,
                 overlayGranted = overlayGranted,
+                solidLettering = solidLettering,
                 browserName = browserName,
                 startRefused = startRefused,
                 update = update,
@@ -309,6 +333,10 @@ internal fun HomeContent(
                         sayHi = sayHi,
                         target = target,
                         versionName = state.versionName,
+                        solidOffered = state.solidOffered,
+                        solidLettering = state.solidLettering,
+                        onTurnOnSolid = actions.onTurnOnSolid,
+                        onOpenAppInfo = actions.onOpenAppInfo,
                         onClose = { page = Page.HOME },
                     )
                 }
@@ -375,10 +403,14 @@ private fun HomePage(
                         sayHi = sayHi,
                         overlayGranted = state.overlayGranted,
                         aiReady = aiReady,
+                        solidOffered = state.solidOffered,
+                        solidLettering = state.solidLettering,
                         browser = browser,
                         onGrantOverlay = actions.onGrantOverlay,
                         onOpenAiTweaks = { openTweaks(TweaksTarget.AI) },
                         onOpenOtherAi = { openTweaks(TweaksTarget.OTHER_AI) },
+                        onTurnOnSolid = actions.onTurnOnSolid,
+                        onOpenAppInfo = actions.onOpenAppInfo,
                         onAllSet = onAllSet,
                     )
                     Spacer(Modifier.height(20.dp))

@@ -15,11 +15,13 @@ import androidx.compose.runtime.setValue
 import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
+import androidx.compose.ui.semantics.SemanticsActions
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
 import androidx.compose.ui.test.performClick
 import androidx.compose.ui.test.performScrollTo
+import androidx.compose.ui.test.performSemanticsAction
 import androidx.compose.ui.unit.Density
 import app.mangalens.settings.AppSettings
 import app.mangalens.settings.CaptureMode
@@ -30,6 +32,7 @@ import app.mangalens.translate.GeminiRateLimited
 import app.mangalens.update.UpdateChecker
 import java.io.File
 import java.io.FileOutputStream
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Rule
 import org.junit.Test
@@ -67,6 +70,9 @@ class UiScreenshotTest {
     /** What the stand-in AI answers the test line with. */
     private var attempt: suspend (AppSettings) -> String = { LETTERED }
 
+    /** What the screen asks the activity to do; nothing, unless a test counts the asks. */
+    private var actions = HomeActions()
+
     /** A placeholder that passes the paste check; it is not in any provider's key format. */
     private val keyed = AppSettings(apiKey = "test-key-" + "x".repeat(24))
 
@@ -99,7 +105,7 @@ class UiScreenshotTest {
             val scope = rememberCoroutineScope()
             val hi = remember { SayHi(scope) { attempt(it) }.also { it.phase = phase; sayHi = it } }
             val drafts = rememberAiDrafts(ui.settings ?: AppSettings(), NoSink)
-            HomeContent(ui, drafts, hi, NoSink, HomeActions())
+            HomeContent(ui, drafts, hi, NoSink, actions)
         }
         compose.waitForIdle()
     }
@@ -177,6 +183,49 @@ class UiScreenshotTest {
         compose.waitForIdle()
         compose.onNodeWithText("All set, let's read!").performScrollTo()
         both("05-demo-after")
+    }
+
+    @Test
+    fun `05b setup, the optional step open above All set`() {
+        var turnOn = 0
+        var appInfo = 0
+        actions = HomeActions(onTurnOnSolid = { turnOn++ }, onOpenAppInfo = { appInfo++ })
+        home(HomeUiState(AppSettings(), overlayGranted = true, browserName = "Brave"))
+        sayHi.phase = SayHi.Phase.Ok(LETTERED)
+        ui = ui.copy(settings = keyed)
+        compose.waitForIdle()
+        // Optional: the two steps done are enough for "All set", with the third still open.
+        compose.onNodeWithText("All set, let's read!").assertExists()
+        compose.onNodeWithText("Turn it on ↗").performScrollTo().performClick()
+        compose.onNodeWithText("Open App info ↗").performScrollTo().performClick()
+        assertEquals(1, turnOn)
+        assertEquals(1, appInfo)
+        both("05b-setup-solid-step")
+    }
+
+    @Test
+    fun `05c setup, solid lettering on`() {
+        home(HomeUiState(AppSettings(), overlayGranted = true, solidLettering = true, browserName = "Brave"))
+        sayHi.phase = SayHi.Phase.Ok(LETTERED)
+        ui = ui.copy(settings = keyed)
+        compose.waitForIdle()
+        compose.onNodeWithText("Done! My English is solid now.").assertExists()
+        compose.onNodeWithText("Turn it on ↗").assertDoesNotExist()
+        compose.onNodeWithText("All set, let's read!").performScrollTo()
+        both("05c-setup-solid-done")
+    }
+
+    @Test
+    fun `05d on Android 11 there is nothing to make solid`() {
+        home(HomeUiState(AppSettings(), overlayGranted = true, solidOffered = false, browserName = "Brave"))
+        sayHi.phase = SayHi.Phase.Ok(LETTERED)
+        ui = ui.copy(settings = keyed)
+        compose.waitForIdle()
+        compose.onNodeWithContentDescription("Make the English solid", substring = true).assertDoesNotExist()
+        compose.onNodeWithText("All set, let's read!").performScrollTo().performClick()
+        compose.onNodeWithContentDescription("Tweaks:", substring = true).performScrollTo().performClick()
+        compose.onNodeWithText("How big I letter the English on the page.").performScrollTo()
+        compose.onNodeWithText("Solid lettering", substring = true).assertDoesNotExist()
     }
 
     @Test
@@ -285,6 +334,33 @@ class UiScreenshotTest {
     }
 
     @Test
+    fun `14d tweaks, solid lettering off, then on`() {
+        var turnOn = 0
+        actions = HomeActions(onTurnOnSolid = { turnOn++ })
+        home(HomeUiState(keyed, overlayGranted = true, browserName = "Brave"))
+        compose.onNodeWithContentDescription("Tweaks:", substring = true).performScrollTo().performClick()
+        compose.onNodeWithText("Greyed out? Allow it in App info ↗").performScrollTo()
+        compose.onNodeWithContentDescription("Turn on solid lettering in Accessibility").performClick()
+        assertEquals(1, turnOn)
+        both("14d-tweaks-solid-off")
+        // Back from Accessibility with it switched on: a tick, and nothing left to do.
+        ui = ui.copy(solidLettering = true)
+        compose.waitForIdle()
+        compose.onNodeWithText("Solid lettering · on ✓").performScrollTo()
+        compose.onNodeWithContentDescription("Turn on solid lettering in Accessibility").assertDoesNotExist()
+        both("14e-tweaks-solid-on")
+    }
+
+    @Test
+    fun `14f tweaks, solid lettering off at double font size`() {
+        // Large text stacks the button under the words instead of squeezing them.
+        home(HomeUiState(keyed, overlayGranted = true, browserName = "Brave"), fontScale = 2f)
+        compose.onNodeWithContentDescription("Tweaks:", substring = true).performScrollTo().performClick()
+        compose.onNodeWithText("Greyed out? Allow it in App info ↗").performScrollTo()
+        both("14f-tweaks-solid-font-2x")
+    }
+
+    @Test
     fun `15 celebration, light`() = celebration(false)
 
     @Test
@@ -299,7 +375,11 @@ class UiScreenshotTest {
         ui = ui.copy(settings = keyed)
         Snapshot.sendApplyNotifications()
         compose.mainClock.advanceTimeBy(600)
-        compose.onNodeWithText("All set, let's read!").performScrollTo().performClick()
+        // The optional third step is open above "All set", which puts it below
+        // the fold, and a scroll is an animation this paused clock never runs:
+        // the tap goes straight to the button's click. The screen it leaves
+        // is replaced by the celebration, so where it was scrolled to is moot.
+        compose.onNodeWithText("All set, let's read!").performSemanticsAction(SemanticsActions.OnClick)
         compose.mainClock.advanceTimeBy(520)
         capture("15-celebration-" + if (isDark) "dark" else "light")
     }

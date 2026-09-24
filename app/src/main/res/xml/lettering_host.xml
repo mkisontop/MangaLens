@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    The lettering host asks for no events (there is no
+    accessibilityEventTypes), no window content and no gestures. All it is
+    for is the window an accessibility service may add, which Android draws
+    at full strength (see LetteringHostService).
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:canPerformGestures="false"
+    android:canRetrieveWindowContent="false"
+    android:description="@string/lettering_host_description"
+    android:isAccessibilityTool="false"
+    android:summary="@string/lettering_host_summary" />
