@@ -86,6 +86,45 @@ class BalloonTrustTest {
         assertTrue(BalloonTrust.holdsOnly(glyphs, detection(), listOf(column)))
     }
 
+    /** A white balloon holding [columns] of seven glyphs each, glyphs [g] px apart, with [extra] drawn after. */
+    private fun columnsPage(columns: List<Float>, extra: (Canvas) -> Unit = {}): Bitmap =
+        Bitmap.createBitmap(600, 500, Bitmap.Config.ARGB_8888).apply {
+            val c = Canvas(this)
+            c.drawColor(Color.rgb(90, 90, 90))
+            c.drawOval(RectF(region), Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE })
+            val ink = Paint().apply { color = Color.BLACK }
+            for (x in columns) for (k in 0 until 7) c.drawRect(x, 150f + k * 30, x + 24, 150f + k * 30 + 24, ink)
+            extra(c)
+        }
+
+    @Test
+    fun aColumnTheBoxStoppedShortOfIsLetteringAllTheWayDown() {
+        // The model's box round the first two of seven glyphs.
+        val short = Rect(290, 148, 316, 206)
+        assertTrue(BalloonTrust.holdsOnly(columnsPage(listOf(290f)), detection(), listOf(short)))
+    }
+
+    @Test
+    fun twoColumnsBoxedShortSideBySideAreLettering() {
+        // One balloon, two columns, answered as two lines whose boxes each
+        // stop two glyphs in: each column's rest counted against the other.
+        val right = Rect(320, 148, 346, 206)
+        val left = Rect(284, 178, 310, 236)
+        assertTrue(BalloonTrust.holdsOnly(columnsPage(listOf(284f, 320f)), detection(), listOf(right, left)))
+    }
+
+    @Test
+    fun aLineIsNotGrownIntoArtWiderThanItsColumn() {
+        // A column the box covers, and right under it a hand drawn three
+        // glyphs wide: the rest of the line stops where the art starts.
+        val page = columnsPage(listOf(290f)) { c ->
+            val ink = Paint().apply { color = Color.BLACK }
+            c.drawRect(230f, 364f, 370f, 404f, ink)
+        }
+        val column = Rect(290, 148, 316, 356)
+        assertFalse(BalloonTrust.holdsOnly(page, detection(), listOf(column)))
+    }
+
     @Test
     fun aFaceIsNotABalloon() {
         val face = page(Color.WHITE) { c ->

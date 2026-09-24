@@ -73,6 +73,9 @@ internal object BalloonTrust {
     /** Share of a column's ink that may lie beyond that span before it is art. */
     private const val MAX_SPILL = 0.25f
 
+    /** Turns the growth across and along the lettering's lines take at most. */
+    private const val GROWTH_ROUNDS = 3
+
     /**
      * True when [balloon]'s interior holds nothing but the lettering in
      * [text] — boxes in page pixels, grown a little here for their margin
@@ -136,7 +139,35 @@ internal object BalloonTrust {
     private fun withNeighbours(bitmap: Bitmap, balloon: Balloon, text: List<Rect>): List<Rect> {
         if (text.isEmpty()) return text
         val grid = inkGrid(bitmap, balloon) ?: return text
-        return text.map { grow(grid, it) }
+        return sideBySide(text).map { grow(grid, it) }
+    }
+
+    /**
+     * [text] with boxes set side by side — no more than a line's width
+     * apart — taken together: two columns of one balloon the model boxed
+     * as two lines, each short of its column's end, grew no further along
+     * than the other's ink, which counted against them both.
+     */
+    private fun sideBySide(text: List<Rect>): List<Rect> {
+        val out = text.map { Rect(it) }.toMutableList()
+        var merged = true
+        while (merged) {
+            merged = false
+            loop@ for (i in out.indices) for (j in i + 1 until out.size) {
+                val a = out[i]
+                val b = out[j]
+                val line = minOf(minOf(a.width(), a.height()), minOf(b.width(), b.height()))
+                val dx = maxOf(0, maxOf(a.left, b.left) - minOf(a.right, b.right))
+                val dy = maxOf(0, maxOf(a.top, b.top) - minOf(a.bottom, b.bottom))
+                if (dx <= line && dy <= line) {
+                    a.union(b)
+                    out.removeAt(j)
+                    merged = true
+                    break@loop
+                }
+            }
+        }
+        return out
     }
 
     private class InkGrid(val left: Int, val top: Int, val w: Int, val h: Int, val ink: BooleanArray) {
@@ -178,7 +209,14 @@ internal object BalloonTrust {
         return InkGrid(left, top, w, h, ink)
     }
 
-    /** [t] grown column by column (or row by row) over the ink that continues it. */
+    /**
+     * [t] grown over the ink that continues it: column by column (or row
+     * by row) across, and glyph by glyph along its own lines — the model's
+     * box often stops a glyph or two short of either end of a column, and
+     * those glyphs are the same line's lettering, not art in the balloon.
+     * A run along the line joins only while its ink keeps to the lines
+     * already taken; the two growths take turns until neither adds more.
+     */
     private fun grow(g: InkGrid, t: Rect): Rect {
         var x0 = g.gx(t.left)
         var x1 = g.gx(t.right - 1)
@@ -196,36 +234,62 @@ internal object BalloonTrust {
             t.width() >= t.height() * SQUARISH -> false
             else -> cols.size >= rows.size
         }
-        if (vertical) {
-            val glyph = cols.map { it.last - it.first + 1 }.sorted().let { if (it.isEmpty()) x1 - x0 + 1 else it[it.size / 2] }
-            val reach = maxOf(1, (glyph * NEIGHBOUR_GAP).toInt())
-            val span0 = (y0 - glyph * SPAN_SLACK).toInt().coerceAtLeast(0)
-            val span1 = (y1 + glyph * SPAN_SLACK).toInt().coerceAtMost(g.h - 1)
-            while (true) {
-                val next = nextRun(x0 - 1, -1, reach, g.w) { x -> anyInk(g, x, x, span0, span1) } ?: break
-                if (!fits(next, glyph) || strays(g, next.first, next.last, span0, span1, vertical = true)) break
-                x0 = minOf(next.first, next.last)
-            }
-            while (true) {
-                val next = nextRun(x1 + 1, 1, reach, g.w) { x -> anyInk(g, x, x, span0, span1) } ?: break
-                if (!fits(next, glyph) || strays(g, next.first, next.last, span0, span1, vertical = true)) break
-                x1 = maxOf(next.first, next.last)
-            }
+        val glyph = if (vertical) {
+            cols.map { it.last - it.first + 1 }.sorted().let { if (it.isEmpty()) x1 - x0 + 1 else it[it.size / 2] }
         } else {
-            val glyph = rows.map { it.last - it.first + 1 }.sorted().let { if (it.isEmpty()) y1 - y0 + 1 else it[it.size / 2] }
-            val reach = maxOf(1, (glyph * NEIGHBOUR_GAP).toInt())
-            val span0 = (x0 - glyph * SPAN_SLACK).toInt().coerceAtLeast(0)
-            val span1 = (x1 + glyph * SPAN_SLACK).toInt().coerceAtMost(g.w - 1)
-            while (true) {
-                val next = nextRun(y0 - 1, -1, reach, g.h) { y -> anyInk(g, span0, span1, y, y) } ?: break
-                if (!fits(next, glyph) || strays(g, span0, span1, next.first, next.last, vertical = false)) break
-                y0 = minOf(next.first, next.last)
+            rows.map { it.last - it.first + 1 }.sorted().let { if (it.isEmpty()) y1 - y0 + 1 else it[it.size / 2] }
+        }
+        val reach = maxOf(1, (glyph * NEIGHBOUR_GAP).toInt())
+        for (round in 0 until GROWTH_ROUNDS) {
+            val before = listOf(x0, x1, y0, y1)
+            if (vertical) {
+                val span0 = (y0 - glyph * SPAN_SLACK).toInt().coerceAtLeast(0)
+                val span1 = (y1 + glyph * SPAN_SLACK).toInt().coerceAtMost(g.h - 1)
+                while (true) {
+                    val next = nextRun(x0 - 1, -1, reach, g.w) { x -> anyInk(g, x, x, span0, span1) } ?: break
+                    if (!fits(next, glyph) || strays(g, next.first, next.last, span0, span1, vertical = true)) break
+                    x0 = minOf(next.first, next.last)
+                }
+                while (true) {
+                    val next = nextRun(x1 + 1, 1, reach, g.w) { x -> anyInk(g, x, x, span0, span1) } ?: break
+                    if (!fits(next, glyph) || strays(g, next.first, next.last, span0, span1, vertical = true)) break
+                    x1 = maxOf(next.first, next.last)
+                }
+                while (true) {
+                    val next = nextRun(y0 - 1, -1, reach, g.h) { y -> anyInk(g, x0, x1, y, y) } ?: break
+                    if (strays(g, x0, x1, next.first, next.last, vertical = false)) break
+                    y0 = minOf(next.first, next.last)
+                }
+                while (true) {
+                    val next = nextRun(y1 + 1, 1, reach, g.h) { y -> anyInk(g, x0, x1, y, y) } ?: break
+                    if (strays(g, x0, x1, next.first, next.last, vertical = false)) break
+                    y1 = maxOf(next.first, next.last)
+                }
+            } else {
+                val span0 = (x0 - glyph * SPAN_SLACK).toInt().coerceAtLeast(0)
+                val span1 = (x1 + glyph * SPAN_SLACK).toInt().coerceAtMost(g.w - 1)
+                while (true) {
+                    val next = nextRun(y0 - 1, -1, reach, g.h) { y -> anyInk(g, span0, span1, y, y) } ?: break
+                    if (!fits(next, glyph) || strays(g, span0, span1, next.first, next.last, vertical = false)) break
+                    y0 = minOf(next.first, next.last)
+                }
+                while (true) {
+                    val next = nextRun(y1 + 1, 1, reach, g.h) { y -> anyInk(g, span0, span1, y, y) } ?: break
+                    if (!fits(next, glyph) || strays(g, span0, span1, next.first, next.last, vertical = false)) break
+                    y1 = maxOf(next.first, next.last)
+                }
+                while (true) {
+                    val next = nextRun(x0 - 1, -1, reach, g.w) { x -> anyInk(g, x, x, y0, y1) } ?: break
+                    if (strays(g, next.first, next.last, y0, y1, vertical = true)) break
+                    x0 = minOf(next.first, next.last)
+                }
+                while (true) {
+                    val next = nextRun(x1 + 1, 1, reach, g.w) { x -> anyInk(g, x, x, y0, y1) } ?: break
+                    if (strays(g, next.first, next.last, y0, y1, vertical = true)) break
+                    x1 = maxOf(next.first, next.last)
+                }
             }
-            while (true) {
-                val next = nextRun(y1 + 1, 1, reach, g.h) { y -> anyInk(g, span0, span1, y, y) } ?: break
-                if (!fits(next, glyph) || strays(g, span0, span1, next.first, next.last, vertical = false)) break
-                y1 = maxOf(next.first, next.last)
-            }
+            if (listOf(x0, x1, y0, y1) == before) break
         }
         return Rect(
             minOf(t.left, g.px(x0)), minOf(t.top, g.py(y0)),
