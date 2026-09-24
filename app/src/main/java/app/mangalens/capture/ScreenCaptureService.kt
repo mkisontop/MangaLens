@@ -850,7 +850,10 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         val p = Prepared(bmp)
         val current = settings
         p.job = scope.async(Dispatchers.Default) {
-            p.adopt(pipeline.startRead(bmp, current, readScope))
+            // Encoding the page for the model and reading it on-device need
+            // nothing from each other: the request is prepared and sent
+            // while the analysis runs. The job ends when both have.
+            launch { p.adopt(pipeline.startRead(bmp, current, readScope)) }
             FrameStability.grayThumbOf(bmp) to pipeline.analyze(bmp, current, exclusions)
         }
         prepared = p

@@ -269,8 +269,11 @@ class TranslatePipeline(
 
         // ML Kit misses small and stylized lettering it would read fine at
         // twice the size. A balloon it read nothing in is cropped from the
-        // full-resolution frame, enlarged, and read again on its own.
-        val rereads = reread(bitmap, scan.balloons, firstPass, settings)
+        // full-resolution frame, enlarged, and read again on its own —
+        // unless the model is reading the page itself: then OCR only backs
+        // up the model, and the lettering remembered from the last stop
+        // should not wait on crops the model will read anyway.
+        val rereads = if (readsAiFirst(settings)) emptyList() else reread(bitmap, scan.balloons, firstPass, settings)
         val lines = if (rereads.isEmpty()) firstPass.lines else firstPass.lines + rereads
         val ocrResult = OcrEngine.Result(lines, firstPass.lang)
 
@@ -400,7 +403,9 @@ class TranslatePipeline(
             val raw = readPath(analysis, settings, wrapped, read)
             val result = raw.copy(bubbles = soleClaimants(raw.bubbles))
             val diag = analysis.diag
-            return if (diag == null) result else result.copy(
+            // The read's own timings are diagnostics too: with them off the
+            // status pill says what it always says.
+            return if (diag == null) result.copy(diag = null) else result.copy(
                 diag = "$diag · cards ${result.bubbles.size}" + (raw.diag?.let { " · $it" } ?: ""),
                 balloons = analysis.balloons,
                 panels = analysis.panels,
@@ -688,6 +693,12 @@ class TranslatePipeline(
                 paint(reader.label)
             }
         } catch (e: CancellationException) {
+            // The reader moved on mid-read, usually having read what was
+            // shown. That much is remembered, so the next stop repaints it
+            // rather than waiting for the model to read it again. The
+            // collector has stopped: nothing adds to the list any more.
+            val shown = ArrayList(streamed)
+            if (shown.isNotEmpty()) runCatching { memory.remember(bitmap, Wording.keep(recalled, fresh(shown))) }
             throw e
         } catch (e: Exception) {
             failure = e
@@ -1226,7 +1237,13 @@ class TranslatePipeline(
     ): RenderBubble {
         // Art that passed for a balloon — a face, a highlight — is never
         // wiped: only a detection holding nothing but this lettering is.
-        val balloon = balloonFor(box, detected)?.takeIf { BalloonTrust.holdsOnly(bitmap, it, listOf(box)) }
+        // OCR often reads only part of a balloon, so a balloon whose ink is
+        // one compact block of lettering around the part it did read is
+        // lettering too; a face's ink is spread thin across it.
+        val balloon = balloonFor(box, detected)?.takeIf {
+            BalloonTrust.holdsOnly(bitmap, it, listOf(box)) ||
+                BalloonTrust.letteringBlock(bitmap, it)?.let { block -> Rect.intersects(block, box) } == true
+        }
         val bg = if (balloon != null) PageColors.interiorColor(bitmap, balloon) else PageColors.sampleBackground(bitmap, box)
         val textColor = when {
             balloon?.inverted == true -> 0xFFF2F3F7.toInt()

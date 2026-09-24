@@ -33,8 +33,8 @@ internal object BalloonTrust {
     /** Length to thickness past which a text box is a line, with a direction to run on in. */
     private const val LINE_ASPECT = 1.5f
 
-    /** Share of the interior that is ink in a balloon holding a line of text. */
-    private const val MIN_LETTERING = 0.02f
+    /** Share of the interior that is ink in a balloon holding any text at all; a short line in a big balloon is little. */
+    private const val MIN_LETTERING = 0.005f
 
     /** Share of its own bounds a block of lettering's ink fills; features of a face fill far less. */
     private const val MIN_BLOCK_DENSITY = 0.12f

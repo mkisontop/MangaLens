@@ -101,6 +101,34 @@ class BalloonTrustTest {
     }
 
     @Test
+    fun aBalloonsLetteringIsFoundAsOneBlockEvenWhereOcrReadOnlyPartOfIt() {
+        val block = BalloonTrust.letteringBlock(page(Color.WHITE), detection())
+        assertTrue("found ($block)", block != null && Rect.intersects(block, text))
+        val empty = Bitmap.createBitmap(600, 500, Bitmap.Config.ARGB_8888).apply {
+            val c = Canvas(this)
+            c.drawColor(Color.rgb(90, 90, 90))
+            c.drawOval(RectF(region), Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE })
+        }
+        assertTrue("an empty balloon holds none", BalloonTrust.letteringBlock(empty, detection()) == null)
+    }
+
+    @Test
+    fun aFacesFeaturesAreNotABlockOfLettering() {
+        val face = Bitmap.createBitmap(600, 500, Bitmap.Config.ARGB_8888).apply {
+            val c = Canvas(this)
+            c.drawColor(Color.rgb(90, 90, 90))
+            c.drawOval(RectF(region), Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE })
+            val line = Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 4f; color = Color.BLACK }
+            c.drawOval(RectF(160f, 170f, 220f, 210f), line)
+            c.drawOval(RectF(380f, 170f, 440f, 210f), line)
+            c.drawLine(150f, 150f, 230f, 140f, line)
+            c.drawLine(370f, 140f, 450f, 150f, line)
+            c.drawArc(RectF(200f, 320f, 400f, 380f), 0f, 180f, false, line)
+        }
+        assertTrue(BalloonTrust.letteringBlock(face, detection()) == null)
+    }
+
+    @Test
     fun screentoneIsNotABalloon() {
         val tone = page(Color.WHITE) { c ->
             val dot = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(150, 150, 150) }
