@@ -623,7 +623,7 @@ class TranslatePipeline(
         fun elapsed() = (System.nanoTime() - started) / 1_000_000
         val resolver = ReadResolver(
             bitmap, analysis.detected, analysis.anchorLines,
-            analysis.ignoreTop, analysis.ignoreBottom, analysis.exclusions,
+            analysis.ignoreTop, analysis.ignoreBottom, analysis.exclusions, analysis.panels,
         )
 
         // Scroll-backs and re-reads: the whole page from cache, no network.

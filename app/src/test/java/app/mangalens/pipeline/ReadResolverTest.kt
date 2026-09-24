@@ -136,6 +136,87 @@ class ReadResolverTest {
         assertTrue("the balloon is still cleaned and typeset", out.any { it.translated == speech.en && it.balloon === balloon })
     }
 
+    /** A phone-tall page of busy art with a white balloon at [oval], lettered unless [empty]. */
+    private fun artWithBalloon(oval: Rect, empty: Boolean = false): Bitmap {
+        val bmp = Bitmap.createBitmap(800, 2000, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+        c.drawColor(Color.rgb(150, 150, 150))
+        val rnd = java.util.Random(3)
+        val p = android.graphics.Paint()
+        repeat(3000) {
+            p.color = Color.rgb(rnd.nextInt(120), rnd.nextInt(120), rnd.nextInt(120))
+            val x = rnd.nextInt(800).toFloat()
+            val y = rnd.nextInt(2000).toFloat()
+            c.drawRect(x, y, x + 4 + rnd.nextInt(12), y + 2 + rnd.nextInt(6), p)
+        }
+        c.drawOval(android.graphics.RectF(oval), android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE })
+        if (!empty) {
+            p.color = Color.BLACK
+            for (k in 0 until 4) c.drawRect(oval.centerX() - 15f, oval.top + 60f + k * 50, oval.centerX() + 15f, oval.top + 95f + k * 50, p)
+        }
+        return bmp
+    }
+
+    @Test
+    fun aLineWhoseBoxDriftedOntoTheArtGoesBackToItsBalloon() {
+        val oval = Rect(300, 500, 500, 820)
+        val balloon = detection(oval, oval)
+        val page = artWithBalloon(oval)
+        // The model's box landed 250 px above the balloon, on the art.
+        val line = PageItem(Rect(370, 300, 430, 470), ItemKind.SPEECH, "違うって、それ！", "No, that's not it!", vertical = true)
+        val out = ReadResolver(page, listOf(balloon), emptyList(), 0, 0, emptyList()).resolve(listOf(line))
+        assertEquals(1, out.size)
+        assertTrue("lettered in the balloon it came from", out[0].balloon === balloon)
+    }
+
+    @Test
+    fun anEmptyBalloonNearbyDoesNotClaimALine() {
+        val oval = Rect(300, 500, 500, 820)
+        val balloon = detection(oval, oval)
+        val page = artWithBalloon(oval, empty = true)
+        val line = PageItem(Rect(370, 300, 430, 470), ItemKind.SPEECH, "違うって、それ！", "No, that's not it!", vertical = true)
+        val out = ReadResolver(page, listOf(balloon), emptyList(), 0, 0, emptyList()).resolve(listOf(line))
+        assertTrue(out.none { it.balloon === balloon })
+    }
+
+    @Test
+    fun aFaceThatPassedForABalloonNeverTakesADriftedLine() {
+        val oval = Rect(300, 500, 500, 820)
+        val balloon = detection(oval, oval)
+        val page = artWithBalloon(oval, empty = true)
+        val line = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            style = android.graphics.Paint.Style.STROKE; strokeWidth = 4f; color = Color.BLACK
+        }
+        Canvas(page).apply {
+            drawOval(android.graphics.RectF(330f, 590f, 380f, 620f), line)
+            drawOval(android.graphics.RectF(420f, 590f, 470f, 620f), line)
+            drawLine(325f, 570f, 385f, 562f, line)
+            drawLine(415f, 562f, 475f, 570f, line)
+            drawArc(android.graphics.RectF(350f, 720f, 450f, 770f), 0f, 180f, false, line)
+        }
+        val drifted = PageItem(Rect(370, 300, 430, 470), ItemKind.SPEECH, "違うって、それ！", "No, that's not it!", vertical = true)
+        val out = ReadResolver(page, listOf(balloon), emptyList(), 0, 0, emptyList()).resolve(listOf(drifted))
+        assertTrue("the face is left as drawn", out.none { it.balloon === balloon })
+    }
+
+    @Test
+    fun cleanLetteringWhereTheBoxSaysKeepsItThere() {
+        // Plain paper with the line drawn right where the box is, and a
+        // lettered balloon nearby that no answer claims.
+        val oval = Rect(300, 500, 500, 820)
+        val balloon = detection(oval, oval)
+        val bmp = Bitmap.createBitmap(800, 1000, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+        c.drawColor(Color.WHITE)
+        val ink = android.graphics.Paint().apply { color = Color.BLACK }
+        c.drawOval(android.graphics.RectF(oval), android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { style = android.graphics.Paint.Style.STROKE; strokeWidth = 5f; color = Color.BLACK })
+        for (k in 0 until 4) c.drawRect(385f, 560f + k * 50, 415f, 595f + k * 50, ink)
+        for (k in 0 until 3) c.drawRect(385f, 310f + k * 50, 415f, 345f + k * 50, ink)
+        val line = PageItem(Rect(378, 302, 422, 452), ItemKind.SPEECH, "ねえ", "Hey.", vertical = true)
+        val out = ReadResolver(bmp, listOf(balloon), emptyList(), 0, 0, emptyList()).resolve(listOf(line))
+        assertTrue(out.none { it.balloon === balloon })
+    }
+
     @Test
     fun aBigSoundEffectAcrossTheArtIsNotedNotErased() {
         // A dramatic sound effect spanning a quarter of the page: erasing it

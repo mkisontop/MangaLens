@@ -96,6 +96,8 @@ data class RenderBubble(
      * sure to hold no art the reader needs.
      */
     val art: ArtMap? = null,
+    /** Panels other than the one a [LetterStyle.SFX_NOTE]'s sound is in: its note never crosses into one. */
+    val otherPanels: List<Rect> = emptyList(),
 )
 
 /**
@@ -1191,9 +1193,10 @@ class BubbleOverlayView(context: Context) : View(context) {
      * Where everything around the sound is drawn (a face, hair, a hand) the
      * note is set over the sound itself, centred on it, and along a column
      * a quarter turn, reading down it: the sound is what it translates, and
-     * covering it hides nothing of the picture. It never lands on other
-     * lettering in [taken] or on another sound in [sounds]; when even its
-     * own sound is covered by someone's words, the sound is left as drawn.
+     * covering it hides nothing of the picture. It never crosses into
+     * another panel, never lands on other lettering in [taken] or on
+     * another sound in [sounds]; when even its own sound is covered by
+     * someone's words, the sound is left as drawn.
      */
     private fun placeNote(b: RenderBubble, text: String, taken: List<RectF>, sounds: List<RectF>): Lettering? {
         val style = LetterStyle.SFX_NOTE
@@ -1247,6 +1250,7 @@ class BubbleOverlayView(context: Context) : View(context) {
                 if (overlapArea(r, box) > min(area(r), area(box)) * NOTE_OVER_SOUND) continue
                 if (crowding(r) > 0f) continue
                 if (sounds.any { it != box && overlapArea(r, it) > 0f }) continue
+                if (b.otherPanels.any { overlapArea(r, RectF(it)) > 0f }) continue
                 if (art.drawnShare(r) > NOTE_CALM) continue
                 return at(upright, ink0, r, turned = false)
             }

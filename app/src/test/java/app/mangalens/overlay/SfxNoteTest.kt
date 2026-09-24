@@ -236,6 +236,20 @@ class SfxNoteTest {
     }
 
     @Test
+    fun `a note never crosses into the next panel`() {
+        // The sound fills the foot of the screen, so the note cannot go
+        // below it, and the panel above starts just over its top: on empty
+        // paper "above" would otherwise be taken.
+        val box = Rect(180, 640, 480, 896)
+        val page = paper(box)
+        val above = Rect(20, 20, 700, 632)
+        val v = view()
+        v.setBubbles(listOf(note(box, on = page).copy(otherPanels = listOf(above))))
+        val label = v.placedRects().single()
+        assertEquals("the note stays out of the panel above ($label)", 0L, overlap(label, above))
+    }
+
+    @Test
     fun `a note follows the reader's text size, not the sound's`() {
         val small = Rect(300, 300, 360, 340)
         val huge = Rect(60, 60, 660, 560)

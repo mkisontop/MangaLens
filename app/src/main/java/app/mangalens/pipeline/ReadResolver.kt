@@ -35,6 +35,8 @@ internal class ReadResolver(
     private val ignoreTop: Int,
     private val ignoreBottom: Int,
     private val exclusions: List<Rect>,
+    /** Panels read off the page; a note for a sound never crosses into another one. */
+    private val panels: List<Rect> = emptyList(),
 ) {
 
     private val erasures = HashMap<PageItem, Erasure?>()
@@ -55,7 +57,16 @@ internal class ReadResolver(
 
     fun resolve(items: List<PageItem>): List<RenderBubble> {
         val usable = items.filter(::usable)
-        val home = usable.map(::balloonFor)
+        val home = usable.map(::balloonFor).toMutableList()
+        val claimed = java.util.Collections.newSetFromMap(IdentityHashMap<Balloon, Boolean>())
+        home.forEach { if (it != null) claimed.add(it) }
+        for (i in usable.indices) {
+            if (home[i] != null) continue
+            drifted(usable[i], claimed)?.let {
+                home[i] = it
+                claimed.add(it)
+            }
+        }
         val byBalloon = IdentityHashMap<Balloon, MutableList<Int>>()
         home.forEachIndexed { i, b -> if (b != null) byBalloon.getOrPut(b) { mutableListOf() }.add(i) }
 
@@ -81,7 +92,7 @@ internal class ReadResolver(
             // drawing. Its lettering is erased on its own instead. A "!!"
             // or heart the model gave as a sound of its own is lettering
             // too, not stray ink, though it never claims the balloon.
-            val lettering = group.map { usable[it].box } + usable.indices
+            val lettering = group.map { usable[it].box } + listOfNotNull(drift[balloon]) + usable.indices
                 .filter { home[it] == null && usable[it].kind == ItemKind.SFX && containedShare(usable[it].box, balloon.box) > 0.8f }
                 .map { usable[it].box }
             val trusted = trust.getOrPut(trustKey(balloon, lettering)) {
@@ -256,6 +267,41 @@ internal class ReadResolver(
             .minByOrNull { it.box.width().toLong() * it.box.height() }
     }
 
+    /**
+     * The balloon a line of dialogue was really in, when the model's box
+     * for it drifted off: now and then a box lands a few hundred pixels
+     * from its lettering, the line is lettered over whatever art is there,
+     * and its own balloon is left untranslated. Such a box holds no clean
+     * lettering, and close by is a balloon that holds lettering but that no
+     * line claims. Null unless both are true and one balloon is nearest.
+     */
+    private fun drifted(item: PageItem, claimed: Set<Balloon>): Balloon? {
+        if (item.kind != ItemKind.SPEECH && item.kind != ItemKind.THOUGHT) return null
+        val box = item.box
+        val reach = bitmap.height * MAX_DRIFT
+        val near = detected.filter { b ->
+            b !in claimed && !b.inverted &&
+                b.box.width() >= box.width() * 0.6f && b.box.height() >= box.height() * 0.6f &&
+                kotlin.math.hypot((b.box.exactCenterX() - box.exactCenterX()).toDouble(), (b.box.exactCenterY() - box.exactCenterY()).toDouble()) <= reach
+        }
+        if (near.isEmpty()) return null
+        // Clean lettering where the box says: the box was right after all.
+        val here = if (erasures.containsKey(item)) erasures[item] else {
+            runCatching { TextEraser.erase(bitmap, item.box, item.kind, item.textColor, item.outlineColor) }
+                .getOrNull().also { erasures[item] = it }
+        }
+        if (here != null && here.flat && here.busy < 0.3f) return null
+        val found = near
+            .mapNotNull { b -> BalloonTrust.letteringBlock(bitmap, b)?.let { b to it } }
+            .minByOrNull { (b, _) -> kotlin.math.hypot((b.box.exactCenterX() - box.exactCenterX()).toDouble(), (b.box.exactCenterY() - box.exactCenterY()).toDouble()) }
+            ?: return null
+        drift[found.first] = found.second
+        return found.first
+    }
+
+    /** The lettering found in a balloon a drifted line was put back into, for its trust check. */
+    private val drift = IdentityHashMap<Balloon, Rect>()
+
     /** True when (x, y) falls on or right beside the balloon's interior mask. */
     private fun onInterior(b: Balloon, x: Int, y: Int): Boolean {
         if (!b.box.contains(x, y) || b.maskW < 1 || b.maskH < 1) return false
@@ -390,6 +436,7 @@ internal class ReadResolver(
             style = LetterStyle.SFX_NOTE,
             outlineColor = if (dark) 0xFF17181C.toInt() else Color.WHITE,
             art = art,
+            otherPanels = panels.filterNot { it.contains(item.box.centerX(), item.box.centerY()) },
         )
     }
 
@@ -399,6 +446,9 @@ internal class ReadResolver(
     companion object {
         /** Shares of the page a sound effect may span and still count as small. */
         private const val SMALL_SFX_HEIGHT = 0.07f
+
+        /** Furthest a line's box may have drifted from its balloon, as a share of the page's height. */
+        private const val MAX_DRIFT = 0.15f
         private const val SMALL_SFX_WIDTH = 0.25f
 
         fun styleOf(item: PageItem): LetterStyle = when (item.kind) {

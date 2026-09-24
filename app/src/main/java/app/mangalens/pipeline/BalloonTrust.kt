@@ -33,6 +33,15 @@ internal object BalloonTrust {
     /** Length to thickness past which a text box is a line, with a direction to run on in. */
     private const val LINE_ASPECT = 1.5f
 
+    /** Share of the interior that is ink in a balloon holding a line of text. */
+    private const val MIN_LETTERING = 0.02f
+
+    /** Share of its own bounds a block of lettering's ink fills; features of a face fill far less. */
+    private const val MIN_BLOCK_DENSITY = 0.12f
+
+    /** Pixels between samples, each way. */
+    private const val SAMPLE_STEP = 2
+
     /** Mask cells next to the outside skipped, so the balloon's own outline never counts. */
     private const val EDGE_CELLS = 2
 
@@ -42,12 +51,6 @@ internal object BalloonTrust {
      * of error.
      */
     fun holdsOnly(bitmap: Bitmap, balloon: Balloon, text: List<Rect>): Boolean {
-        val mw = balloon.maskW
-        val mh = balloon.maskH
-        val box = balloon.box
-        if (mw < 3 || mh < 3 || box.width() < 8 || box.height() < 8) return true
-        val interior = interiorWithHoles(balloon.mask, mw, mh)
-        val deep = erode(interior, mw, mh, EDGE_CELLS)
         val grown = text.map { t ->
             val m = (minOf(t.width(), t.height()) * 0.2f).toInt() + 4
             // And a glyph further along the line at either end: the model's
@@ -60,12 +63,53 @@ internal object BalloonTrust {
                 else -> Rect(t.left - m, t.top - m, t.right + m, t.bottom + m)
             }
         }
+        val seen = look(bitmap, balloon, grown) ?: return true
+        // A balloon so full of lettering that nothing else is left to look at.
+        if (seen.samples < 40) return true
+        if (seen.texture > MAX_TEXTURE) return false
+        return seen.ink.toFloat() / seen.samples <= MAX_STRAY_INK
+    }
+
+    /**
+     * Where the lettering in [balloon] is, when all its ink is one compact
+     * block of it: enough ink to be a line of text, on plain paper, and
+     * dense within its own bounds. A face that passed for a balloon has
+     * ink too — two eyes and a mouth — but spread thin across the whole of
+     * it. Null for an empty balloon, textured paper, or scattered ink.
+     */
+    fun letteringBlock(bitmap: Bitmap, balloon: Balloon): Rect? {
+        val seen = look(bitmap, balloon, emptyList()) ?: return null
+        val block = seen.inkBox ?: return null
+        if (seen.samples < 40 || seen.texture > MAX_TEXTURE) return null
+        if (seen.ink.toFloat() / seen.samples < MIN_LETTERING) return null
+        // Samples fall every second pixel each way: one per four pixels.
+        val cells = (block.width().toLong() * block.height() / (SAMPLE_STEP * SAMPLE_STEP)).coerceAtLeast(1L)
+        return block.takeIf { seen.ink.toFloat() / cells >= MIN_BLOCK_DENSITY }
+    }
+
+    private class Look(val samples: Int, val ink: Int, val texture: Float, val inkBox: Rect?)
+
+    /**
+     * Samples of [balloon]'s interior away from its outline and outside
+     * [skip]: how many, how many of them ink and where, and the mean
+     * grey-level step between neighbours. Null for a detection too small
+     * to judge.
+     */
+    private fun look(bitmap: Bitmap, balloon: Balloon, skip: List<Rect>): Look? {
+        val mw = balloon.maskW
+        val mh = balloon.maskH
+        val box = balloon.box
+        if (mw < 3 || mh < 3 || box.width() < 8 || box.height() < 8) return null
+        val interior = interiorWithHoles(balloon.mask, mw, mh)
+        val deep = erode(interior, mw, mh, EDGE_CELLS)
+        val grown = skip
         val left = box.left.coerceAtLeast(0)
         val right = box.right.coerceAtMost(bitmap.width)
-        if (right - left < 2) return true
+        if (right - left < 2) return null
         val row = IntArray(right - left)
         var samples = 0
         var ink = 0
+        var inkBox: Rect? = null
         var steps = 0
         var change = 0L
         var y = box.top.coerceAtLeast(0)
@@ -81,7 +125,10 @@ internal object BalloonTrust {
                     val p = row[x - left]
                     val lum = ((p shr 16 and 0xFF) * 299 + (p shr 8 and 0xFF) * 587 + (p and 0xFF) * 114) / 1000
                     samples++
-                    if (if (balloon.inverted) lum > 150 else lum < 110) ink++
+                    if (if (balloon.inverted) lum > 150 else lum < 110) {
+                        ink++
+                        inkBox?.union(x, y) ?: run { inkBox = Rect(x, y, x + 1, y + 1) }
+                    }
                     if (prev >= 0) {
                         change += kotlin.math.abs(lum - prev)
                         steps++
@@ -90,14 +137,11 @@ internal object BalloonTrust {
                 } else {
                     prev = -1
                 }
-                x += 2
+                x += SAMPLE_STEP
             }
-            y += 2
+            y += SAMPLE_STEP
         }
-        // A balloon so full of lettering that nothing else is left to look at.
-        if (samples < 40) return true
-        if (steps > 20 && change.toFloat() / steps > MAX_TEXTURE) return false
-        return ink.toFloat() / samples <= MAX_STRAY_INK
+        return Look(samples, ink, if (steps > 20) change.toFloat() / steps else 0f, inkBox)
     }
 
     /**
