@@ -46,9 +46,9 @@ shout bubbles, black narration boxes, tinted bubbles, the lot.
 The details that matter:
 
 - Completely free and open source (MIT). No account, no ads, no tracking.
-- OCR runs on your device. The default engine needs no setup at all.
-- Optional "AI Pro" mode uses your own key — Google AI Studio keys are free
-  — and keeps a glossary so character names stay consistent across chapters.
+- OCR runs on your device. Translation is AI with your own key — Google AI
+  Studio keys for Gemini have a free tier — and it keeps a glossary so
+  character names stay consistent across chapters.
 - Not on the Play Store yet; it's a direct APK from GitHub Releases, signed
   and checksummed, and the app offers updates itself.
 
@@ -78,8 +78,8 @@ is pixel-based (flood-fill balloon masks, not OCR-box guessing), so shout
 bubbles, black flashback boxes and pastel bubbles all work. KO/JA/ZH → EN.
 
 - FOSS (MIT), no account/ads/analytics, OCR fully on-device
-- Free default engine; optional BYO-key AI mode (Gemini free tier works)
-  with per-series glossary and story memory
+- BYO-key AI translation (Gemini's free tier works) with per-series
+  glossary and story memory
 - Direct APK from GitHub Releases with checksums + in-app update checks —
   the usual sideload flow this community already knows
 
@@ -111,7 +111,7 @@ their content instead of screen coordinates so scrolling back is free.
 
 [DEMO GIF]
 
-- Kotlin, Jetpack Compose, no backend at all — optional AI mode is BYO key
+- Kotlin, Jetpack Compose, no backend at all — the AI is BYO key
 - MIT, ~zero dependencies beyond ML Kit and OkHttp
 - Direct APK via GitHub Releases (signed, checksummed, in-app update checks)
 
