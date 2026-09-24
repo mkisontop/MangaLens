@@ -221,10 +221,22 @@ object TypeSet {
         for (i in word.indices.reversed()) {
             runEnd[i] = if (i < word.length - 1 && word[i + 1].isLetter() && word[i].isLetter()) runEnd[i + 1] else i + 1
         }
+        // Where the patterns would hyphenate each run.
+        val syllable = BooleanArray(word.length + 1)
+        var run = 0
+        while (run < word.length) {
+            if (!word[run].isLetter()) {
+                run++
+                continue
+            }
+            val points = Hyphenation.points(word.substring(run, runEnd[run]))
+            for (k in 1 until runEnd[run] - run) syllable[run + k] = points[k]
+            run = runEnd[run]
+        }
         val cuts = (1 until word.length).filter { i ->
             word[i - 1].isLetter() && word[i].isLetter() &&
                 i - runStart[i - 1] >= MIN_PIECE && runEnd[i] - i >= MIN_PIECE &&
-                "${word[i - 1].lowercaseChar()}${word[i].lowercaseChar()}" !in DIGRAPHS
+                (syllable[i] || "${word[i - 1].lowercaseChar()}${word[i].lowercaseChar()}" !in DIGRAPHS)
         }
         if (cuts.isEmpty()) return listOf(word)
         fun piecesAt(chosen: List<Int>): List<String> {
@@ -245,7 +257,7 @@ object TypeSet {
             for (i in 1 until n) {
                 val target = total * i / n
                 val c = cuts.filter { chosen.isEmpty() || letters[it] - letters[chosen.last()] >= MIN_PIECE }
-                    .minByOrNull { kotlin.math.abs(letters[it] - target) + if (between(word, it)) 0f else SYLLABLE_MISS }
+                    .minByOrNull { kotlin.math.abs(letters[it] - target) + cutCost(word, it, syllable[it]) }
                     ?: break
                 chosen.add(c)
             }
@@ -259,8 +271,21 @@ object TypeSet {
 
     private val HYPHEN_AFTER = Regex("(?<=-)")
 
-    /** Letters a cut may drift from its even share to land between syllables. */
-    private const val SYLLABLE_MISS = 1.5f
+    /** Letters a cut may drift from its even share to land where the patterns hyphenate. */
+    private const val SYLLABLE_MISS = 3f
+
+    /**
+     * What a cut before [i] costs the reader, in letters of imbalance it is
+     * worth: nothing where the patterns hyphenate ("destruc- tive"); for a
+     * word they know nothing of, [SYLLABLE_MISS] between two consonants —
+     * the one syllable break that needs no dictionary — and twice that
+     * anywhere else.
+     */
+    private fun cutCost(word: String, i: Int, syllable: Boolean): Float = when {
+        syllable -> 0f
+        between(word, i) -> SYLLABLE_MISS
+        else -> 2 * SYLLABLE_MISS
+    }
 
     private const val VOWELS = "aeiouyäöüàáâèéêëìíîïòóôùúûæøå"
 

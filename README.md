@@ -597,4 +597,7 @@ eat too.
 ## License
 
 [MIT](LICENSE). The bundled Comic Neue fonts are under the
-[SIL Open Font License](FONTS-LICENSE-OFL.txt).
+[SIL Open Font License](FONTS-LICENSE-OFL.txt). The English hyphenation
+patterns ([hyph-en-us.tex](app/src/main/resources/app/mangalens/overlay/hyph-en-us.tex),
+from TeX's hyph-utf8, © 1990, 2004, 2005 Gerard D.C. Kuiken) are free to copy
+and change with their notice kept, as that file states.

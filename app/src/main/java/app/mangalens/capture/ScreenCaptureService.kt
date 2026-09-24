@@ -35,6 +35,7 @@ import app.mangalens.MainActivity
 import app.mangalens.MangaLensApp
 import app.mangalens.R
 import app.mangalens.ocr.OcrEngine
+import app.mangalens.overlay.Hyphenation
 import app.mangalens.overlay.OverlayController
 import app.mangalens.overlay.RenderBubble
 import app.mangalens.pipeline.AiFailure
@@ -501,6 +502,9 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         }, captureHandler)
         setupDisplay()
         pipeline.warm(settings)
+        // The hyphenation patterns load here, not on the UI thread when the
+        // first long word is lettered.
+        scope.launch(Dispatchers.Default) { Hyphenation.warm() }
         controller = OverlayController(this, this).also { it.attach() }
         controller?.bubbleView?.let { v ->
             v.textScale = settings.textScale
