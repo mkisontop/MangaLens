@@ -72,7 +72,7 @@ class BalloonHarnessTest {
      * Recorded model answers (MANGALENS_ITEMS: {page: [{box_2d, src, en,
      * kind}]}) resolved against each page's detections: which balloons the
      * lettering claimed and kept (green), which were refused as art (red),
-     * and each item's box (blue). Offline; skipped without the files.
+     * and each item's box (blue). Needs no network; skipped without the files.
      */
     @Test
     fun resolveRecordedItemsOnRealPages() {

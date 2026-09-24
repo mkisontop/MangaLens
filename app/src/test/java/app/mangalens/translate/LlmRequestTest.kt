@@ -38,10 +38,10 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 /**
- * The request each provider actually receives. A wrong field here is not a
- * visible failure: the provider answers 400, the engine falls back to
- * Google, and the reader sees a slightly worse page with "fallback" in the
- * pill — every benefit of the model they chose silently discarded.
+ * The request each provider actually receives. A wrong field here fails
+ * every page: the provider answers 400, nothing else translates the page,
+ * and the reader is left with raw lettering and an error in the pill — the
+ * model they chose lost to one field it would not take.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -315,6 +315,20 @@ class LlmRequestTest {
         } catch (e: RuntimeException) {
             assertEquals("No API key set for Gemini", e.message)
         }
+    }
+
+    @Test
+    fun `what is missing before the AI can be asked is said as what to add`() {
+        assertEquals("Add your Gemini key in MangaLens", LlmHttp.setupNeeded(AppSettings()))
+        assertEquals(
+            "Add your Gemini key in MangaLens",
+            LlmHttp.setupNeeded(settings(LlmProvider.GEMINI, "").copy(apiKey = "​ ")),
+        )
+        assertEquals("Add your Claude key in MangaLens", LlmHttp.setupNeeded(settings(LlmProvider.ANTHROPIC, "").copy(apiKey = "")))
+        assertNull(LlmHttp.setupNeeded(settings(LlmProvider.GEMINI, "")))
+        // A local server may take no key at all; it only needs its address.
+        assertEquals("Add your AI endpoint in MangaLens", LlmHttp.setupNeeded(AppSettings(provider = LlmProvider.CUSTOM)))
+        assertNull(LlmHttp.setupNeeded(AppSettings(provider = LlmProvider.CUSTOM, customUrl = "http://127.0.0.1/v1/chat")))
     }
 
     /** A call that holds on to its callback, so a test decides when the response lands. */

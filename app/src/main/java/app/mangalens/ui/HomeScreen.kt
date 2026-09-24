@@ -56,13 +56,10 @@ import app.mangalens.settings.AiReasoning
 import app.mangalens.settings.AiVisionMode
 import app.mangalens.settings.AppSettings
 import app.mangalens.settings.CaptureMode
-import app.mangalens.settings.EngineKind
 import app.mangalens.settings.LlmProvider
 import app.mangalens.settings.SettingsRepository
 import app.mangalens.settings.SourceLang
-import app.mangalens.translate.GoogleFreeEngine
 import app.mangalens.translate.LlmEngine
-import app.mangalens.translate.MlKitEngine
 import app.mangalens.translate.ModelCatalog
 import app.mangalens.update.UpdateChecker
 import kotlinx.coroutines.delay
@@ -263,30 +260,14 @@ private fun EngineCard(settings: AppSettings, repo: SettingsRepository) {
     Card(elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)) {
         Column(Modifier.padding(16.dp)) {
             SectionTitle("Translation engine")
-            Spacer(Modifier.height(10.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Chip("Free · Google", settings.engine == EngineKind.GOOGLE) {
-                    scope.launch { repo.setEngine(EngineKind.GOOGLE) }
-                }
-                Chip("AI Pro ✨", settings.engine == EngineKind.LLM) {
-                    scope.launch { repo.setEngine(EngineKind.LLM) }
-                }
-                Chip("Offline", settings.engine == EngineKind.MLKIT) {
-                    scope.launch { repo.setEngine(EngineKind.MLKIT) }
-                }
-            }
             Spacer(Modifier.height(8.dp))
             Text(
-                when (settings.engine) {
-                    EngineKind.GOOGLE -> "Works instantly, no setup. Solid everyday quality."
-                    EngineKind.LLM -> "Feels like an official release: the AI reads whole pages (even the raw image) with story memory, a name glossary, natural tone and honorifics. A fast draft appears instantly; the AI polish replaces it seconds later. Needs an API key — Gemini, the fastest, has a free one."
-                    EngineKind.MLKIT -> "100% offline after a one-time ~30 MB model download per language. Roughest quality of the three."
-                },
+                "Feels like an official release: the AI reads whole pages (even the raw image) with story memory, a name glossary, natural tone and honorifics. Needs an API key — Gemini, the fastest, has a free one.",
                 style = MaterialTheme.typography.bodySmall,
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
 
-            if (settings.engine == EngineKind.LLM) {
+            Column {
                 Spacer(Modifier.height(12.dp))
                 ProviderPicker(settings, repo)
                 Spacer(Modifier.height(10.dp))
@@ -365,7 +346,7 @@ private fun EngineCard(settings: AppSettings, repo: SettingsRepository) {
                 Spacer(Modifier.height(6.dp))
                 Text(
                     if (settings.aiVision != AiVisionMode.OFF)
-                        "The AI reads the page image itself — catches handwriting, stylized lettering and anything OCR misses, in manhwa and manga alike (~150–300 KB per page, less with Data saver). Falls back to text-only, then Google, automatically."
+                        "The AI reads the page image itself — catches handwriting, stylized lettering and anything OCR misses, in manhwa and manga alike (~150–300 KB per page, less with Data saver). Falls back to text-only automatically."
                     else
                         "Only OCR'd text is sent (a few KB). Best for very slow internet; stylized lettering depends on on-device OCR.",
                     style = MaterialTheme.typography.bodySmall,
@@ -388,7 +369,7 @@ private fun EngineCard(settings: AppSettings, repo: SettingsRepository) {
                 Spacer(Modifier.height(6.dp))
                 Text(
                     when (settings.aiReasoning) {
-                        AiReasoning.FAST -> "Least thinking the model allows: the polish lands soonest. Fine for clean, horizontal lettering."
+                        AiReasoning.FAST -> "Least thinking the model allows: the first lines land soonest. Fine for clean, horizontal lettering."
                         AiReasoning.BALANCED -> "A little thinking on the page image, the least on text. Balloons stream in one by one either way."
                         AiReasoning.THOROUGH -> "The model's full reasoning depth: best speaker attribution and hard lettering, at a longer wait for the first balloon."
                     },
@@ -459,11 +440,7 @@ private fun EngineCard(settings: AppSettings, repo: SettingsRepository) {
                         scope.launch {
                             testResult = try {
                                 val sample = listOf("괜찮아. 내가 지켜줄게.")
-                                val out = when (settings.engine) {
-                                    EngineKind.LLM -> LlmEngine(draftSettings).translate(sample, SourceLang.KO)
-                                    EngineKind.MLKIT -> MlKitEngine().translate(sample, SourceLang.KO)
-                                    EngineKind.GOOGLE -> GoogleFreeEngine().translate(sample, SourceLang.KO)
-                                }
+                                val out = LlmEngine(draftSettings).translate(sample, SourceLang.KO)
                                 "“괜찮아. 내가 지켜줄게.” → “" + out.first() + "”"
                             } catch (e: Exception) {
                                 "⚠ " + (e.message ?: "failed")
@@ -755,7 +732,7 @@ private fun TipsCard() {
                 "• Brave private tabs block screen capture (they render black). Use a normal tab.\n" +
                     "• Overlays never block touches — scroll right through them.\n" +
                     "• Scrolling instantly hides overlays; stopping re-translates. That's the live loop.\n" +
-                    "• AI Pro shows a fast draft instantly, then the AI polish replaces it — slow internet never blocks reading.\n" +
+                    "• Lines appear one by one as the AI writes them — straight from the AI, no machine draft first.\n" +
                     "• Text mode sends only bubble text; AI Vision sends the page image — only ever to the provider you chose.\n" +
                     "• Names stay consistent: the AI keeps a glossary of characters and terms as you read.\n" +
                     "• Reading raws you love? Support the official release when it exists.",

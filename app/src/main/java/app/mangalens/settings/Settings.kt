@@ -18,13 +18,12 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.first
 
-enum class EngineKind { GOOGLE, LLM, MLKIT }
 enum class LlmProvider { ANTHROPIC, OPENAI, GEMINI, OPENROUTER, CUSTOM }
 enum class SourceLang { AUTO, KO, JA, ZH }
 enum class CaptureMode { AUTO, MANUAL }
 
 /**
- * How AI Pro reads the page. AUTO sends the page image for scripts that break
+ * How the AI reads the page. AUTO sends the page image for scripts that break
  * on-device OCR (vertical Japanese/Chinese) and cheap text-only requests for
  * everything else; ALWAYS forces vision; OFF keeps every request text-only.
  */
@@ -41,9 +40,18 @@ enum class AiVisionMode { AUTO, ALWAYS, OFF }
  */
 enum class AiReasoning { FAST, BALANCED, THOROUGH }
 
+/**
+ * Everything a pass needs to know. Translation is the AI's alone — there is
+ * no machine or on-device engine to pick — so what matters is which
+ * provider answers, with which key and model.
+ */
 data class AppSettings(
-    val engine: EngineKind = EngineKind.GOOGLE,
-    val provider: LlmProvider = LlmProvider.ANTHROPIC,
+    /**
+     * Gemini unless the reader picks another: it is the recommended
+     * provider, the fastest to answer a page, and has a free tier, so a new
+     * reader can start without paying anyone.
+     */
+    val provider: LlmProvider = LlmProvider.GEMINI,
     val apiKey: String = "",
     val model: String = "",
     val customUrl: String = "",
@@ -96,7 +104,9 @@ data class AppSettings(
  * locale unreadable in another.
  */
 private object Keys {
-    val ENGINE = stringPreferencesKey("engine")
+    // "engine" once chose between the free Google, AI and on-device
+    // engines. Stores written by those builds still hold it; it is never
+    // read, and the name must not be reused for anything else.
     val PROVIDER = stringPreferencesKey("provider")
     val LEGACY_API_KEY = stringPreferencesKey("api_key")
     val LEGACY_MODEL = stringPreferencesKey("model")
@@ -147,6 +157,26 @@ private inline fun <reified T : Enum<T>> enumOr(name: String?, fallback: T): T =
     name?.let { runCatching { enumValueOf<T>(it) }.getOrNull() } ?: fallback
 
 /**
+ * The provider builds from before Gemini became the default used when none
+ * was saved. They never wrote that choice down, so what they stored with no
+ * provider beside it — the old shared key and model, a key typed into the
+ * Anthropic field — was meant for this one.
+ */
+private val LEGACY_DEFAULT_PROVIDER = LlmProvider.ANTHROPIC
+
+/**
+ * The provider a store that never saved one is read with. A new install
+ * gets the default; one that holds an Anthropic key or model and no
+ * provider was set up under the old default and keeps it, so changing the
+ * default never strands a key that was working.
+ */
+private fun unsavedProvider(p: Preferences, credentials: Preferences): LlmProvider {
+    val legacy = LEGACY_DEFAULT_PROVIDER
+    val setUp = !credentials[Keys.apiKey(legacy)].isNullOrBlank() || !p[Keys.model(legacy)].isNullOrBlank()
+    return if (setUp) legacy else AppSettings().provider
+}
+
+/**
  * Moves the old shared model to the provider that was selected when this
  * version first opens the store. A legacy value must never remain as a read
  * fallback: after a provider switch that would expose it again.
@@ -155,7 +185,7 @@ private inline fun <reified T : Enum<T>> enumOr(name: String?, fallback: T): T =
  */
 internal fun migrateLegacyModelSettings(current: Preferences): Preferences {
     val legacy = current[Keys.LEGACY_MODEL] ?: return current
-    val provider = enumOr(current[Keys.PROVIDER], AppSettings().provider)
+    val provider = enumOr(current[Keys.PROVIDER], LEGACY_DEFAULT_PROVIDER)
     return current.toMutablePreferences().apply {
         val scoped = Keys.model(provider)
         if (this[scoped] == null) this[scoped] = legacy
@@ -166,7 +196,7 @@ internal fun migrateLegacyModelSettings(current: Preferences): Preferences {
 /** Copies the old shared key into the selected provider's no-backup credential slot. */
 internal fun migrateLegacyApiKey(settings: Preferences, credentials: Preferences): Preferences {
     val legacy = settings[Keys.LEGACY_API_KEY] ?: return credentials
-    val provider = enumOr(settings[Keys.PROVIDER], AppSettings().provider)
+    val provider = enumOr(settings[Keys.PROVIDER], LEGACY_DEFAULT_PROVIDER)
     // A custom URL may be controlled by anyone, and the old shared key's true
     // provider cannot be proven. Re-entry is safer than forwarding it there.
     if (provider == LlmProvider.CUSTOM) return credentials
@@ -227,9 +257,8 @@ private val Context.credentialsStore: DataStore<Preferences>
 /** Decodes only the selected provider's key and model into the active snapshot. */
 internal fun settingsFromPreferences(p: Preferences, credentials: Preferences = p): AppSettings {
     val d = AppSettings()
-    val provider = enumOr(p[Keys.PROVIDER], d.provider)
+    val provider = enumOr(p[Keys.PROVIDER], unsavedProvider(p, credentials))
     return AppSettings(
-        engine = enumOr(p[Keys.ENGINE], d.engine),
         provider = provider,
         apiKey = credentials[Keys.apiKey(provider)] ?: d.apiKey,
         model = p[Keys.model(provider)] ?: d.model,
@@ -259,7 +288,6 @@ class SettingsRepository(private val context: Context) {
 
     suspend fun current(): AppSettings = flow.first()
 
-    suspend fun setEngine(v: EngineKind) = context.settingsStore.edit { it[Keys.ENGINE] = v.name }
     suspend fun setProvider(v: LlmProvider) = context.settingsStore.edit { it[Keys.PROVIDER] = v.name }
     suspend fun setApiKey(provider: LlmProvider, v: String) =
         context.credentialsStore.edit { it[Keys.apiKey(provider)] = v }

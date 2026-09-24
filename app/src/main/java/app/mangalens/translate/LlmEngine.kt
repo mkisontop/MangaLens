@@ -26,13 +26,16 @@ class LlmEngine(
     private val settings: AppSettings,
     private val glossary: GlossaryStore? = null,
     private val cast: CastBook? = null,
-) : TranslationEngine {
+) {
 
-    override val label: String get() = LlmHttp.providerLabel(settings)
+    /** Short name shown in the status pill, e.g. "Claude" or "Gemini". */
+    val label: String get() = LlmHttp.providerLabel(settings)
 
-    override val cacheNamespace: String get() = label + ":" + settings.effectiveModel()
+    /** Cache namespace: the provider and the model, so a new model never replays an old one's lines. */
+    val cacheNamespace: String get() = label + ":" + settings.effectiveModel()
 
-    override suspend fun translate(items: List<String>, lang: SourceLang): List<String> =
+    /** Translates every item as dialogue; the result matches [items] in size and order. */
+    suspend fun translate(items: List<String>, lang: SourceLang): List<String> =
         translateWithKinds(
             items,
             List(items.size) { BubbleKind.DIALOGUE },

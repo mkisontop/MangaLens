@@ -190,6 +190,20 @@ internal object LlmHttp {
     }
 
     /**
+     * What the reader still has to set up before the AI can be asked, in
+     * the words the status pill uses, or null when nothing is missing. The
+     * checks are [requireConfig]'s, said as what to do rather than as what
+     * went wrong: translation is the AI's alone, so without this there is
+     * nothing to try, and no point spending a pass finding that out.
+     */
+    fun setupNeeded(settings: AppSettings): String? = when {
+        settings.provider == LlmProvider.CUSTOM ->
+            if (settings.customUrl.isBlank()) "Add your AI endpoint in MangaLens" else null
+        cleanKey(settings.apiKey).isEmpty() -> "Add your " + providerLabel(settings) + " key in MangaLens"
+        else -> null
+    }
+
+    /**
      * Sends one user turn and returns the assistant text.
      *
      * @param stable the part of the turn that rarely changes between pages.
@@ -303,8 +317,8 @@ internal object LlmHttp {
      * Room for the answer. The cap covers the model's thinking as well as
      * its reply on every current API, so it is set well above what a page
      * of translations needs: a cap the thinking exhausts cuts the JSON off
-     * mid-array, and the page then falls back to the draft as though the
-     * model had said nothing.
+     * mid-array, and the page then comes back as though the model had said
+     * nothing.
      */
     internal fun outputCap(anthropic: Boolean, vision: Boolean, effort: String): Int {
         val base = if (anthropic) (if (vision) 8192 else 4096) else (if (vision) 16384 else 8192)

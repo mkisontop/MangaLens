@@ -11,7 +11,6 @@ import app.mangalens.ocr.OcrLine
 import app.mangalens.overlay.BubbleOverlayView
 import app.mangalens.settings.AiVisionMode
 import app.mangalens.settings.AppSettings
-import app.mangalens.settings.EngineKind
 import app.mangalens.settings.LlmProvider
 import app.mangalens.settings.SourceLang
 import app.mangalens.translate.CastBook
@@ -65,7 +64,6 @@ class PageHarnessTest {
         val out = File("build/harness").apply { mkdirs() }
         val app = RuntimeEnvironment.getApplication()
         val settings = AppSettings(
-            engine = EngineKind.LLM,
             provider = LlmProvider.GEMINI,
             apiKey = key,
             model = System.getenv("MANGALENS_MODEL").orEmpty(),
@@ -156,7 +154,7 @@ class PageHarnessTest {
         val out = File("build/harness").apply { mkdirs() }
         val app = RuntimeEnvironment.getApplication()
         val settings = AppSettings(
-            engine = EngineKind.LLM, provider = LlmProvider.GEMINI, apiKey = key,
+            provider = LlmProvider.GEMINI, apiKey = key,
             aiVision = AiVisionMode.AUTO, aiCleanup = false, diagnostics = true,
         )
         StoryContext.reset()
