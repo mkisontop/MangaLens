@@ -103,6 +103,13 @@ internal object GeminiApi {
     private val lastWarm = AtomicLong(0L)
     private const val WARM_INTERVAL_MS = 60_000L
 
+    /**
+     * The shortest gap between warm-ups sent to wake a radio that went idle
+     * during a long look: one per scroll that follows such a look, and no
+     * more however the reader fidgets.
+     */
+    private const val IDLE_WARM_INTERVAL_MS = 5_000L
+
     fun isMissing(model: String): Boolean = model in missing
 
     /**
@@ -247,12 +254,17 @@ internal object GeminiApi {
      * connection in the pool that the page request then reuses — the
      * handshake is otherwise paid on the first page, the one the reader is
      * watching. Fire-and-forget, at most once a minute, never throws.
+     * [afterIdle], after a long look at one screen, it goes out as the
+     * reader starts to scroll whenever a few seconds have passed: on mobile
+     * data the radio has usually gone idle by then, and the lookup wakes it
+     * while they scroll instead of the page request paying for the wake.
      */
-    fun warm(apiKey: String, model: String) {
+    fun warm(apiKey: String, model: String, afterIdle: Boolean = false) {
         if (LlmHttp.cleanKey(apiKey).isEmpty() || model.isBlank()) return
         val now = System.currentTimeMillis()
         val last = lastWarm.get()
-        if (now - last < WARM_INTERVAL_MS || !lastWarm.compareAndSet(last, now)) return
+        val interval = if (afterIdle) IDLE_WARM_INTERVAL_MS else WARM_INTERVAL_MS
+        if (now - last < interval || !lastWarm.compareAndSet(last, now)) return
         runCatching {
             val request = LlmHttp.keyHeader(Request.Builder().url(base + model), "x-goog-api-key", apiKey)
                 .get()

@@ -128,6 +128,9 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         /** The ticker's beat while nothing is due sooner: warming the connection, checking the quiet. */
         private const val TICK_MS = 60L
 
+        /** A look at one screen long enough for a phone's radio to have gone idle. */
+        private const val LONG_LOOK_MS = 8_000L
+
         /**
          * How far (thumb mean difference) the live frame may have drifted
          * from the frame read ahead before that reading is thrown away.
@@ -790,6 +793,11 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
      * scroll to wipe.
      */
     private fun scrolled(now: Long) {
+        // Moving on after a long look at one screen: the radio has likely
+        // dropped to idle, and waking it costs the next request a few
+        // hundred milliseconds on mobile data. It wakes now, during the
+        // scroll, instead.
+        if (now - lastMotionAt >= LONG_LOOK_MS) pipeline.warm(settings, afterIdle = true)
         lastMotionAt = now
         if (state != State.SCANNING || preparing || midPassCancels > 0) scope.launch { onMotion() }
     }
@@ -923,7 +931,12 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                 // The reader is scrolling toward the next stop: have the
                 // connection open by the time they get there.
                 if (now - lastMotionAt < 200) pipeline.warm(settings)
-                if (lastFrameAt <= 0 || now < suppressUntil) continue
+                // Not held behind suppressUntil: that masks our own painting
+                // from the motion check, and while scanning the cards are
+                // gone — the scroll that got here cleared them. A reader who
+                // moves on while lines still stream in stopped being read
+                // for up to 0.6 s after the last one landed.
+                if (lastFrameAt <= 0) continue
                 val quiet = now - lastMotionAt
                 if (quiet >= settings.stabilityMs) {
                     startTranslate(auto = true)
