@@ -62,11 +62,29 @@ internal class StripRead(
      * missing, only a read of the whole screen is sure to letter it.
      */
     fun covered(recalled: List<PageItem>, height: Int, ignoreTop: Int, ignoreBottom: Int): Boolean =
+        coveredBy(revealed, recalled, height, ignoreTop, ignoreBottom)
+
+    /**
+     * Whether, [covered] failing, a read of the whole strip would do: every
+     * line memory lost lies on the strip, in its margin, where the model
+     * can read it again with the new rows.
+     */
+    fun coveredByStrip(recalled: List<PageItem>, height: Int, ignoreTop: Int, ignoreBottom: Int): Boolean =
+        !strip.isEmpty && since.items.all { old ->
+            val box = Rect(old.box).apply { offset(0, -scrolled) }
+            when {
+                box.top < ignoreTop || box.bottom > height - ignoreBottom -> true
+                box.top >= strip.top && box.bottom <= strip.bottom -> true
+                else -> recalled.any { sameSpot(it.box, box) }
+            }
+        }
+
+    private fun coveredBy(read: Rect, recalled: List<PageItem>, height: Int, ignoreTop: Int, ignoreBottom: Int): Boolean =
         since.items.all { old ->
             val box = Rect(old.box).apply { offset(0, -scrolled) }
             when {
                 box.top < ignoreTop || box.bottom > height - ignoreBottom -> true
-                !revealed.isEmpty && Rect.intersects(box, revealed) -> true
+                !read.isEmpty && Rect.intersects(box, read) -> true
                 else -> recalled.any { sameSpot(it.box, box) }
             }
         }

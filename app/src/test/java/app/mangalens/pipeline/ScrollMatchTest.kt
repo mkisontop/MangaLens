@@ -140,6 +140,8 @@ class ScrollMatchTest {
         assertFalse("memory lost the line in the margin, which the model leaves", read.covered(listOf(aboveNow), h, 0, 0))
         assertFalse("memory lost the upper line", read.covered(listOf(marginNow), h, 0, 0))
         assertTrue("a line scrolled into the ignored top band is not expected", read.covered(listOf(marginNow), h, 250, 0))
+        assertTrue("the lost margin line is on the strip: reading it whole will do", read.coveredByStrip(listOf(aboveNow), h, 0, 0))
+        assertFalse("the lost upper line is not: only the whole screen will", read.coveredByStrip(listOf(marginNow), h, 0, 0))
     }
 
     @Test

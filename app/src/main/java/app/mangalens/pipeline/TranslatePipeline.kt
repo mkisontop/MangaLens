@@ -248,6 +248,18 @@ class TranslatePipeline(
      * from the cache or from memory, and it is read afresh only when
      * neither holds all of them.
      */
+    /** [strip]'s rows read again whole, the margin's lines included, as the strip read before it. */
+    private fun wholeStrip(reader: PageReader, bitmap: Bitmap, strip: StripRead, lang: SourceLang, scope: CoroutineScope): StripRead {
+        val rows = strip.strip
+        val crop = Bitmap.createBitmap(bitmap, rows.left, rows.top, rows.width(), rows.height())
+        val inner = try {
+            reader.start(scope, crop, lang)
+        } finally {
+            if (crop !== bitmap) crop.recycle()
+        }
+        return StripRead(inner, rows, strip.scrolled, strip.since, strip.match, Rect(rows))
+    }
+
     private fun earlierPage(match: ScrollMatch): StripRead? {
         val again = synchronized(recentSeen) { recentSeen.drop(1).firstOrNull { match.unmovedFrom(it.match) } } ?: return null
         return StripRead(null, Rect(), 0, again, match)
@@ -739,7 +751,14 @@ class TranslatePipeline(
         val strip = read as? StripRead
         if (strip != null && !strip.covered(remembered, bitmap.height, analysis.ignoreTop, analysis.ignoreBottom)) {
             strip.cancel()
-            read = reader.start(this, bitmap, lang)
+            // A line memory lost in the strip's margin is read again with the
+            // strip, margin and all; only one lost above the strip needs the
+            // whole screen, the new lines last in its reading order.
+            read = if (strip.coveredByStrip(remembered, bitmap.height, analysis.ignoreTop, analysis.ignoreBottom)) {
+                wholeStrip(reader, bitmap, strip, lang, this)
+            } else {
+                reader.start(this, bitmap, lang)
+            }
         }
         if (remembered.isNotEmpty()) paint()
         ocrStart()

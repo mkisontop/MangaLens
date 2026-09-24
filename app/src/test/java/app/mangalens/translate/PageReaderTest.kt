@@ -535,7 +535,11 @@ class PageReaderTest {
         }
         val items = withTimeout(5_000) { reader(transport, race = 2, staggerMs = 0, retryMs = 5_000).read(page(), SourceLang.JA) }
         assertEquals(listOf("Hello."), items.map { it.en })
-        assertEquals("gemini-3.5-flash", transport.calls.last().first)
+        // The stand-in joins while the second racer may still be on its way
+        // out, so the order of the calls around it can vary.
+        val asked = transport.calls.map { it.first }
+        assertTrue(asked.toString(), asked.indexOf("gemini-3.5-flash") > asked.indexOf("gemini-3.6-flash"))
+        assertTrue(asked.toString(), asked.indexOf("gemini-3.6-flash") >= 0)
     }
 
     @Test
@@ -853,9 +857,13 @@ class PageReaderTest {
             transport.calls[n].second.getJSONArray("contents").getJSONObject(0).getJSONArray("parts").getJSONObject(2).getString("text"),
         )
         assertEquals(JSONArray(listOf(380, 1000)).toString(), pageText(0).getJSONArray("unread_rows").toString())
+        assertTrue("the strip says what the rows mean", pageText(0).getString("unread_rows_rule").contains("only the rows"))
         assertFalse(pageText(1).has("unread_rows"))
-        val system = transport.calls[0].second.getJSONObject("systemInstruction").getJSONArray("parts").getJSONObject(0).getString("text")
-        assertTrue("the prompt says what the rows mean", system.contains("\"unread_rows\": [top, bottom]"))
+        assertFalse(pageText(1).has("unread_rows_rule"))
+        // A whole page's request is exactly what it was: nothing about strips in the system prompt.
+        fun system(n: Int) = transport.calls[n].second.getJSONObject("systemInstruction").getJSONArray("parts").getJSONObject(0).getString("text")
+        assertFalse(system(1).contains("unread"))
+        assertEquals(system(0), system(1))
     }
 
     private fun sentSize(transport: FakeTransport): Pair<Int, Int> {

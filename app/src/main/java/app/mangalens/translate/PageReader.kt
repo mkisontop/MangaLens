@@ -359,7 +359,15 @@ class PageReader internal constructor(
         private val pageText = JSONObject()
             .put("expected_source_language", languageHint(lang))
             .put("story_so_far", JSONArray(StoryContext.snapshot()))
-            .apply { if (unread != null) put("unread_rows", JSONArray(unread.toList())) }
+            .apply {
+                // Said here, in a strip's own request, not in the system
+                // prompt: a rule every page carried made the model drop
+                // sound effects on whole pages too.
+                if (unread != null) {
+                    put("unread_rows", JSONArray(unread.toList()))
+                    put("unread_rows_rule", UNREAD_RULE)
+                }
+            }
             .toString()
 
         fun body(model: String): JSONObject {
@@ -703,9 +711,15 @@ class PageReader internal constructor(
             return letters.length >= 4 && letters.count { it.isUpperCase() } * 10 >= letters.length * 7
         }
 
+        /** What a strip's "unread_rows" mean, sent with them. */
+        private const val UNREAD_RULE = "This image is a strip of a scrolling page, and only the rows unread_rows gives " +
+            "(box_2d units, top and bottom) are new; the rest was read before and is shown for context. Report only " +
+            "lettering whose box reaches into those rows, including a balloon that straddles their edge; skip lettering " +
+            "lying wholly outside them."
+
         private val SYSTEM_PROMPT = """
 You are an elite manga/manhwa/manhua scanlation translator. You see one raw comic screenshot; your English is typeset straight over its lettering, so it must be right the first time.
-The request carries the series memory ("glossary", "characters"), then the page image, then "expected_source_language" and "story_so_far" (and, for a strip of a scrolling page, "unread_rows").
+The request carries the series memory ("glossary", "characters"), then the page image, then "expected_source_language" and "story_so_far".
 
 FIND THE LETTERING
 Find EVERY piece of non-English lettering yourself: balloons, captions, text on the art, signs, sound effects.
@@ -715,7 +729,6 @@ Find EVERY piece of non-English lettering yourself: balloons, captions, text on 
 - Ignore phone and browser UI, watermarks, page numbers and credits. Omit lettering already in English.
 - ORDER: all speech, thought and narration first, in reading order, then all sfx and art_text; never interleave. Webtoon: top to bottom. Manga: tiers top to bottom, panels in a tier right to left, columns right to left.
 - "expected_source_language" is a guess: read whatever language the lettering really is.
-- "unread_rows": [top, bottom], when given: only those rows of the image (box_2d units) are new; the rest was read before and is shown for context. Report only lettering whose box reaches into those rows, including a balloon that straddles their edge; skip lettering lying wholly outside them.
 - "kind": thought only for cloud balloons or inner monologue (a spiky burst is a shout); narration only for caption boxes; other lettering on the art (side comments, signs, unboxed captions) is art_text.
 
 WHO IS SPEAKING — decide before translating
