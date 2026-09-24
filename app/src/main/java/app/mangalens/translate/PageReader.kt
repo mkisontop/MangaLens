@@ -87,11 +87,13 @@ class PageReader internal constructor(
      * Starts reading [bitmap] in [scope] and returns at once. The page is
      * encoded before this returns, so the caller may recycle [bitmap] as
      * soon as it likes. Cancelling [scope] or the returned read aborts the
-     * request.
+     * request. [unread], for a strip of a scrolling page, is the band of its
+     * rows the reader has not seen yet, top and bottom in box units
+     * (0-1000): the model reports only lettering reaching into it.
      */
-    fun start(scope: CoroutineScope, bitmap: Bitmap, lang: SourceLang): PendingRead {
+    fun start(scope: CoroutineScope, bitmap: Bitmap, lang: SourceLang, unread: IntArray? = null): PendingRead {
         val started = System.nanoTime()
-        val page = PageRequest(bitmap.width, bitmap.height, encode(bitmap, settings.dataSaver), lang)
+        val page = PageRequest(bitmap.width, bitmap.height, encode(bitmap, settings.dataSaver), lang, unread)
         val read = Read(started, elapsedMs(started))
         val job = scope.launch(Dispatchers.Default) {
             try {
@@ -336,7 +338,7 @@ class PageReader internal constructor(
      * when the page was captured, and the page's own size for mapping the
      * model's boxes back.
      */
-    private inner class PageRequest(val width: Int, val height: Int, val jpeg: String, lang: SourceLang) {
+    private inner class PageRequest(val width: Int, val height: Int, val jpeg: String, lang: SourceLang, unread: IntArray? = null) {
 
         private val stable = JSONObject()
             .put("glossary", JSONObject(glossary?.snapshot() ?: emptyMap<String, String>()))
@@ -346,6 +348,7 @@ class PageReader internal constructor(
         private val pageText = JSONObject()
             .put("expected_source_language", languageHint(lang))
             .put("story_so_far", JSONArray(StoryContext.snapshot()))
+            .apply { if (unread != null) put("unread_rows", JSONArray(unread.toList())) }
             .toString()
 
         fun body(model: String): JSONObject {
@@ -677,7 +680,7 @@ class PageReader internal constructor(
 
         private val SYSTEM_PROMPT = """
 You are an elite manga/manhwa/manhua scanlation translator. You see one raw comic screenshot; your English is typeset straight over its lettering, so it must be right the first time.
-The request carries the series memory ("glossary", "characters"), then the page image, then "expected_source_language" and "story_so_far".
+The request carries the series memory ("glossary", "characters"), then the page image, then "expected_source_language" and "story_so_far" (and, for a strip of a scrolling page, "unread_rows").
 
 FIND THE LETTERING
 Find EVERY piece of non-English lettering yourself: balloons, captions, text on the art, signs, sound effects.
@@ -687,6 +690,7 @@ Find EVERY piece of non-English lettering yourself: balloons, captions, text on 
 - Ignore phone and browser UI, watermarks, page numbers and credits. Omit lettering already in English.
 - ORDER: all speech, thought and narration first, in reading order, then all sfx and art_text; never interleave. Webtoon: top to bottom. Manga: tiers top to bottom, panels in a tier right to left, columns right to left.
 - "expected_source_language" is a guess: read whatever language the lettering really is.
+- "unread_rows": [top, bottom], when given: only those rows of the image (box_2d units) are new; the rest was read before and is shown for context. Report only lettering whose box reaches into those rows, including a balloon that straddles their edge; skip lettering lying wholly outside them.
 - "kind": thought only for cloud balloons or inner monologue (a spiky burst is a shout); narration only for caption boxes; other lettering on the art (side comments, signs, unboxed captions) is art_text.
 
 WHO IS SPEAKING — decide before translating

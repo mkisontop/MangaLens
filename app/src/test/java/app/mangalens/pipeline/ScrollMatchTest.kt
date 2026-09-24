@@ -121,15 +121,25 @@ class ScrollMatchTest {
     private fun item(box: Rect, en: String) = PageItem(box, ItemKind.SPEECH, en, en)
 
     @Test
-    fun aStripReadCountsOnMemoryForEverythingOutsideTheStrip() {
+    fun aStripReadCountsOnMemoryForEverythingItsNewRowsDoNotReach() {
         val match = ScrollMatch.of(screen(900))
-        val before = listOf(item(Rect(100, 400, 300, 500), "above"), item(Rect(100, 900, 300, 1000), "lower"))
-        // Scrolled 300 down: the strip is the bottom 300 rows plus a 300-row margin.
-        val read = StripRead(null, Rect(0, 600, w, h), 300, Seen(match, before), match)
+        val before = listOf(
+            item(Rect(100, 400, 300, 500), "above"),
+            item(Rect(100, 1000, 300, 1100), "margin"),
+            item(Rect(100, 1150, 300, 1250), "cut"),
+        )
+        // Scrolled 300 down: the strip is the bottom 300 rows, the ones the
+        // scroll revealed, plus a 300-row margin the model is told to leave.
+        val read = StripRead(null, Rect(0, h - 600, w, h), 300, Seen(match, before), match, Rect(0, h - 300, w, h))
         val aboveNow = item(Rect(100, 100, 300, 200), "above")
-        assertTrue("the upper line was found again; the lower now lies in the strip", read.covered(listOf(aboveNow), h, 0, 0))
-        assertFalse("memory lost the upper line", read.covered(emptyList(), h, 0, 0))
-        assertTrue("a line scrolled into the ignored top band is not expected", read.covered(emptyList(), h, 250, 0))
+        val marginNow = item(Rect(100, 700, 300, 800), "margin")
+        assertTrue(
+            "the upper line and the margin's were found again; the cut one reaches the new rows",
+            read.covered(listOf(aboveNow, marginNow), h, 0, 0),
+        )
+        assertFalse("memory lost the line in the margin, which the model leaves", read.covered(listOf(aboveNow), h, 0, 0))
+        assertFalse("memory lost the upper line", read.covered(listOf(marginNow), h, 0, 0))
+        assertTrue("a line scrolled into the ignored top band is not expected", read.covered(listOf(marginNow), h, 250, 0))
     }
 
     @Test

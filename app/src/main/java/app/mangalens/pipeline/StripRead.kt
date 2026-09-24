@@ -26,6 +26,12 @@ internal class StripRead(
     val scrolled: Int,
     val since: Seen,
     val match: ScrollMatch,
+    /**
+     * The rows the scroll revealed, in screen coordinates: the model reads
+     * the lettering reaching into them, and the strip's margin is left to
+     * memory. Empty when nothing was sent.
+     */
+    val revealed: Rect = Rect(),
 ) : PendingRead {
 
     override val isActive: Boolean get() = inner?.isActive ?: false
@@ -49,17 +55,18 @@ internal class StripRead(
 
     /**
      * Whether memory found again, on this frame of [height] rows, every
-     * line [since] held that is still on screen and outside the strip —
-     * the lines this read counts on memory for. Lines in the ignored bands
-     * at the top and bottom are not expected. When one is missing, only a
-     * read of the whole screen is sure to letter it.
+     * line [since] held that is still on screen and reaches no row the
+     * scroll revealed — the lines this read counts on memory for, the
+     * strip's margin included: the model is told to leave those. Lines in
+     * the ignored bands at the top and bottom are not expected. When one is
+     * missing, only a read of the whole screen is sure to letter it.
      */
     fun covered(recalled: List<PageItem>, height: Int, ignoreTop: Int, ignoreBottom: Int): Boolean =
         since.items.all { old ->
             val box = Rect(old.box).apply { offset(0, -scrolled) }
             when {
                 box.top < ignoreTop || box.bottom > height - ignoreBottom -> true
-                !strip.isEmpty && box.top >= strip.top && box.bottom <= strip.bottom -> true
+                !revealed.isEmpty && Rect.intersects(box, revealed) -> true
                 else -> recalled.any { sameSpot(it.box, box) }
             }
         }

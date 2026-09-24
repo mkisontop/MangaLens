@@ -143,6 +143,13 @@ class TranslatePipeline(
         /** A strip taller than this share of the screen is read as the whole screen. */
         const val MAX_STRIP = 0.7f
 
+        /**
+         * How far into the margin, as a share of the screen, the rows the
+         * model is told are unread reach past the rows a scroll revealed:
+         * more than a model's box is ever off by.
+         */
+        const val UNREAD_SLACK = 0.04f
+
         /** Background busier than this is worth an AI redraw under its lettering. */
         const val BUSY_FOR_AI = 0.3f
 
@@ -208,14 +215,31 @@ class TranslatePipeline(
             Rect(0, 0, bitmap.width, (revealed + margin).coerceAtMost(h))
         }
         if (strip.height() > h * MAX_STRIP) return null
+        // The rows the scroll revealed. The margin above them is shown for
+        // context and for a balloon the last stop's edge cut, not to be read
+        // again: its lines were all read at that stop and come back from
+        // memory. The model is told the revealed rows, reaching a little
+        // into the margin, so a line that reaches them at all is its to read
+        // however loosely it boxes it.
+        val revealedRows = if (d > 0) Rect(0, h - revealed, bitmap.width, h) else Rect(0, 0, bitmap.width, revealed)
+        val slack = (h * UNREAD_SLACK).toInt()
+        val told = if (d > 0) {
+            (revealedRows.top - slack).coerceAtLeast(strip.top) to strip.bottom
+        } else {
+            strip.top to (revealedRows.bottom + slack).coerceAtMost(strip.bottom)
+        }
+        val unread = intArrayOf(
+            (told.first - strip.top) * 1000 / strip.height(),
+            (told.second - strip.top) * 1000 / strip.height(),
+        )
         val crop = Bitmap.createBitmap(bitmap, strip.left, strip.top, strip.width(), strip.height())
         // The reader encodes the strip before it returns; the crop is not needed after.
         val inner = try {
-            reader.start(scope, crop, settings.sourceLang)
+            reader.start(scope, crop, settings.sourceLang, unread)
         } finally {
             if (crop !== bitmap) crop.recycle()
         }
-        return StripRead(inner, strip, d, last, match)
+        return StripRead(inner, strip, d, last, match, revealedRows)
     }
 
     /**

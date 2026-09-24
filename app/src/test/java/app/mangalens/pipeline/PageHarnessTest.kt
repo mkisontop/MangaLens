@@ -276,10 +276,16 @@ class PageHarnessTest {
         val glossary = GlossaryStore(app)
         val cast = CastBook(app)
         val pipeline = TranslatePipeline(NoOcr(), TranslationService(cache, glossary, cast), cache, glossary, cast)
+        // Frames named ..._y<offset>: the rows a stop newly reveals are the
+        // bottom (offset - previous offset) of the frame.
+        var lastY: Int? = null
         for (file in frames) {
             val page = BitmapFactory.decodeFile(file.path, BitmapFactory.Options().apply {
                 inPreferredConfig = Bitmap.Config.ARGB_8888
             }).apply { density = Bitmap.DENSITY_NONE }
+            val y = Regex("_y(\\d+)").find(file.nameWithoutExtension)?.groupValues?.get(1)?.toInt()
+            val revealedFrom = if (y != null && lastY != null) page.height - (y - lastY!!) else 0
+            lastY = y
             val t0 = System.nanoTime()
             fun ms() = (System.nanoTime() - t0) / 1_000_000
             val result = runBlocking {
@@ -287,15 +293,19 @@ class PageHarnessTest {
                 val analysis = pipeline.analyze(page, settings)
                 var first = -1L
                 var firstCount = 0
+                var firstNew = -1L
                 val r = pipeline.translate(analysis, settings, read = read, onPartial = { p ->
                     if (first < 0 && p.bubbles.isNotEmpty()) {
                         first = ms()
                         firstCount = p.bubbles.size
                     }
+                    if (firstNew < 0 && p.bubbles.any { it.box.centerY() >= revealedFrom }) firstNew = ms()
                 })
+                if (firstNew < 0 && r.bubbles.any { it.box.centerY() >= revealedFrom }) firstNew = ms()
+                val newCards = r.bubbles.count { it.box.centerY() >= revealedFrom }
                 println(
-                    "[scroll] ${file.name}: first paint $first ms ($firstCount cards) · final ${ms()} ms · " +
-                        "${r.bubbles.size} cards · ${r.diag ?: ""}",
+                    "[scroll] ${file.name}: first paint $first ms ($firstCount cards) · first new $firstNew ms · final ${ms()} ms · " +
+                        "${r.bubbles.size} cards ($newCards new) · ${r.diag ?: ""}",
                 )
                 r
             }

@@ -17,6 +17,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.awaitCancellation
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
 import org.json.JSONArray
@@ -791,6 +792,20 @@ class PageReaderTest {
         assertFalse(body.has("safetySettings"))
         assertFalse(body.has("serviceTier"))
         assertEquals("low", config.getJSONObject("thinkingConfig").getString("thinkingLevel"))
+    }
+
+    @Test
+    fun `a strip names the rows it newly shows, and a page names none`() = runBlocking {
+        val transport = FakeTransport { _, _, onDelta -> streamOut(reply(hello), onDelta) }
+        coroutineScope { reader(transport, race = 1).start(this, page(800, 600), SourceLang.JA, intArrayOf(380, 1000)).collect(null) }
+        reader(transport, race = 1).read(page(), SourceLang.JA)
+        fun pageText(n: Int) = JSONObject(
+            transport.calls[n].second.getJSONArray("contents").getJSONObject(0).getJSONArray("parts").getJSONObject(2).getString("text"),
+        )
+        assertEquals(JSONArray(listOf(380, 1000)).toString(), pageText(0).getJSONArray("unread_rows").toString())
+        assertFalse(pageText(1).has("unread_rows"))
+        val system = transport.calls[0].second.getJSONObject("systemInstruction").getJSONArray("parts").getJSONObject(0).getString("text")
+        assertTrue("the prompt says what the rows mean", system.contains("\"unread_rows\": [top, bottom]"))
     }
 
     private fun sentSize(transport: FakeTransport): Pair<Int, Int> {
