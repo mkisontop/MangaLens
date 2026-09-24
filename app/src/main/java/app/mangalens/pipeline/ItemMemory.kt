@@ -72,17 +72,23 @@ internal class ItemMemory {
     fun clear() = items.clear()
 
     /**
-     * The remembered items visible in [bitmap], moved to where they now sit.
-     * Only vertical travel is searched: that is how a page scrolls, and a
-     * page that zoomed or turned is simply read afresh.
+     * The remembered items visible in [bitmap], moved to where they now sit,
+     * in the order they were read — a balloon the model gave as two pieces
+     * comes back top piece first, as it was lettered. Only vertical travel
+     * is searched: that is how a page scrolls, and a page that zoomed or
+     * turned is simply read afresh.
+     *
+     * Where two memories land on the same lettering, the newer one wins;
+     * boxes that merely graze, as the pieces of one split balloon do, are
+     * both kept.
      */
     @Synchronized
     fun recall(bitmap: Bitmap, ignoreTop: Int = 0, ignoreBottom: Int = 0): List<PageItem> {
         if (items.isEmpty()) return emptyList()
         val gray = Gray.of(bitmap)
-        val out = ArrayList<PageItem>()
-        val taken = ArrayList<Rect>()
-        for (r in items.reversed()) {
+        val found = ArrayList<Pair<Int, PageItem>>()
+        for (i in items.indices.reversed()) {
+            val r = items[i]
             if (r.pageW != bitmap.width || r.pageH != bitmap.height) continue
             val cy = find(gray, r) ?: continue
             val coarse = (cy - r.cy) * SCALE
@@ -90,11 +96,18 @@ internal class ItemMemory {
             val box = Rect(r.item.box).apply { offset(dx, dy) }
             if (box.top < ignoreTop || box.bottom > bitmap.height - ignoreBottom) continue
             if (box.top < 0 || box.bottom > bitmap.height) continue
-            if (taken.any { Rect.intersects(it, box) }) continue
-            taken.add(box)
-            out.add(r.item.copy(box = box))
+            if (found.any { (_, it) -> sameSpot(it.box, box) }) continue
+            found.add(i to r.item.copy(box = box))
         }
-        return out
+        return found.sortedBy { it.first }.map { it.second }
+    }
+
+    /** Most of the smaller box lies in the larger: one piece of lettering, not neighbours. */
+    private fun sameSpot(a: Rect, b: Rect): Boolean {
+        val r = Rect()
+        if (!r.setIntersect(a, b)) return false
+        val smaller = minOf(a.width().toLong() * a.height(), b.width().toLong() * b.height()).coerceAtLeast(1L)
+        return r.width().toLong() * r.height() * 2 > smaller
     }
 
     private fun overlaps(a: Remembered, b: Remembered): Boolean =

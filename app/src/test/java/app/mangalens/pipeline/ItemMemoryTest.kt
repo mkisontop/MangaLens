@@ -106,6 +106,25 @@ class ItemMemoryTest {
     }
 
     @Test
+    fun aBalloonReadAsTwoPiecesComesBackWholeAndInOrder() {
+        val (page, c) = blank()
+        // One balloon, its two lines reported as two items whose boxes graze.
+        val size = 26f
+        val oval = RectF(160f, 640f, 560f, 780f)
+        c.drawOval(oval, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE })
+        "ABCDEFGHIJ".forEachIndexed { i, ch -> glyph(c, ch, 230f + i * size, 672f, size - 4) }
+        "KLMNOPQRST".forEachIndexed { i, ch -> glyph(c, ch, 230f + i * size, 700f, size - 4) }
+        val top = PageItem(Rect(226, 668, 494, 700), ItemKind.SPEECH, "ABCDEFGHIJ", "Where were you?")
+        val bottom = PageItem(Rect(226, 698, 494, 730), ItemKind.SPEECH, "KLMNOPQRST", "I looked everywhere.")
+        val memory = ItemMemory()
+        memory.remember(page, listOf(top, bottom))
+
+        val (next, _) = scrolled(page, 300)
+        val found = memory.recall(next)
+        assertEquals("both pieces, top first", listOf(top.en, bottom.en), found.map { it.en })
+    }
+
+    @Test
     fun aNewBalloonInAnOldBalloonsPlaceIsNotTheOldBalloon() {
         val (page, c) = blank()
         val a = balloon(c, "ABCDEFG", 360f, 700f, "Where were you?")

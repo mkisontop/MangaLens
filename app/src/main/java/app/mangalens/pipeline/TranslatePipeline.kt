@@ -24,6 +24,10 @@ import app.mangalens.translate.ItemKind
 import app.mangalens.translate.PageItem
 import app.mangalens.translate.PageKey
 import app.mangalens.translate.PageReader
+import app.mangalens.translate.GeminiBlocked
+import app.mangalens.translate.GeminiHttpException
+import app.mangalens.translate.GeminiModelMissing
+import app.mangalens.translate.GeminiRateLimited
 import app.mangalens.translate.PendingRead
 import app.mangalens.translate.ReplayGeometry
 import app.mangalens.translate.SfxDict
@@ -123,7 +127,7 @@ class TranslatePipeline(
         const val REREAD_SHORT_SIDE = 320f
 
         /** AI-first read cache entry schema; older shapes are dropped. */
-        const val READ_CACHE_VERSION = 3
+        const val READ_CACHE_VERSION = 4
 
         /**
          * How long the machine draft waits for the AI before it is shown.
@@ -588,7 +592,7 @@ class TranslatePipeline(
 
         suspend fun paint(label: String) {
             val emit = onPartial ?: return
-            val shown = gate.withLock { UpgradeMerge.merge(draft, resolver.resolve(keepWording(recalled, streamed))) }
+            val shown = gate.withLock { UpgradeMerge.merge(draft, resolver.resolve(Wording.keep(recalled, streamed))) }
             if (shown.isNotEmpty()) emit(PageResult(shown, label, "upgrading"))
         }
 
@@ -612,6 +616,7 @@ class TranslatePipeline(
             }
         }
 
+        var failure: Exception? = null
         val items: List<PageItem>? = try {
             read.collect { item ->
                 gate.withLock {
@@ -623,6 +628,7 @@ class TranslatePipeline(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
+            failure = e
             null
         }
 
@@ -630,21 +636,27 @@ class TranslatePipeline(
             // Refused or failed. Whatever streamed stays; the rest goes
             // through the text path, which falls back to Google on its own.
             draftJob?.cancel()
-            val partial = gate.withLock { resolver.resolve(keepWording(recalled, streamed)) }
+            val partial = gate.withLock { resolver.resolve(Wording.keep(recalled, streamed)) }
             val text = runCatching {
                 aiTextTranslate(bitmap, bubbles, lang, settings, analysis.detected)
             }.getOrNull()
             val shown = if (text == null) UpgradeMerge.merge(draft, partial) else UpgradeMerge.merge(text.bubbles, partial)
+            val cause = failure?.let(::readFailure) ?: "failed"
             return@coroutineScope PageResult(
-                shown, text?.engineLabel ?: reader.label, "AI read failed", polished = partial.isNotEmpty(),
-                diag = "read failed at ${elapsed()} ms",
+                shown, text?.engineLabel ?: reader.label, "AI read $cause", polished = partial.isNotEmpty(),
+                diag = "read $cause at ${elapsed()} ms",
+                alert = failure?.takeIf(::keyRejected)?.let { "Gemini rejected the API key — check it in MangaLens" },
             )
         }
 
-        val complete = items + gapItems(bubbles, analysis.detected, items, lang, settings)
-        key?.let { readCachePut(it, bubbles, complete, bitmap.width, bitmap.height) }
-        memory.remember(bitmap, complete)
-        val finalItems = keepWording(recalled, complete)
+        val complete = items + gapItems(bubbles, analysis.detected, items + recalled, lang, settings)
+        val finalItems = Wording.keep(recalled, complete)
+        // What is stored is what the reader sees, so the next stop and a
+        // scroll-back say it in the same words. A reply that broke off is
+        // shown, and remembered line by line, but never kept as the page's
+        // whole answer.
+        if (!read.cutOff) key?.let { readCachePut(it, bubbles, finalItems, bitmap.width, bitmap.height) }
+        memory.remember(bitmap, finalItems)
         var rendered = gate.withLock { resolver.resolve(finalItems) }
 
         // Lettering on detailed art has only been smoothed over locally.
@@ -690,32 +702,29 @@ class TranslatePipeline(
         )
     }
 
-    /**
-     * Keeps the wording the reader already saw. An item recalled from an
-     * earlier stop is re-read by the model along with everything else, and
-     * a fresh answer for the same balloon may be phrased differently — a
-     * line that changes words while it is being read is worse than either
-     * phrasing. The model's new geometry is kept; the recalled English wins.
-     */
-    private fun keepWording(recalled: List<PageItem>, fresh: List<PageItem>): List<PageItem> {
-        if (recalled.isEmpty()) return fresh
-        val used = BooleanArray(recalled.size)
-        val out = ArrayList<PageItem>(fresh.size + recalled.size)
-        for (f in fresh) {
-            val k = recalled.indices.firstOrNull { !used[it] && sameLettering(recalled[it].box, f.box) }
-            if (k == null) {
-                out.add(f)
-            } else {
-                used[k] = true
-                out.add(f.copy(en = recalled[k].en, who = recalled[k].who.ifBlank { f.who }))
-            }
-        }
-        for (i in recalled.indices) if (!used[i]) out.add(recalled[i])
-        return out
+    /** A few words on why a read failed, for the status line; never the key or the page. */
+    private fun readFailure(e: Exception): String = when {
+        keyRejected(e) -> "failed: key rejected"
+        e is GeminiRateLimited -> "failed: rate limited"
+        e is GeminiBlocked -> "declined"
+        e is GeminiModelMissing -> "failed: model unavailable"
+        e is GeminiHttpException -> "failed: HTTP ${e.code}"
+        e is java.io.IOException -> "failed: network"
+        else -> "failed"
     }
 
-    private fun sameLettering(a: Rect, b: Rect): Boolean =
-        iou(a, b) > 0.45f || (a.contains(b.centerX(), b.centerY()) && b.contains(a.centerX(), a.centerY()))
+    /**
+     * The provider turned the key itself away — wrong, revoked or not
+     * allowed this API — as opposed to a busy server or a declined page.
+     * Every page will fail the same way until the reader fixes it.
+     */
+    private fun keyRejected(e: Exception): Boolean {
+        if (e !is GeminiHttpException || e is GeminiModelMissing) return false
+        val m = e.message.orEmpty()
+        return e.code == 401 || (e.code == 403 && "PERMISSION_DENIED" in m) ||
+            (e.code == 400 && ("API_KEY_INVALID" in m || "API key not valid" in m || "API key expired" in m))
+    }
+
 
     /**
      * Dialogue on-device analysis found in a detected balloon that the model
@@ -740,14 +749,18 @@ class TranslatePipeline(
                 }
         }
         if (missing.isEmpty()) return emptyList()
-        val outcome = runCatching {
+        val outcome = try {
             translation.translate(
                 missing.map { it.text }, lang, settings,
                 kinds = missing.map { it.kind },
                 runs = missing.map { it.runId },
                 parts = missing.map { it.runPart },
             )
-        }.getOrNull() ?: return emptyList()
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            return emptyList()
+        }
         val fromAi = outcome.engineLabel != "Google"
         return missing.mapIndexedNotNull { k, b ->
             val en = JunkFilter.accept(b.text, outcome.texts.getOrElse(k) { "" }, lang, fromAi) ?: return@mapIndexedNotNull null
@@ -787,6 +800,8 @@ class TranslatePipeline(
                     who = o.getString(7),
                     vertical = o.getInt(8) == 1,
                     loud = o.getInt(9) == 1,
+                    textColor = if (o.isNull(10)) null else o.getInt(10),
+                    outlineColor = if (o.isNull(11)) null else o.getInt(11),
                 )
             }
         }.getOrNull()
@@ -806,6 +821,7 @@ class TranslatePipeline(
                 JSONArray().put(n.left).put(n.top).put(n.right).put(n.bottom)
                     .put(it.kind.name).put(it.src).put(it.en).put(it.who)
                     .put(if (it.vertical) 1 else 0).put(if (it.loud) 1 else 0)
+                    .put(it.textColor ?: JSONObject.NULL).put(it.outlineColor ?: JSONObject.NULL)
             )
         }
         cache.put(key, JSONObject().put("v", READ_CACHE_VERSION).put("regions", regs).put("items", arr).toString())

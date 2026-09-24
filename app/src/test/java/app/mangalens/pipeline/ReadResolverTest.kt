@@ -120,6 +120,23 @@ class ReadResolverTest {
     }
 
     @Test
+    fun aHeartTheModelGaveAsASoundDoesNotSpoilItsBalloon() {
+        val oval = Rect(200, 200, 520, 600)
+        val balloon = detection(oval, oval)
+        val inked = page.copy(Bitmap.Config.ARGB_8888, true)
+        val c = Canvas(inked)
+        val ink = android.graphics.Paint().apply { color = Color.BLACK }
+        val speech = PageItem(Rect(320, 300, 400, 480), ItemKind.SPEECH, "好き", "I like you", vertical = true)
+        c.drawRect(335f, 310f, 385f, 470f, ink)
+        // A bold heart lettered under the line, answered as a sound of its own.
+        val heart = PageItem(Rect(330, 500, 390, 560), ItemKind.SFX, "♡", "♡")
+        c.drawRect(335f, 505f, 385f, 555f, ink)
+
+        val out = ReadResolver(inked, listOf(balloon), emptyList(), 0, 0, emptyList()).resolve(listOf(speech, heart))
+        assertTrue("the balloon is still cleaned and typeset", out.any { it.translated == speech.en && it.balloon === balloon })
+    }
+
+    @Test
     fun aBigSoundEffectAcrossTheArtIsNotedNotErased() {
         // A dramatic sound effect spanning a quarter of the page: erasing it
         // would take the drawing with it.

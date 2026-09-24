@@ -78,9 +78,14 @@ internal class ReadResolver(
             // A detection whose interior shows anything but this lettering
             // is art that passed for a balloon — a face, a highlight, the
             // inside of a big glyph — and wiping it would paint over the
-            // drawing. Its lettering is erased on its own instead.
-            val trusted = trust.getOrPut(trustKey(balloon, group.map { usable[it].box })) {
-                BalloonTrust.holdsOnly(bitmap, balloon, group.map { usable[it].box })
+            // drawing. Its lettering is erased on its own instead. A "!!"
+            // or heart the model gave as a sound of its own is lettering
+            // too, not stray ink, though it never claims the balloon.
+            val lettering = group.map { usable[it].box } + usable.indices
+                .filter { home[it] == null && usable[it].kind == ItemKind.SFX && containedShare(usable[it].box, balloon.box) > 0.8f }
+                .map { usable[it].box }
+            val trusted = trust.getOrPut(trustKey(balloon, lettering)) {
+                BalloonTrust.holdsOnly(bitmap, balloon, lettering)
             }
             if (!trusted) {
                 for (k in group) {
