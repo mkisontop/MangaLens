@@ -126,33 +126,58 @@ object TypeSet {
      * not fit one line together — a breaker cannot rejoin them into
      * "Donau- dampf" mid-line. A word no cut can bring under [maxWidth] comes
      * back as close as its cuts allow; the caller shrinks the type for it.
+     *
+     * Short words and names are set whole ([MIN_HYPHENATED], [isName])
+     * unless [eager]: for a balloon so narrow that even the smallest type
+     * cannot hold them, where a hyphen is better than a word over the
+     * outline.
      */
-    fun hyphenate(text: String, measure: (String) -> Float, maxWidth: Float): String {
+    fun hyphenate(text: String, measure: (String) -> Float, maxWidth: Float, eager: Boolean = false): String {
         val words = text.trim().split(WS).filter { it.isNotEmpty() }
         if (words.none { measure(it) > maxWidth }) return text
+        val shortest = if (eager) MIN_HYPHENATED_EAGER else MIN_HYPHENATED
         val out = StringBuilder()
-        for (word in words) {
+        for ((i, word) in words.withIndex()) {
             if (out.isNotEmpty()) out.append(' ')
-            if (measure(word) <= maxWidth) {
+            if (measure(word) <= maxWidth || (!eager && isName(word, words.getOrNull(i - 1)))) {
                 out.append(word)
             } else {
-                splitWord(word, measure, maxWidth).joinTo(out, " ")
+                splitWord(word, measure, maxWidth, shortest).joinTo(out, " ")
             }
         }
         return out.toString()
     }
 
+    /**
+     * A name, capitalised mid-sentence, is set whole: "Tortil- lano" reads
+     * as a typo, where the type a size smaller does not. One too long for
+     * any balloon is cut like any other word.
+     */
+    private fun isName(word: String, previous: String?): Boolean {
+        val first = word.firstOrNull { it.isLetter() } ?: return false
+        if (!first.isUpperCase() || previous == null || previous.last() in SENTENCE_END) return false
+        return word.count { it.isLetter() } <= LONGEST_WHOLE_NAME
+    }
+
+    private const val SENTENCE_END = ".!?…:\"—"
+
+    /** Letters in the longest name that is always set whole. */
+    private const val LONGEST_WHOLE_NAME = 12
+
     /** Fewest letters on either side of a hyphen: "W-" / "What" is a stammer, not a break. */
     private const val MIN_PIECE = 3
 
     /**
-     * Shortest word that is ever cut. "what-ever" in a narrow balloon reads
-     * worse than slightly smaller type; a compound twice that long has no
-     * size at which it fits.
+     * Shortest word that is ever cut. "what-ever" or "Under-stood" in a
+     * narrow balloon reads worse than slightly smaller type; a compound
+     * twice that long has no size at which it fits.
      */
-    private const val MIN_HYPHENATED = 9
+    private const val MIN_HYPHENATED = 11
 
-    private fun splitWord(word: String, measure: (String) -> Float, maxWidth: Float): List<String> {
+    /** The same, when nothing else fits the balloon at any size. */
+    private const val MIN_HYPHENATED_EAGER = 9
+
+    private fun splitWord(word: String, measure: (String) -> Float, maxWidth: Float, shortest: Int): List<String> {
         // Its own hyphens first: "self-" / "control" reads as written.
         val parts = word.split(HYPHEN_AFTER).filter { it.isNotEmpty() }
         if (parts.size > 1 && parts.all { p -> p.count { it.isLetter() } >= MIN_PIECE }) {
@@ -168,24 +193,24 @@ object TypeSet {
                 }
             }
             out.add(line)
-            return out.flatMap { if (measure(it) > maxWidth) balancedPieces(it, measure, maxWidth) else listOf(it) }
+            return out.flatMap { if (measure(it) > maxWidth) balancedPieces(it, measure, maxWidth, shortest) else listOf(it) }
         }
-        return balancedPieces(word, measure, maxWidth)
+        return balancedPieces(word, measure, maxWidth, shortest)
     }
 
     /**
      * The fewest near-equal pieces of [word] that fit [maxWidth] once
      * hyphenated, cut only between two letters with [MIN_PIECE] letters
      * either side — never through "...?!" or a stammer — and only in words
-     * of [MIN_HYPHENATED] letters or more. A word with no such cut is
+     * of [shortest] letters or more. A word with no such cut is
      * returned whole; one that cannot be cut narrow enough comes back in
      * the fewest pieces its cuts allow, for the caller to shrink.
      */
-    private fun balancedPieces(word: String, measure: (String) -> Float, maxWidth: Float): List<String> {
+    private fun balancedPieces(word: String, measure: (String) -> Float, maxWidth: Float, shortest: Int): List<String> {
         val letters = IntArray(word.length + 1)
         for (i in word.indices) letters[i + 1] = letters[i] + if (word[i].isLetter()) 1 else 0
         val total = letters[word.length]
-        if (total < MIN_HYPHENATED) return listOf(word)
+        if (total < shortest) return listOf(word)
         // Letters run by run: a cut needs MIN_PIECE letters of its own run
         // on each side, so "S-Sorry" and "waiting...aah" keep their halves.
         val runStart = IntArray(word.length)

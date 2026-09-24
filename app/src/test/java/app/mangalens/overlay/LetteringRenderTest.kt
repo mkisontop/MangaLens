@@ -765,4 +765,16 @@ class LetteringRenderTest {
         val trailing = TypeSet.hyphenate("waiting...aah", unit, 8f).split(" ")
         for (p in trailing) assertTrue("'$p' does not cut 'aah'", !p.startsWith("ah") && !p.startsWith("h"))
     }
+
+    @Test
+    fun `names and ten-letter words are set whole unless nothing else fits`() {
+        // Smaller type reads better than "Tortil- lano" or "Under- stood".
+        assertEquals("part of the Tortillano family", TypeSet.hyphenate("part of the Tortillano family", unit, 6f))
+        assertEquals("Understood.", TypeSet.hyphenate("Understood.", unit, 6f))
+        // A balloon no type fits them in: a hyphen beats a word over the outline.
+        assertEquals("Under- stood.", TypeSet.hyphenate("Understood.", unit, 6f, eager = true))
+        assertEquals("part of the Tortil- lano family", TypeSet.hyphenate("part of the Tortillano family", unit, 7f, eager = true))
+        // At the start of a sentence a capital says nothing about a name.
+        assertEquals("Wait. Everywhere- else", TypeSet.hyphenate("Wait. Everywhere-else", unit, 11f))
+    }
 }

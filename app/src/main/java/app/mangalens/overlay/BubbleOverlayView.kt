@@ -1108,18 +1108,26 @@ class BubbleOverlayView(context: Context) : View(context) {
             val cellW = box.width().toFloat() / balloon.maskW
             val cellH = box.height().toFloat() / balloon.maskH
             // First whole words, down to the hyphen floor; then from the top
-            // again with any word too wide for the balloon hyphenated.
+            // again with any long word too wide for the balloon hyphenated;
+            // then, only if nothing fits even the smallest type, with short
+            // words and names hyphenated too.
             val hyphenFloor = max(MIN_TYPE_SIZE, startSize * HYPHEN_FLOOR)
-            search@ for (pass in 0..1) {
+            val hyphenWidth = shape.maxSpan * cellW * SHAPE_MARGIN * HYPHEN_SHARE
+            search@ for (pass in 0..2) {
                 var size = startSize
                 while (size >= (if (pass == 0) hyphenFloor else BALLOON_MIN_TYPE_SIZE)) {
                     tp.textSize = dp(size)
-                    val words = if (pass == 0) {
-                        text
-                    } else {
-                        TypeSet.hyphenate(text, measure, shape.maxSpan * cellW * SHAPE_MARGIN * HYPHEN_SHARE)
+                    val words = when (pass) {
+                        0 -> text
+                        1 -> TypeSet.hyphenate(text, measure, hyphenWidth)
+                        else -> TypeSet.hyphenate(text, measure, hyphenWidth, eager = true)
                     }
-                    val fit = if (pass == 1 && words == text && size >= hyphenFloor) {
+                    val tried = when (pass) {
+                        1 -> words == text && size >= hyphenFloor
+                        2 -> words == TypeSet.hyphenate(text, measure, hyphenWidth)
+                        else -> false
+                    }
+                    val fit = if (tried) {
                         null
                     } else {
                         val shaper = TypeSet.Shaper(words, measure)
@@ -1153,7 +1161,7 @@ class BubbleOverlayView(context: Context) : View(context) {
             while (true) {
                 tp.textSize = dp(size)
                 val last = size <= BALLOON_MIN_TYPE_SIZE
-                val words = if (last) TypeSet.hyphenate(text, measure, maxTextW) else text
+                val words = if (last) TypeSet.hyphenate(text, measure, maxTextW, eager = true) else text
                 val lines = TypeSet.breakLines(words, measure, maxTextW)
                 var widest = 0f
                 for (line in lines) widest = max(widest, tp.measureText(line))
@@ -1598,14 +1606,23 @@ class BubbleOverlayView(context: Context) : View(context) {
         // two smaller type cannot set the words without one.
         var stranded: Block? = null
         var strandedSize = 0f
-        for (pass in 0..1) {
+        for (pass in 0..2) {
             var size = start
             while (true) {
                 tp.textSize = size
                 val lineH = (tp.descent() - tp.ascent()) * spacing
                 val bd = budget(size, lineH)
-                val words = if (pass == 0) text else TypeSet.hyphenate(text, measure, bd.widest * HYPHEN_SHARE)
-                if (pass == 0 || words != text || size < hyphenFloor) {
+                val words = when (pass) {
+                    0 -> text
+                    1 -> TypeSet.hyphenate(text, measure, bd.widest * HYPHEN_SHARE)
+                    else -> TypeSet.hyphenate(text, measure, bd.widest * HYPHEN_SHARE, eager = true)
+                }
+                val tried = when (pass) {
+                    1 -> words == text && size >= hyphenFloor
+                    2 -> words == TypeSet.hyphenate(text, measure, bd.widest * HYPHEN_SHARE)
+                    else -> false
+                }
+                if (!tried) {
                     val block = linesWithin(words, measure, bd, lineH)
                     if (block != null && !block.stranded) return block.lines
                     if (block != null && stranded == null) {
@@ -1630,7 +1647,7 @@ class BubbleOverlayView(context: Context) : View(context) {
         tp.textSize = floor
         val lineH = (tp.descent() - tp.ascent()) * spacing
         val widest = budget(floor, lineH).widest
-        return TypeSet.breakLines(TypeSet.hyphenate(text, measure, widest), measure, widest)
+        return TypeSet.breakLines(TypeSet.hyphenate(text, measure, widest, eager = true), measure, widest)
     }
 
     /** Lines for a block, and whether one of them is a stranded scrap. */
