@@ -73,9 +73,55 @@ class ReadResolverTest {
         assertTrue(lb.box.contains(b.box.centerX(), b.box.centerY()))
         assertTrue(!la.box.contains(b.box.centerX(), b.box.centerY()))
         assertTrue(!lb.box.contains(a.box.centerX(), a.box.centerY()))
-        // Together the lobes still clean the whole shape.
-        val cells = la.mask.count { it } + lb.mask.count { it }
-        assertEquals(joined.mask.count { it }, cells)
+        // Together the lobes still clean the whole shape, and they overlap
+        // along the join: each is cleaned short of its own edge, and a seam
+        // neither covered left the lettering crossing it on the page.
+        var covered = 0
+        var both = 0
+        for (i in joined.mask.indices) {
+            if (!joined.mask[i]) continue
+            val x = joined.box.left + (i % joined.maskW) * 4 + 2
+            val y = joined.box.top + (i / joined.maskW) * 4 + 2
+            val inA = onMask(la, x, y)
+            val inB = onMask(lb, x, y)
+            if (inA || inB) covered++
+            if (inA && inB) both++
+        }
+        assertEquals(joined.mask.count { it }, covered)
+        assertTrue("the lobes overlap along the join, got $both cells", both > 0)
+        assertTrue("and only along it, got $both cells", both < joined.mask.count { it } / 10)
+    }
+
+    /** True when page point (x, y) falls on [b]'s mask. */
+    private fun onMask(b: Balloon, x: Int, y: Int): Boolean {
+        if (!b.box.contains(x, y)) return false
+        val mx = ((x - b.box.left) * b.maskW / b.box.width()).coerceIn(0, b.maskW - 1)
+        val my = ((y - b.box.top) * b.maskH / b.box.height()).coerceIn(0, b.maskH - 1)
+        return b.mask[my * b.maskW + mx]
+    }
+
+    /**
+     * A line of two columns and a line of four, a column apart in the two
+     * lobes of one joined balloon — one speaker's two balloons. A box's
+     * short side is two lines thick round the two-column line, and taken
+     * for one line it made the gap between them look like the space
+     * between one balloon's columns: both lines went into one block
+     * across the join.
+     */
+    @Test
+    fun multiColumnLinesAColumnApartKeepALobeEach() {
+        val small = Rect(262, 396, 372, 540)
+        val big = Rect(156, 430, 346, 624)
+        val joined = detection(Rect(156, 396, 372, 624), small, big)
+        val a = PageItem(Rect(298, 418, 339, 518), ItemKind.SPEECH, "いやあ\n悪いなあ…", "Aw, she shouldn't have...", who = "Boss", vertical = true)
+        val b = PageItem(
+            Rect(180, 460, 274, 601), ItemKind.SPEECH, "そうそう\nメルが来てから\nお客さんが\n少し増えたんだ",
+            "Actually, we've had more customers since you got here, Mel.", who = "Boss", vertical = true,
+        )
+
+        val out = resolver(joined).resolve(listOf(a, b))
+        assertEquals(2, out.size)
+        assertTrue(out.all { it.balloon != null && it.balloon !== joined })
     }
 
     @Test

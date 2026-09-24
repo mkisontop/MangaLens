@@ -287,7 +287,8 @@ object BalloonFinder {
         for (r in BURST_SEAL_RADII) {
             val sealed = dilate(ink, w, h, r)
             val sealedOpen = BooleanArray(n) { open[it] && !sealed[it] }
-            add(sweep(Pass(sealedOpen, dark, flatMid, BURST_MIN_FILL, inverted = false, allowEdge = r == BURST_SEAL_RADII[0]), geom))
+            val pass = Pass(sealedOpen, dark, flatMid, BURST_MIN_FILL, inverted = false, allowEdge = r == BURST_SEAL_RADII[0], giveBack = open, seal = r)
+            add(sweep(pass, geom, known = out))
         }
 
         // Pastel balloons: the interior threshold relaxes to catch pink and
@@ -383,6 +384,13 @@ object BalloonFinder {
         val inverted: Boolean,
         /** Whether a component cut by the frame edge may be reported as partial. */
         val allowEdge: Boolean,
+        /**
+         * For a sealed pass, the cells open before sealing, and how many
+         * cells the ink was thickened by: a find is flooded out over them
+         * again ([balloonOf]).
+         */
+        val giveBack: BooleanArray? = null,
+        val seal: Int = 0,
     )
 
     private class Geometry(
@@ -395,8 +403,11 @@ object BalloonFinder {
         val exclusions: List<Rect>,
     )
 
-    /** One connected-component sweep over [pass]. */
-    private fun sweep(pass: Pass, g: Geometry): List<Balloon> {
+    /**
+     * One connected-component sweep over [pass]. A find that is the same
+     * balloon as one in [known] is dropped before it is flooded out again.
+     */
+    private fun sweep(pass: Pass, g: Geometry, known: List<Balloon> = emptyList()): List<Balloon> {
         val w = g.w
         val h = g.h
         val open = pass.open
@@ -485,7 +496,8 @@ object BalloonFinder {
                 out.addAll(parts)
                 continue
             }
-            out.add(balloonOf(mask, boxW, boxH, minX, minY, pass.inverted, partial, g))
+            if (known.any { sameBalloon(it.box, pageRect(minX, minY, boxW, boxH, g)) }) continue
+            out.add(balloonOf(mask, boxW, boxH, minX, minY, pass, partial, g))
         }
         return out
     }
@@ -546,16 +558,100 @@ object BalloonFinder {
         ((minY + boxH) / g.scale).toInt(),
     )
 
+    /**
+     * The balloon [mask] describes: a component's hole-filled interior, its
+     * box at [minX], [minY] in work cells.
+     *
+     * A sealed pass's find is flooded out again over the unsealed paper
+     * ([Pass.giveBack]). Thickening the ink by [Pass.seal] cells ate that
+     * much off the balloon's paper along its outline and fattened the
+     * lettering by as much, so a line set close to the outline fused with
+     * it, never read as a hole in the paper, and was left out of the mask:
+     * the cleaning painted round it and the line stayed on the page. The
+     * unsealed flood reaches the paper between that line and the outline
+     * again and closes round it. It goes no further than the find's own
+     * hull — the cells lying between cells of the find along a row or a
+     * column — and the rim sealing ate round that, so it barely reaches
+     * through the break in the outline that needed sealing.
+     */
     private fun balloonOf(
         mask: BooleanArray,
         boxW: Int,
         boxH: Int,
         minX: Int,
         minY: Int,
-        inverted: Boolean,
+        pass: Pass,
         partial: Boolean,
         g: Geometry,
-    ): Balloon = Balloon(pageRect(minX, minY, boxW, boxH, g), boxW, boxH, mask, inverted, partial)
+    ): Balloon {
+        val back = pass.giveBack
+        val r = pass.seal
+        if (back == null || r <= 0) return Balloon(pageRect(minX, minY, boxW, boxH, g), boxW, boxH, mask, pass.inverted, partial)
+        val x0 = max(0, minX - r - 1)
+        val y0 = max(0, minY - r - 1)
+        val gw = min(g.w, minX + boxW + r + 1) - x0
+        val gh = min(g.h, minY + boxH + r + 1) - y0
+        val n = gw * gh
+        val own = BooleanArray(n)
+        val rowL = IntArray(gh) { gw }
+        val rowR = IntArray(gh) { -1 }
+        val colT = IntArray(gw) { gh }
+        val colB = IntArray(gw) { -1 }
+        for (y in 0 until boxH) {
+            for (x in 0 until boxW) {
+                if (!mask[y * boxW + x]) continue
+                val ex = x + minX - x0
+                val ey = y + minY - y0
+                own[ey * gw + ex] = true
+                rowL[ey] = min(rowL[ey], ex)
+                rowR[ey] = max(rowR[ey], ex)
+                colT[ex] = min(colT[ex], ey)
+                colB[ex] = max(colB[ex], ey)
+            }
+        }
+        val hull = BooleanArray(n) { i ->
+            val x = i % gw
+            val y = i / gw
+            x in rowL[y]..rowR[y] || y in colT[x]..colB[x]
+        }
+        val reach = dilate(hull, gw, gh, r + 1)
+        val flooded = own.copyOf()
+        val stack = IntArray(n)
+        var top = 0
+        for (i in 0 until n) if (own[i]) stack[top++] = i
+        fun flood(i: Int) {
+            if (!flooded[i] && reach[i] && back[(i / gw + y0) * g.w + i % gw + x0]) {
+                flooded[i] = true
+                stack[top++] = i
+            }
+        }
+        while (top > 0) {
+            val i = stack[--top]
+            val x = i % gw
+            if (x > 0) flood(i - 1)
+            if (x < gw - 1) flood(i + 1)
+            if (i >= gw) flood(i - gw)
+            if (i + gw < n) flood(i + gw)
+        }
+        fillHoles(flooded, gw, gh)
+        var l = gw
+        var t = gh
+        var rt = -1
+        var bt = -1
+        for (i in 0 until n) {
+            if (!flooded[i]) continue
+            val x = i % gw
+            val y = i / gw
+            if (x < l) l = x
+            if (x > rt) rt = x
+            if (y < t) t = y
+            if (y > bt) bt = y
+        }
+        val cw = rt - l + 1
+        val ch = bt - t + 1
+        val cropped = BooleanArray(cw * ch) { j -> flooded[(t + j / cw) * gw + l + j % cw] }
+        return Balloon(pageRect(x0 + l, y0 + t, cw, ch, g), cw, ch, cropped, pass.inverted, partial)
+    }
 
     // ---- joined balloons ----
 
@@ -653,7 +749,7 @@ object BalloonFinder {
                 // holding lettering of its own.
                 val rawFill = raw.toFloat() / (pw * ph)
                 if (!judge(pm, pw, ph, minX + box.left, minY + box.top, rawFill, pass, g)) return null
-                out.add(balloonOf(pm, pw, ph, minX + box.left, minY + box.top, pass.inverted, false, g))
+                out.add(Balloon(pageRect(minX + box.left, minY + box.top, pw, ph, g), pw, ph, pm, pass.inverted, false))
             }
             return out
         }

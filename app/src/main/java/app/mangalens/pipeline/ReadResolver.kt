@@ -185,13 +185,26 @@ internal class ReadResolver(
                 val y = members[b]
                 val sameVoice = x.who.isBlank() || y.who.isBlank() || x.who.trim().equals(y.who.trim(), ignoreCase = true)
                 if (!sameVoice) continue
-                val line = minOf(minOf(x.box.width(), x.box.height()), minOf(y.box.width(), y.box.height()))
+                val line = minOf(lineOf(x), lineOf(y))
                 if (gap(x.box, y.box) <= line * 0.8f) parent[root(b)] = root(a)
             }
         }
         val byRoot = LinkedHashMap<Int, MutableList<PageItem>>()
         for (i in members.indices) byRoot.getOrPut(root(i)) { mutableListOf() }.add(members[i])
         return byRoot.values.toList()
+    }
+
+    /**
+     * How thick one of [item]'s lines is: its box across the lines, shared
+     * between the lines it holds — a column's width in vertical text, a
+     * row's height across. A box's short side alone is two lines thick
+     * round a two-column line, and two joined balloons' lines, a column
+     * apart, then read as one balloon's.
+     */
+    private fun lineOf(item: PageItem): Int {
+        val lines = item.src.lines().count { it.isNotBlank() }.coerceAtLeast(1)
+        val across = if (item.vertical) item.box.width() else item.box.height()
+        return minOf(across / lines, minOf(item.box.width(), item.box.height()))
     }
 
     /** Distance between two boxes, 0 when they touch or overlap. */
@@ -240,21 +253,52 @@ internal class ReadResolver(
             }
         }
         val out = clusters.indices.map { k ->
+            var ownX0 = mw
+            var ownY0 = mh
+            var ownX1 = -1
+            var ownY1 = -1
+            for (i in owner.indices) {
+                if (owner[i] != k) continue
+                val cx = i % mw
+                val cy = i / mw
+                if (cx < ownX0) ownX0 = cx
+                if (cx > ownX1) ownX1 = cx
+                if (cy < ownY0) ownY0 = cy
+                if (cy > ownY1) ownY1 = cy
+            }
+            if (ownX1 - ownX0 < 3 || ownY1 - ownY0 < 3) return@map null
+            // Each share reaches a little way into its neighbours': a lobe
+            // is cleaned short of its own edge, and two shares meeting edge
+            // to edge left a seam neither cleaned, with whatever lettering
+            // crossed it still on the page.
+            var share = BooleanArray(mw * mh) { owner[it] == k }
+            repeat(SEAM_CELLS) {
+                val next = share.copyOf()
+                for (i in share.indices) {
+                    if (share[i] || owner[i] < 0) continue
+                    val cx = i % mw
+                    if ((cx > 0 && share[i - 1]) || (cx < mw - 1 && share[i + 1]) ||
+                        (i >= mw && share[i - mw]) || (i + mw < share.size && share[i + mw])
+                    ) {
+                        next[i] = true
+                    }
+                }
+                share = next
+            }
             var minX = mw
             var minY = mh
             var maxX = -1
             var maxY = -1
             for (cy in 0 until mh) for (cx in 0 until mw) {
-                if (owner[cy * mw + cx] != k) continue
+                if (!share[cy * mw + cx]) continue
                 if (cx < minX) minX = cx
                 if (cx > maxX) maxX = cx
                 if (cy < minY) minY = cy
                 if (cy > maxY) maxY = cy
             }
-            if (maxX - minX < 3 || maxY - minY < 3) return@map null
             val w = maxX - minX + 1
             val h = maxY - minY + 1
-            val mask = BooleanArray(w * h) { j -> owner[(minY + j / w) * mw + minX + j % w] == k }
+            val mask = BooleanArray(w * h) { j -> share[(minY + j / w) * mw + minX + j % w] }
             Balloon(
                 Rect(
                     box.left + minX * box.width() / mw,
@@ -550,6 +594,9 @@ internal class ReadResolver(
         /** Furthest a line's box may have drifted from its balloon, as a share of the page's height. */
         private const val MAX_DRIFT = 0.15f
         private const val SMALL_SFX_WIDTH = 0.25f
+
+        /** Mask cells a joined balloon's lobe reaches into its neighbour's, so the two cleanings overlap. */
+        private const val SEAM_CELLS = 2
 
         /** Intersection over union past which a balloon found from its lettering is one already detected. */
         private const val SAME_BALLOON = 0.5f
