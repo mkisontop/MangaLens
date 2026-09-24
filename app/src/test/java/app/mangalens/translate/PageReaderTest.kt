@@ -455,22 +455,45 @@ class PageReaderTest {
     }
 
     @Test
-    fun `when every request fails with Google overloaded, one more goes out after a pause`() = runBlocking {
-        val transport = FakeTransport { call, _, onDelta ->
-            if (call < 2) throw GeminiHttpException(503, "The model is overloaded.")
+    fun `an overloaded model is stood in for at once, and passed over for the pages after`() = runBlocking {
+        val transport = FakeTransport { _, model, onDelta ->
+            if (model == settings.model) throw GeminiHttpException(503, "The model is overloaded.")
             streamOut(reply(hello), onDelta)
         }
-        val items = withTimeout(5_000) {
-            reader(transport, race = 2, staggerMs = 0, retryMs = 150).read(page(), SourceLang.JA)
+        val read = withTimeout(5_000) {
+            reader(transport, race = 2, staggerMs = 0, retryMs = 5_000).start(this, page(), SourceLang.JA)
         }
-        assertEquals(listOf("Hello."), items.map { it.en })
-        assertEquals(3, transport.calls.size)
+        assertEquals(listOf("Hello."), read.collect().map { it.en })
+        val models = transport.calls.map { it.first }
+        assertEquals(listOf(settings.model, settings.model, "gemini-3.6-flash"), models)
         val lag = (transport.startedAt[2] - transport.startedAt[1]) / 1_000_000
-        assertTrue("retried $lag ms after the last failure", lag >= 150)
+        assertTrue("the stand-in went $lag ms after the overload, without the retry's pause", lag < 2_000)
+        assertTrue(read.summary, read.summary.contains("gemini-3.6-flash"))
+        // Its request is built for the stand-in: no "minimal" level it would refuse.
+        val config = transport.calls[2].second.getJSONObject("generationConfig")
+        assertEquals(GeminiApi.thinkingConfig("gemini-3.6-flash", settings.aiReasoning)?.toString(), config.optJSONObject("thinkingConfig")?.toString())
+
+        val next = FakeTransport { _, _, onDelta -> streamOut(reply(bye), onDelta) }
+        reader(next, race = 1).read(page(), SourceLang.JA)
+        assertEquals("the next page starts on the stand-in", listOf("gemini-3.6-flash"), next.calls.map { it.first })
     }
 
     @Test
-    fun `an overload that lasts fails the read after that one retry`() = runBlocking {
+    fun `a stand-in Google has retired is passed over`() = runBlocking {
+        val transport = FakeTransport { _, model, onDelta ->
+            when (model) {
+                settings.model -> throw GeminiHttpException(503, "The model is overloaded.")
+                "gemini-3.6-flash" -> throw GeminiModelMissing(model, 404, "no longer available")
+                else -> streamOut(reply(hello), onDelta)
+            }
+        }
+        val items = withTimeout(5_000) { reader(transport, race = 2, staggerMs = 0, retryMs = 5_000).read(page(), SourceLang.JA) }
+        assertEquals(listOf("Hello."), items.map { it.en })
+        assertEquals("gemini-3.5-flash", transport.calls.last().first)
+    }
+
+    @Test
+    fun `an overload that lasts walks down every stand-in, then fails the read`() = runBlocking {
         val transport = FakeTransport { _, _, _ -> throw GeminiHttpException(503, "The model is overloaded.") }
         try {
             withTimeout(5_000) { reader(transport, race = 2, staggerMs = 0, retryMs = 50).read(page(), SourceLang.JA) }
@@ -478,7 +501,29 @@ class PageReaderTest {
         } catch (e: GeminiHttpException) {
             assertEquals(503, e.code)
         }
+        assertEquals(
+            listOf(
+                settings.model, settings.model,
+                "gemini-3.6-flash", "gemini-3.5-flash", "gemini-flash-lite-latest", "gemini-flash-lite-latest",
+            ),
+            transport.calls.map { it.first },
+        )
+    }
+
+    @Test
+    fun `a dropped connection is tried again after a pause`() = runBlocking {
+        val transport = FakeTransport { call, _, onDelta ->
+            if (call < 2) throw IOException("unexpected end of stream")
+            streamOut(reply(hello), onDelta)
+        }
+        val items = withTimeout(5_000) {
+            reader(transport, race = 2, staggerMs = 0, retryMs = 150).read(page(), SourceLang.JA)
+        }
+        assertEquals(listOf("Hello."), items.map { it.en })
         assertEquals(3, transport.calls.size)
+        assertTrue("the same model is asked again", transport.calls.all { it.first == settings.model })
+        val lag = (transport.startedAt[2] - transport.startedAt[1]) / 1_000_000
+        assertTrue("retried $lag ms after the last failure", lag >= 150)
     }
 
     @Test

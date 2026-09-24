@@ -230,9 +230,10 @@ internal object LlmHttp {
         if (settings.provider == LlmProvider.GEMINI) {
             // A model picked months ago may since have been retired; the
             // newest Flash answers instead, and once Google has said the
-            // model is gone it is not asked again.
+            // model is gone it is not asked again. One Google is turning
+            // away as overloaded is stood in for (GeminiApi.relief).
             val chosen = settings.effectiveModel()
-            val model = if (chosen != GeminiApi.FALLBACK_MODEL && GeminiApi.isMissing(chosen)) GeminiApi.FALLBACK_MODEL else chosen
+            val model = GeminiApi.available(if (chosen != GeminiApi.FALLBACK_MODEL && GeminiApi.isMissing(chosen)) GeminiApi.FALLBACK_MODEL else chosen)
             var shown = false
             val relay: (suspend (String) -> Unit)? = if (onDelta == null) {
                 null
@@ -249,6 +250,11 @@ internal object LlmHttp {
                 // that goes missing mid-reply is that reply's failure.
                 if (model == GeminiApi.FALLBACK_MODEL || shown) throw e
                 gemini(settings, GeminiApi.FALLBACK_MODEL, system, stable, images, page, effort, vision, onDelta)
+            } catch (e: GeminiHttpException) {
+                if (e.code != 503 || shown) throw e
+                GeminiApi.strain(model)
+                val relief = GeminiApi.relief(model) ?: throw e
+                gemini(settings, relief, system, stable, images, page, effort, vision, onDelta)
             }
         }
         val anthropic = settings.provider == LlmProvider.ANTHROPIC

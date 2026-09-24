@@ -103,6 +103,43 @@ internal object GeminiApi {
     fun isMissing(model: String): Boolean = model in missing
 
     /**
+     * The models a request moves down to while Google turns away the one
+     * asked for as overloaded (HTTP 503), each with capacity of its own,
+     * best reader first. Measured on real manga pages while the newest
+     * Flash answered nothing but 503s: 3.6 Flash boxed 94% of the
+     * annotated lettering and painted first in 1.7 s, 3.5 Flash 92% in
+     * 2.4 s; Flash-Lite answered every page but boxed only two lines in
+     * three where they are, so it comes last. One Google has retired
+     * answers "not found" once and is passed over after that.
+     */
+    private val RELIEF = listOf("gemini-3.6-flash", "gemini-3.5-flash", "gemini-flash-lite-latest")
+
+    /** How long a model that answered 503 is passed over for the next one down. */
+    private const val STRAIN_MS = 2 * 60_000L
+
+    private val strained = ConcurrentHashMap<String, Long>()
+
+    private fun now() = System.nanoTime() / 1_000_000
+
+    /** Google turned [model] away as overloaded: pass it over for a while. */
+    fun strain(model: String) {
+        strained[model] = now() + STRAIN_MS
+    }
+
+    private fun isStrained(model: String): Boolean = (strained[model] ?: 0L) > now()
+
+    /**
+     * The model to ask instead of [model] while it is overloaded: the next
+     * one down that is neither retired nor overloaded itself, or null when
+     * none is left.
+     */
+    fun relief(model: String): String? =
+        RELIEF.drop(RELIEF.indexOf(model) + 1).firstOrNull { it != model && !isMissing(it) && !isStrained(it) }
+
+    /** [model], or the one standing in for it while Google turns it away as overloaded. */
+    fun available(model: String): String = if (isStrained(model)) relief(model) ?: model else model
+
+    /**
      * The thinking configuration for [model] at [reasoning], or null for a
      * model that takes none.
      *
@@ -232,10 +269,11 @@ internal object GeminiApi {
     /** Lets the next [warm] go out at once; for tests. */
     internal fun resetWarm() = lastWarm.set(0L)
 
-    /** Forgets what was learned about models; for tests. */
+    /** Forgets what was learned about models, and which are overloaded; for tests. */
     internal fun resetLearned() {
         rejected.clear()
         missing.clear()
+        strained.clear()
     }
 
     private fun post(url: String, apiKey: String, body: JSONObject, onSent: () -> Unit = {}): Request {

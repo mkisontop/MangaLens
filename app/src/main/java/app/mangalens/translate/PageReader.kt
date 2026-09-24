@@ -127,7 +127,7 @@ class PageReader internal constructor(
             model = GeminiApi.FALLBACK_MODEL
             race(read, page, model)
         }
-        read.model = model
+        read.model = answer.model
         val reply = runCatching { LlmHttp.extractJsonObject(answer.text) }.getOrNull()
         // The streamed items are the answer. The full parse only adds any
         // the stream could not split out, and a reply cut off mid-array
@@ -163,27 +163,39 @@ class PageReader internal constructor(
      * [uploadGraceMs] later than it would have. Either way a spare still
      * held back is sent at once when everything already sent has failed in
      * a way a second try could survive, and when none is left one more
-     * request goes out [retryMs] later: a 503 (Google overloaded) or a
-     * dropped connection usually clears in a moment, and a page that fails
-     * outright stays untranslated until the reader scrolls.
+     * request goes out [retryMs] later: a dropped connection usually clears
+     * in a moment, and a page that fails outright stays untranslated until
+     * the reader scrolls.
      *
-     * @return the winning request's full reply and why it ended.
+     * Each request asks the model current when it goes out. When Google
+     * turns one away as overloaded (HTTP 503), which it can do to every
+     * request for minutes on end, the rest of the race — and the pages
+     * after it, for a while — go to the model standing in for it
+     * ([GeminiApi.relief]), at once: it has capacity of its own.
+     *
+     * @return the winning request's full reply, why it ended, and which
+     *   model gave it.
      */
     private suspend fun race(read: Read, page: PageRequest, model: String): Reply = coroutineScope {
-        val body = page.body(model)
+        var current = GeminiApi.available(model)
+        val bodies = HashMap<String, JSONObject>()
+        val asked = ArrayList<String>()
         val events = Channel<Event>(Channel.UNLIMITED)
         val contenders = ArrayList<Job>()
         fun launchContender() {
             val id = contenders.size
+            val m = current
+            val body = bodies.getOrPut(m) { page.body(m) }
+            asked += m
             read.requests++
             contenders += launch {
                 val stream = BubbleStream("items")
                 var finish = ""
                 try {
-                    val text = transport.stream(model, body, { events.trySend(Event.Sent(id)) }, { finish = it }) { delta ->
+                    val text = transport.stream(m, body, { events.trySend(Event.Sent(id)) }, { finish = it }) { delta ->
                         for (o in stream.feed(delta)) page.item(o)?.let { events.trySend(Event.Item(id, it)) }
                     }
-                    events.trySend(Event.Done(id, Reply(text, finish)))
+                    events.trySend(Event.Done(id, Reply(text, finish, m)))
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Throwable) {
@@ -212,6 +224,7 @@ class PageReader internal constructor(
 
         var winner = -1
         var retried = false
+        var failed = 0
         val failures = ArrayList<Throwable>()
         fun crown(id: Int) {
             winner = id
@@ -240,17 +253,29 @@ class PageReader internal constructor(
                         if (ev.error is GeminiRateLimited) calmDown()
                         if (ev.id == winner) throw ev.error
                         if (winner >= 0) continue
-                        failures += ev.error
-                        if (failures.size == contenders.size) {
+                        failed++
+                        val m = asked[ev.id]
+                        // A stand-in Google has since retired is passed over
+                        // like an overloaded one; the model asked for going
+                        // missing is the caller's to handle.
+                        val gone = ev.error is GeminiModelMissing && m != model
+                        if (!gone) failures += ev.error
+                        if (overloaded(ev.error)) GeminiApi.strain(m)
+                        if ((overloaded(ev.error) || gone) && m == current) GeminiApi.relief(m)?.let { current = it }
+                        if (failed == contenders.size) {
                             when {
-                                !transient(ev.error) -> throw worst(failures)
+                                !gone && !transient(ev.error) -> throw worst(failures)
                                 spares > 0 -> releaseSpares()
+                                current != m -> {
+                                    spares = 1
+                                    sparesIn(0)
+                                }
                                 !retried -> {
                                     retried = true
                                     spares = 1
                                     sparesIn(retryMs)
                                 }
-                                else -> throw worst(failures)
+                                else -> throw worst(failures.ifEmpty { listOf(ev.error) })
                             }
                         }
                     }
@@ -265,8 +290,8 @@ class PageReader internal constructor(
         }
     }
 
-    /** A request's whole reply text, and the model's reason for stopping ("" when it gave none). */
-    private class Reply(val text: String, val finish: String)
+    /** A request's whole reply text, the model's reason for stopping ("" when it gave none), and the model. */
+    private class Reply(val text: String, val finish: String, val model: String)
 
     private sealed interface Event {
         class Sent(val id: Int) : Event
@@ -501,6 +526,9 @@ class PageReader internal constructor(
         /** A failure a second, identical request could get past: the network, or Google overloaded. */
         private fun transient(e: Throwable): Boolean =
             e is IOException || (e is GeminiHttpException && e !is GeminiRateLimited && e.code >= 500)
+
+        /** Google turning the model away for want of capacity, not this request. */
+        private fun overloaded(e: Throwable): Boolean = e is GeminiHttpException && e.code == 503
 
         /** The failure that says most about why every request failed. */
         private fun worst(failures: List<Throwable>): Throwable =
