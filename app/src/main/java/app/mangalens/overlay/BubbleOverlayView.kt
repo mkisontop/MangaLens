@@ -47,8 +47,9 @@ enum class LetterStyle {
 
     /**
      * A sound effect drawn into detailed art, which stays: the English is
-     * a small outlined label beside it, the way a scanlation notes the
-     * sound effects it would ruin the art to redraw.
+     * a small outlined label on empty ground beside it, or over the sound
+     * itself, the way a scanlation notes the sound effects it would ruin
+     * the art to redraw.
      */
     SFX_NOTE,
 
@@ -89,6 +90,12 @@ data class RenderBubble(
     val patchRect: Rect? = null,
     /** Stroke around the English, matching the original lettering's outline; null for none. */
     val outlineColor: Int? = null,
+    /**
+     * Where the page around a [LetterStyle.SFX_NOTE] is drawn and where it
+     * is empty; without it a note is set over its own sound, the one place
+     * sure to hold no art the reader needs.
+     */
+    val art: ArtMap? = null,
 )
 
 /**
@@ -151,6 +158,8 @@ class BubbleOverlayView(context: Context) : View(context) {
         val wipe: RectF? = null,
         /** Tint for a flat balloon stamp; null draws the stamp's own colours. */
         val tint: PorterDuffColorFilter? = null,
+        /** Set a quarter turn clockwise, reading down, along a column of lettering. */
+        val turned: Boolean = false,
     )
 
     private class Placed(
@@ -270,8 +279,40 @@ class BubbleOverlayView(context: Context) : View(context) {
         /** A sound-effect note's type size, in sp, whatever the size of the sound. */
         const val NOTE_SIZE = 13f
 
-        /** A note's measure, in multiples of its type size, when the sound is narrower. */
-        const val NOTE_MEASURE = 8f
+        /** A note's measure, in multiples of its type size, when the sound is narrower: a sound said twice fits one line. */
+        const val NOTE_MEASURE = 12f
+
+        /** Times in a row a note repeats its sound, however often the art draws it. */
+        const val NOTE_REPEATS = 2
+
+        /** The same sound this close to one already noted (a share of the screen's width) is not noted again. */
+        const val NOTE_ONCE = 0.25f
+
+        /** Height to width past which a sound is a column, and its note goes beside it. */
+        const val TALL_SOUND = 1.5f
+
+        /** Share of the note, or of its sound if smaller, the note may cover of its own sound. */
+        const val NOTE_OVER_SOUND = 0.15f
+
+        /** Share of a note that may lie on other lettering before the sound is left un-noted. */
+        const val NOTE_CROWDED = 0.2f
+
+        /** Share of a spot beside a sound that may hold line work and still take its note. */
+        const val NOTE_CALM = 0.12f
+
+        /** A column turns its note to run along it once it is this many note lines tall. */
+        const val TURN_ROOM = 2f
+
+        /** Height to width past which erased lettering is a long column its English may run down; a short one stays upright. */
+        const val TURN_COLUMN = 2.5f
+
+        /** Upright English this much wider than the column it replaces is turned to run down it. */
+        const val TURN_SPILL = 1.35f
+
+        /** ...unless turning would shrink the type below this share of the upright size. */
+        const val TURN_MIN_SIZE = 0.7f
+
+        val WHITESPACE = Regex("\\s+")
 
         /** Type size widths are measured at before scaling ([scaledMeasure]). */
         const val MEASURE_REF = 100f
@@ -414,13 +455,14 @@ class BubbleOverlayView(context: Context) : View(context) {
 
         val out = ArrayList<Placed>(bubbles.size)
         val occupied = ArrayList<RectF>(bubbles.size)
-        for (b in bubbles) {
+        // Notes go last: a note may sit anywhere around its sound, so it is
+        // the one to step around everything else.
+        val (notes, lettered) = bubbles.partition { it.style == LetterStyle.SFX_NOTE }
+        for (b in lettered) {
             if (b.translated.isBlank()) continue
-            // A noted sound effect stays part of the art: nothing under it is cleaned.
-            val note = b.style == LetterStyle.SFX_NOTE
-            val balloon = if (note) null else b.balloon
+            val balloon = b.balloon
             val stamp = balloon?.let { stampFor(it, b.fill, nextStamps) }
-            val patch = if (stamp == null && !note) b.patch else null
+            val patch = if (stamp == null) b.patch else null
             val busy = patch != null && busyFor(patch, b.bgColor, nextBusy)
             val key = Key(
                 box = Rect(b.box),
@@ -463,6 +505,24 @@ class BubbleOverlayView(context: Context) : View(context) {
             // A cleaned balloon claims all of itself; free lettering only its text,
             // since a patch is background anyone may letter over.
             occupied.add(if (stamp != null) bounds else claim)
+        }
+        // A noted sound effect stays part of the art: nothing under it is cleaned.
+        val sounds = notes.map { RectF(it.box) }
+        val noted = ArrayList<Pair<String, Rect>>()
+        for (b in notes) {
+            val text = noteText(b)
+            if (text.isEmpty()) continue
+            // The same sound again close by — the other heart of a pounding
+            // pair, a column repeated down the panel — is noted once.
+            val said = text.filter(Char::isLetterOrDigit)
+            if (noted.any { (t, box) -> t == said && gap(box, b.box) < screenW * NOTE_ONCE }) continue
+            val l = placeNote(b, text, occupied, sounds) ?: continue
+            noted.add(said to b.box)
+            val shown = Shown(Rect(b.box), b.translated)
+            val since = if (now == 0L) 0L else shownSince[shown] ?: now
+            nextShown[shown] = since
+            out.add(Placed(l, 0f, RectF(l.inkRect), null, null, null, null, since))
+            occupied.add(RectF(l.inkRect))
         }
         letterings = nextLetterings
         stamps = nextStamps
@@ -513,7 +573,6 @@ class BubbleOverlayView(context: Context) : View(context) {
     }
 
     private fun letter(b: RenderBubble, clean: Boolean, patched: Boolean, busy: Boolean): Lettering? = when {
-        b.style == LetterStyle.SFX_NOTE -> placeNote(b)
         clean -> placeClean(b, b.balloon!!, b.fill != null)
         patched || b.style == LetterStyle.SFX -> placeFree(b, busy)
         else -> placeCard(b)
@@ -655,6 +714,31 @@ class BubbleOverlayView(context: Context) : View(context) {
     }
 
     /**
+     * A note's words: the sound said at most twice in a row. A heartbeat
+     * drawn eight times down a column is "BA-DUMP BA-DUMP" in its caption,
+     * not eight lines of it standing over the art.
+     */
+    private fun noteText(b: RenderBubble): String {
+        val out = ArrayList<String>()
+        var run = 0
+        for (token in letterText(b).split(WHITESPACE)) {
+            if (token.isEmpty()) continue
+            val word = token.filter(Char::isLetterOrDigit)
+            val same = out.isNotEmpty() && word.isNotEmpty() && out.last().filter(Char::isLetterOrDigit) == word
+            run = if (same) run + 1 else 1
+            if (run <= NOTE_REPEATS) out.add(token)
+        }
+        return out.joinToString(" ")
+    }
+
+    /** Distance between two rectangles' edges; 0 when they touch or overlap. */
+    private fun gap(a: Rect, b: Rect): Float {
+        val dx = max(0, max(a.left - b.right, b.left - a.right)).toFloat()
+        val dy = max(0, max(a.top - b.bottom, b.top - a.bottom)).toFloat()
+        return kotlin.math.hypot(dx, dy)
+    }
+
+    /**
      * The balloon interior as a tintable stamp, shrunk by one mask cell: a
      * cell survives only when all four neighbours are interior too, and the
      * mask border always dies. The ring this gives up is what keeps the
@@ -747,6 +831,7 @@ class BubbleOverlayView(context: Context) : View(context) {
         cardColor: Int = 0,
         wipe: RectF? = null,
         tint: PorterDuffColorFilter? = null,
+        turned: Boolean = false,
     ): Lettering {
         val pad = inkPad(layout.paint.textSize, style, if (edge != 0) edgeWidth else 0f, weight)
         // Lines are centred in the layout, which may be wider than any of
@@ -759,8 +844,13 @@ class BubbleOverlayView(context: Context) : View(context) {
             right = max(right, layout.getLineRight(i))
         }
         val layer = RectF(min(left, right) - pad, -pad, right + pad, layout.height + pad)
-        val inkRect = RectF(layer).apply { offset(x, y) }
-        return Lettering(layout, x, y, ink, edge, edgeWidth, weight, inkRect, layer, movable, card, cardColor, wipe, tint)
+        // Turned a quarter clockwise about (x, y), the layout's (u, v) lands at (x - v, y + u).
+        val inkRect = if (turned) {
+            RectF(x - layer.bottom, y + layer.left, x - layer.top, y + layer.right)
+        } else {
+            RectF(layer).apply { offset(x, y) }
+        }
+        return Lettering(layout, x, y, ink, edge, edgeWidth, weight, inkRect, layer, movable, card, cardColor, wipe, tint, turned)
     }
 
     /**
@@ -1035,6 +1125,32 @@ class BubbleOverlayView(context: Context) : View(context) {
             fitFree(b, text, tp, spacing, screenW - dp(4f))
         }
         val layout = blockOf(lines, tp, spacing)
+
+        // A sound or art lettering drawn down a narrow column: English set
+        // across it would spill over the art either side of the erased
+        // strip, so it runs down the column instead, as a letterer sets it.
+        val column = b.vertical && box.height() > box.width() * TURN_COLUMN && (sfx || style == LetterStyle.ART)
+        if (column && layout.width > box.width() * TURN_SPILL) {
+            val along = Rect(0, 0, box.height(), box.width())
+            val turnedTp = paintFor(style).apply { color = ink }
+            val turnedLines = if (sfx) {
+                fitSfx(text, turnedTp, along, edgeShare, spacing)
+            } else {
+                fitFree(b.copy(box = along, vertical = false), text, turnedTp, spacing, box.height().toFloat())
+            }
+            if (turnedTp.textSize >= tp.textSize * TURN_MIN_SIZE) {
+                val turned = blockOf(turnedLines, turnedTp, spacing)
+                val size = turnedTp.textSize
+                val edgeWidth = size * edgeShare
+                val weight = weightFor(style, size)
+                val probe = lettering(turned, 0f, 0f, style, ink, edge, edgeWidth, weight, movable = true, turned = true).inkRect
+                val x = (box.exactCenterX() - probe.centerX())
+                    .coerceIn(-probe.left, max(-probe.left, screenW - probe.right))
+                val y = (box.exactCenterY() - probe.centerY())
+                    .coerceIn(-probe.top, max(-probe.top, screenH - probe.bottom))
+                return lettering(turned, x, y, style, ink, edge, edgeWidth, weight, movable = true, turned = true)
+            }
+        }
         val size = tp.textSize
 
         var x = box.exactCenterX() - layout.width / 2f
@@ -1064,18 +1180,24 @@ class BubbleOverlayView(context: Context) : View(context) {
     }
 
     /**
-     * A note for a sound effect left in the art: a small outlined caption
-     * just below the sound — or above it, where the screen ends first —
-     * aligned to its left edge, so it reads as the sound's caption and
-     * covers none of it. Its size is the reader's, not the sound's: a note
-     * scaled to a sound drawn across half the panel would bury the art it
-     * exists to spare.
+     * A note for a sound effect left in the art: a small outlined caption,
+     * sized for the reader rather than the sound — a note scaled to a sound
+     * drawn across half the panel would bury the art it exists to spare.
+     *
+     * It goes where a letterer would put it without touching the drawing:
+     * on empty ground beside the sound — paper, flat colour, an even tone,
+     * as [RenderBubble.art] shows it — just below or above the sound from
+     * its left edge, or for a tall column beside its first characters.
+     * Where everything around the sound is drawn (a face, hair, a hand) the
+     * note is set over the sound itself, centred on it, and along a column
+     * a quarter turn, reading down it: the sound is what it translates, and
+     * covering it hides nothing of the picture. It never lands on other
+     * lettering in [taken] or on another sound in [sounds]; when even its
+     * own sound is covered by someone's words, the sound is left as drawn.
      */
-    private fun placeNote(b: RenderBubble): Lettering? {
-        val text = letterText(b)
-        if (text.isEmpty()) return null
+    private fun placeNote(b: RenderBubble, text: String, taken: List<RectF>, sounds: List<RectF>): Lettering? {
         val style = LetterStyle.SFX_NOTE
-        val box = b.box
+        val box = RectF(b.box)
         val screenW = screenWidth()
         val screenH = screenHeight()
         val size = sp(NOTE_SIZE) * textScale
@@ -1086,32 +1208,66 @@ class BubbleOverlayView(context: Context) : View(context) {
             color = ink
             textSize = size
         }
-        val measure = max(box.width().toFloat(), size * NOTE_MEASURE).coerceAtMost(screenW - dp(4f))
-        val lines = TypeSet.breakLines(text, scaledMeasure(tp), measure)
-        val layout = blockOf(lines, tp, SFX_LINE_SPACING)
         val weight = weightFor(style, size)
-        val pad = inkPad(size, style, edgeWidth, weight)
-        val gap = dp(2f)
-        val below = box.bottom + gap + pad
-        val above = box.top - gap - pad - layout.height
-        val y = when {
-            below + layout.height + pad <= screenH -> below
-            above - pad >= 0f -> above
-            // A sound the height of the screen: inside its bottom corner.
-            else -> screenH - layout.height - pad
-        }
-        val x = (box.left + pad).coerceAtMost(screenW - layout.width - pad).coerceAtLeast(pad)
-        return lettering(
+        fun block(measure: Float) =
+            blockOf(TypeSet.breakLines(text, scaledMeasure(tp), measure.coerceAtLeast(size)), tp, SFX_LINE_SPACING)
+        fun at(layout: StaticLayout, ink0: RectF, r: RectF, turned: Boolean) = lettering(
             layout = layout,
-            x = x,
-            y = y,
+            x = if (turned) r.left + ink0.bottom else r.left - ink0.left,
+            y = if (turned) r.top - ink0.left else r.top - ink0.top,
             style = style,
             ink = ink,
             edge = edge,
             edgeWidth = edgeWidth,
             weight = weight,
-            movable = true,
+            movable = false,
+            turned = turned,
         )
+        fun onScreen(r: RectF) = r.apply {
+            offset(
+                (-left).coerceAtLeast(0f) - (right - screenW).coerceAtLeast(0f),
+                (-top).coerceAtLeast(0f) - (bottom - screenH).coerceAtLeast(0f),
+            )
+        }
+        fun crowding(r: RectF) = taken.sumOf { overlapArea(r, it).toDouble() }.toFloat() / area(r)
+
+        val upright = block(max(box.width(), size * NOTE_MEASURE).coerceAtMost(screenW - dp(4f)))
+        val ink0 = lettering(upright, 0f, 0f, style, ink, edge, edgeWidth, weight, movable = false).layer
+        val w = ink0.width()
+        val h = ink0.height()
+        val tall = box.height() > box.width() * TALL_SOUND
+        b.art?.let { art ->
+            val gap = dp(2f)
+            val below = box.bottom + gap
+            val above = box.top - gap - h
+            val beside = listOf(box.right + gap to box.top, box.left - gap - w to box.top)
+            val around = listOf(box.left to below, box.left to above, box.right - w to below, box.right - w to above)
+            for ((sx, sy) in if (tall) beside + around else around + beside) {
+                val r = onScreen(RectF(sx, sy, sx + w, sy + h))
+                if (overlapArea(r, box) > min(area(r), area(box)) * NOTE_OVER_SOUND) continue
+                if (crowding(r) > 0f) continue
+                if (sounds.any { it != box && overlapArea(r, it) > 0f }) continue
+                if (art.drawnShare(r) > NOTE_CALM) continue
+                return at(upright, ink0, r, turned = false)
+            }
+        }
+        // Over the sound, centred on it; along a column, turned to run down it.
+        val turned = tall && box.height() >= h * TURN_ROOM
+        val layout = if (turned) block(box.height()) else upright
+        val layer = if (turned) lettering(layout, 0f, 0f, style, ink, edge, edgeWidth, weight, movable = false).layer else ink0
+        val across = if (turned) layer.height() else layer.width()
+        val down = if (turned) layer.width() else layer.height()
+        val r = onScreen(RectF(box.centerX() - across / 2, box.centerY() - down / 2, box.centerX() + across / 2, box.centerY() + down / 2))
+        if (crowding(r) > NOTE_CROWDED) return null
+        return at(layout, layer, r, turned)
+    }
+
+    private fun area(r: RectF) = (r.width() * r.height()).coerceAtLeast(1f)
+
+    private fun overlapArea(a: RectF, b: RectF): Float {
+        val ix = minOf(a.right, b.right) - maxOf(a.left, b.left)
+        val iy = minOf(a.bottom, b.bottom) - maxOf(a.top, b.top)
+        return if (ix <= 0f || iy <= 0f) 0f else ix * iy
     }
 
     private fun sp(v: Float) = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, v, resources.displayMetrics)
@@ -1530,6 +1686,7 @@ class BubbleOverlayView(context: Context) : View(context) {
         val tp = l.layout.paint
         canvas.save()
         canvas.translate(l.x, l.y + dy)
+        if (l.turned) canvas.rotate(90f)
         val layered = alpha < 255 && l.edge != 0
         if (layered) canvas.saveLayerAlpha(l.layer, alpha)
         val a = if (layered) 255 else alpha

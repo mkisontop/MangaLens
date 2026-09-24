@@ -5,6 +5,7 @@ import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Rect
 import app.mangalens.ocr.BubbleKind
+import app.mangalens.overlay.LetteringFixtures.blank
 import app.mangalens.overlay.LetteringFixtures.count
 import app.mangalens.overlay.LetteringFixtures.fill
 import app.mangalens.overlay.LetteringFixtures.glyphs
@@ -27,9 +28,10 @@ import org.robolectric.annotation.GraphicsMode
 
 /**
  * A sound effect drawn into detailed art stays in the art; its English is a
- * small outlined note beside it. The note must be small, sit off the sound
- * rather than on it, paint nothing behind itself, and leave every pixel of
- * the sound it does not overlap exactly as the page had it.
+ * small outlined note. The note sits on empty ground beside the sound, or
+ * over the sound itself where everything around it is drawn — never on the
+ * picture around it. It paints nothing behind itself, and leaves every pixel
+ * of the page it does not cover exactly as the page had it.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -50,7 +52,14 @@ class SfxNoteTest {
         return page
     }
 
-    private fun note(box: Rect, text: String = "*ba-doom*") = RenderBubble(
+    /** Plain paper with the same sound on it. */
+    private fun paper(box: Rect): Bitmap {
+        val page = blank(pageW, pageH, Color.WHITE)
+        glyphs(Canvas(page), box, 2, 1, fill(Color.rgb(240, 120, 40)), outline(ink, 10f))
+        return page
+    }
+
+    private fun note(box: Rect, text: String = "*ba-doom*", on: Bitmap? = null) = RenderBubble(
         box = box,
         translated = text,
         original = "ドドン",
@@ -60,6 +69,7 @@ class SfxNoteTest {
         kind = BubbleKind.SFX,
         style = LetterStyle.SFX_NOTE,
         outlineColor = Color.WHITE,
+        art = on?.let(ArtMap::of),
     )
 
     private fun area(r: Rect) = r.width().toLong() * r.height()
@@ -69,12 +79,24 @@ class SfxNoteTest {
         return if (r.setIntersect(a, b)) area(r) else 0L
     }
 
+    /** Pixels of [out] that differ from [page] outside [label]. */
+    private fun changedOutside(page: Bitmap, out: Bitmap, label: Rect): Int {
+        val a = pixels(page)
+        val b = pixels(out)
+        var changed = 0
+        for (y in 0 until pageH) for (x in 0 until pageW) {
+            if (label.contains(x, y)) continue
+            if (a[y * pageW + x] != b[y * pageW + x]) changed++
+        }
+        return changed
+    }
+
     @Test
-    fun `a sound drawn into the art gets a small note beside it, not a redraw`() {
+    fun `on empty paper the note hangs just below its sound`() {
         val box = Rect(180, 260, 480, 510)
-        val page = page(box)
+        val page = paper(box)
         val v = view()
-        v.setBubbles(listOf(note(box)))
+        v.setBubbles(listOf(note(box, on = page)))
         val out = render(v, page)
         writePreview("sfx-note.png", out)
 
@@ -89,16 +111,7 @@ class SfxNoteTest {
         )
         assertTrue("from its left edge ($label)", Math.abs(label.left - box.left) < 12)
         assertTrue("and stays small (${label.height()} px tall)", label.height() < 40)
-
-        // The sound itself is untouched wherever the note is not.
-        val a = pixels(page)
-        val b = pixels(out)
-        var changed = 0
-        for (y in box.top until box.bottom) for (x in box.left until box.right) {
-            if (label.contains(x, y)) continue
-            if (a[y * pageW + x] != b[y * pageW + x]) changed++
-        }
-        assertEquals("no pixel of the sound outside the note may change", 0, changed)
+        assertEquals("no pixel of the page outside the note may change", 0, changedOutside(page, out, label))
 
         val overlay = overlayOnly(v, pageW, pageH)
         assertTrue("dark lettering", count(overlay, label) { near(it, ink, 20) } > 40)
@@ -109,11 +122,29 @@ class SfxNoteTest {
     }
 
     @Test
-    fun `a note at the foot of the screen goes above its sound`() {
-        val box = Rect(120, 640, 420, 896)
+    fun `where the art around a sound is drawn, the note sits on the sound, not the picture`() {
+        val box = Rect(180, 260, 480, 510)
         val page = page(box)
         val v = view()
-        v.setBubbles(listOf(note(box, "*thooom*")))
+        v.setBubbles(listOf(note(box, on = page)))
+        val out = render(v, page)
+        writePreview("sfx-note-on-art.png", out)
+        val label = v.placedRects().single()
+        assertTrue("inside the sound ($label in $box)", Rect(box).apply { inset(-2, -2) }.contains(label))
+        assertTrue(
+            "centred on it ($label in $box)",
+            Math.abs(label.centerX() - box.centerX()) <= 2 && Math.abs(label.centerY() - box.centerY()) <= 2,
+        )
+        assertEquals("no pixel of the page outside the note may change", 0, changedOutside(page, out, label))
+        assertEquals(0, uncovered(overlayOnly(v, pageW, pageH), v.placedRects()))
+    }
+
+    @Test
+    fun `a note at the foot of the screen goes above its sound`() {
+        val box = Rect(120, 640, 420, 896)
+        val page = paper(box)
+        val v = view()
+        v.setBubbles(listOf(note(box, "*thooom*", on = page)))
         writePreview("sfx-note-above.png", render(v, page))
         val label = v.placedRects().single()
         assertTrue("above the sound ($label over $box)", label.bottom <= box.top + 4 && label.bottom >= box.top - 12)
@@ -124,7 +155,7 @@ class SfxNoteTest {
     @Test
     fun `a note steps off lettering already there`() {
         val box = Rect(180, 200, 480, 420)
-        val page = page(box)
+        val page = paper(box)
         val below = Rect(box.left, box.bottom + 2, box.left + 260, box.bottom + 40)
         val speech = RenderBubble(
             below, "Hey, over here!", "おーい！", Color.WHITE, ink, false,
@@ -132,13 +163,76 @@ class SfxNoteTest {
             patchRect = below,
         )
         val v = view()
-        v.setBubbles(listOf(speech, note(box)))
+        v.setBubbles(listOf(speech, note(box, on = page)))
         writePreview("sfx-note-nudged.png", render(v, page))
         val (text, label) = v.placedRects()
-        assertTrue(
-            "the note does not sit on the speech ($label vs $text)",
-            overlap(label, text) * 100 < area(label) * 35,
+        assertEquals("the note does not sit on the speech ($label vs $text)", 0L, overlap(label, text))
+        assertTrue(overlap(label, box) * 100 < area(box) * 15)
+    }
+
+    @Test
+    fun `a sound repeated down a column is said twice, on one line, running down the column`() {
+        val column = Rect(560, 120, 620, 520)
+        val page = page(column)
+        val v = view()
+        v.setBubbles(listOf(note(column, "*ba-dump* *ba-dump* *ba-dump* *ba-dump*", on = page)))
+        val out = render(v, page)
+        writePreview("sfx-note-column.png", out)
+        val label = v.placedRects().single()
+        val one = view().apply { setBubbles(listOf(note(Rect(100, 100, 400, 300), "*ba-dump*"))) }.placedRects().single()
+        assertEquals("a single line, turned (${label.width()} vs ${one.height()})", one.height(), label.width())
+        assertTrue("running down the column ($label)", label.height() > label.width() * 3)
+        assertTrue("on the column ($label on $column)", Math.abs(label.centerX() - column.centerX()) <= 2)
+        assertTrue("within its length ($label on $column)", label.top >= column.top && label.bottom <= column.bottom)
+        assertEquals("no pixel of the page outside the note may change", 0, changedOutside(page, out, label))
+        assertEquals(0, uncovered(overlayOnly(v, pageW, pageH), v.placedRects()))
+    }
+
+    @Test
+    fun `beside a column on paper, the note stands by its first characters`() {
+        val column = Rect(300, 120, 360, 520)
+        val page = paper(column)
+        val v = view()
+        v.setBubbles(listOf(note(column, "*ba-dump* *ba-dump*", on = page)))
+        writePreview("sfx-note-column-paper.png", render(v, page))
+        val label = v.placedRects().single()
+        assertEquals("nothing of the column is covered ($label)", 0L, overlap(label, column))
+        assertTrue("beside its top ($label by $column)", label.top in column.top - 12..column.top + 12)
+    }
+
+    @Test
+    fun `the same sound close by is noted once, a distant one again`() {
+        val left = Rect(100, 150, 150, 450)
+        val near = Rect(250, 200, 300, 500)
+        val far = Rect(560, 150, 610, 450)
+        val v = view()
+        v.setBubbles(listOf(note(left, "*ba-dump ba-dump*"), note(near, "*ba-dump ba-dump*"), note(far, "*ba-dump ba-dump*")))
+        val labels = v.placedRects()
+        assertEquals("the neighbour's heartbeat shares the first note ($labels)", 2, labels.size)
+    }
+
+    @Test
+    fun `a note never lands on lettering listed after it, nor on another sound`() {
+        val box = Rect(180, 200, 480, 420)
+        val other = Rect(160, 60, 500, 196)
+        val below = Rect(box.left, box.bottom + 2, box.left + 260, box.bottom + 40)
+        val speech = RenderBubble(
+            below, "Hey, over here!", "おーい！", Color.WHITE, ink, false,
+            patch = Bitmap.createBitmap(below.width(), below.height(), Bitmap.Config.ARGB_8888),
+            patchRect = below,
         )
+        val page = paper(box).also { glyphs(Canvas(it), other, 3, 1, fill(Color.rgb(240, 120, 40)), outline(ink, 10f)) }
+        val v = view()
+        v.setBubbles(listOf(note(box, on = page), note(other, "*creak*", on = page), speech))
+        val rects = v.placedRects()
+        val text = rects.first()
+        val labels = rects.drop(1)
+        assertEquals(2, labels.size)
+        for (label in labels) {
+            assertEquals("the note keeps off the speech ($label vs $text)", 0L, overlap(label, text))
+        }
+        assertEquals("the first note keeps off the other sound", 0L, overlap(labels[0], other))
+        assertEquals("and the second off the first sound", 0L, overlap(labels[1], box))
     }
 
     @Test

@@ -46,22 +46,33 @@ class Erasure(
  * A scanlator cleans such text in two steps, and so does this: find exactly
  * which pixels are lettering, then paint what was behind them. The model's
  * box says where the text is but not which pixels are strokes, so the
- * strokes are found from the pixels themselves. The background is read from
- * a ring just outside the box. Where the ring is flat — paper, a gradient,
- * the white heart of a radial burst — everything inside that stands clearly
- * off it is lettering. Where it is art, lettering is told apart by colour:
- * the colour common inside the box and rare in the ring is the fill, and a
- * second colour hugging the fill is its outline, taken only as deep as the
- * outline actually runs so it does not creep along the art's own line work.
- * Pieces that mostly lie outside the box, or run on out of it, are art and
- * are left alone.
+ * strokes are found from the pixels, in the first of these ways that holds:
+ *
+ * - On paper — flat, a gradient, the white heart of a burst — read from a
+ *   ring just outside the box, everything that stands clearly off it is
+ *   lettering, provided it is of one or two colours (more is art the ring
+ *   did not show).
+ * - On paper only the box shows — a balloon the detector missed, a white
+ *   knockout in a tone — the same, with the box's own dominant colour as
+ *   the paper when it lies in one piece around the strokes.
+ * - On art, by colour: the colour common inside the box and rare in the
+ *   ring is the fill (followed through its shading), a colour hugging it is
+ *   its outline, taken only as deep as the outline runs, and a white edge
+ *   around that is taken too.
+ * - On line art of the lettering's own colour, by weight: strokes too thin
+ *   to be the lettering's are opened away.
+ *
+ * Whatever the way, pieces that mostly lie outside the box, run on out of
+ * it, are screentone dots, or are hairlines far thinner and longer than
+ * the lettering's strokes (speed lines, the rays of a burst) are art, and
+ * stay.
  *
  * The strokes are then filled by push-pull interpolation from the pixels
- * around them — exact on flat paper, smooth through gradients — and where
- * the background is a screentone its dot lattice is measured and continued
- * through the hole, so the fill reads as tone rather than a grey smear.
- * What cannot be rebuilt locally (a face under a sound effect) is reported
- * as [Erasure.busy] for [AiCleaner] to redraw.
+ * around them — exact on flat paper, smooth through gradients — and on a
+ * screentone the dots are continued through the hole, halo and all, so the
+ * fill reads as tone rather than a white blotch or a grey smear. What cannot
+ * be rebuilt locally (a face under a sound effect) is reported as
+ * [Erasure.busy] for [AiCleaner] to redraw.
  *
  * All of it is plain arithmetic over one bulk read of the region: a few
  * milliseconds per item, cheap enough to run for every item as it streams in.
@@ -160,8 +171,6 @@ object TextEraser {
         val busy: Float,
     )
 
-    @JvmField internal var trace: ((String) -> Unit)? = null
-
     internal const val RING: Byte = 0
     internal const val MARGIN: Byte = 1
     internal const val BOX: Byte = 2
@@ -247,12 +256,15 @@ object TextEraser {
         val grow = if (min(reg.boxR - reg.boxL, reg.boxB - reg.boxT) >= 20 || sfx) 2 else 1
         var flat = true
         val strokes = (if (flatShare < FLAT_SHARE) null else {
-            scene.onPaper(fit, percentile(resHist, ringCount, 0.9f), outlineColor, robustTexture).also { trace?.invoke("ringPaper flatShare=$flatShare ok=${it != null}") }
+            scene.onPaper(fit, percentile(resHist, ringCount, 0.9f), outlineColor, robustTexture)
         })
-            ?: scene.onInnerPaper(outlineColor).also { trace?.invoke("inner flatShare=$flatShare ok=${it != null}") }
-            ?: scene.onArt(textColor, outlineColor, grow, texture).also { flat = false; trace?.invoke("art ok=${it != null}") }
-            ?: scene.onInk(textColor, grow).also { trace?.invoke("ink ok=${it != null}") }
+            ?: scene.onInnerPaper(outlineColor)
+            ?: scene.onArt(textColor, outlineColor, grow, texture).also { flat = false }
+            ?: scene.onInk(textColor, grow)
             ?: return null
+        if (strokes.tone > 0) retoned(chan, strokes, zone, w, h)?.let { (wide, out) ->
+            return Cleaned(out, wide, true, background, strokes.fill or OPAQUE, strokes.outline?.or(OPAQUE), strokes.busy)
+        }
         val mask = strokes.mask
         val known = strokes.known
         if (count(known) == 0) return null
@@ -274,7 +286,36 @@ object TextEraser {
         val fill: Int,
         val outline: Int?,
         val busy: Float,
+        /** Dot spacing of the screentone the lettering sits on, which the paper fill would leave out; 0 for none. */
+        val tone: Int = 0,
+        /** On a screentone, the pixels that are not tone: strokes and art the tone may not be copied from. */
+        val untoned: BooleanArray? = null,
     )
+
+    /**
+     * Lettering on screentone, re-toned: a letterer knocks the dots out
+     * around the strokes, and filled with paper the strokes and that halo
+     * read as a white blotch on the tone. The mask is widened by a dot
+     * period to take the halo, and all of it is filled with the tone's own
+     * lattice — or, for a hand-stippled or generated tone that keeps no
+     * strict lattice, with dots copied whole spacings away along the axes.
+     */
+    private fun retoned(chan: FloatArray, strokes: Strokes, zone: ByteArray, w: Int, h: Int): Pair<BooleanArray, IntArray>? {
+        val n = w * h
+        val around = dilate(strokes.mask, w, h, 1)
+        val basis = toneBasis(chan, BooleanArray(n) { !around[it] }, zone, w, h)
+            ?: intArrayOf(strokes.tone, 0, 0, strokes.tone)
+        val period = sqrt(min(basis[0] * basis[0] + basis[1] * basis[1], basis[2] * basis[2] + basis[3] * basis[3]).toFloat())
+        val wide = dilate(strokes.mask, w, h, max(1, period.roundToInt()))
+        val band = dilate(wide, w, h, 1)
+        val known = BooleanArray(n) { !band[it] }
+        val filled = PushPull.fill(chan, weights(known), w, h) ?: return null
+        val out = IntArray(n)
+        for (i in 0 until n) if (wide[i]) out[i] = rgb(filled[3 * i], filled[3 * i + 1], filled[3 * i + 2])
+        val untoned = strokes.untoned
+        val source = if (untoned == null) known else BooleanArray(n) { known[it] && !untoned[it] }
+        return if (retexture(chan, known, wide, zone, w, h, out, basis, source)) wide to out else null
+    }
 
     /** One work region and the ways of finding the lettering in it. */
     private class Scene(
@@ -320,7 +361,8 @@ object TextEraser {
             for (i in 0 until n) if (zone[i] == BOX) { contrast[dist[i]]++; boxCount++ }
             val inkCut = max(threshold, percentile(contrast, boxCount, 0.98f) / 2)
             val ink = BooleanArray(n) { dist[it] > inkCut }
-            val cores = dropHairlines(keepLetters(ink, reg, screentoneDot(ink, reg)), w, h)
+            val tone = screentone(ink, reg)
+            val cores = dropHairlines(keepLetters(ink, reg, tone?.dot ?: 0), w, h)
             if (count(cores) < minLetters) return null
             val letters = hysteresis(cores, raw, w, h, 2)
             if (countIn(letters, zone, BOX) > MAX_COVER * reg.boxArea) return null
@@ -352,7 +394,7 @@ object TextEraser {
             for (i in 0 until n) if (art[i]) mask[i] = false
             // The paper right beside a stroke still carries its ringing:
             // rebuilt from, it would paint a faint copy of the text back.
-            val band = dilate(mask, w, h, 3)
+            val band = dilate(mask, w, h, 2)
             // Art right against the strokes — lettering drawn over line
             // work — is what the paper fill cannot continue.
             var halo = 0
@@ -365,10 +407,12 @@ object TextEraser {
             val crowding = if (halo == 0) 0f else crowded.toFloat() / halo
             return Strokes(
                 mask = mask,
-                known = BooleanArray(n) { !band[it] && dist[it] <= faint },
+                known = BooleanArray(n) { !band[it] && dist[it] < threshold },
                 fill = fill,
                 outline = outline,
                 busy = max(((texture - 3f) / 24f).coerceIn(0f, 1f) * 0.5f, (crowding * 2.5f).coerceAtMost(1f)),
+                tone = tone?.spacing ?: 0,
+                untoned = tone?.let { t -> dilate(pieces(ink, w, h) { it >= t.dot }, w, h, 2) },
             )
         }
 
@@ -407,6 +451,51 @@ object TextEraser {
         }
 
         /**
+         * [seed] flooded through the rest of a fill that is shaded — a sound
+         * effect running from deep orange to yellow — where it drifts too far
+         * from [fill] to be matched by colour: into neighbours only a small
+         * step away, and never further from [fill] than twice the tolerance.
+         * An outline or the art beyond it is a jump, and stops the flood.
+         */
+        private fun shaded(seed: BooleanArray, fill: Int): BooleanArray {
+            val out = seed.copyOf()
+            val queue = IntArray(n)
+            var tail = 0
+            for (i in 0 until n) if (seed[i]) queue[tail++] = i
+            var head = 0
+            while (head < tail) {
+                val i = queue[head++]
+                val x = i % w
+                val y = i / w
+                for (dy in -1..1) {
+                    val yy = y + dy
+                    if (yy < 0 || yy >= h) continue
+                    for (dx in -1..1) {
+                        val xx = x + dx
+                        if (xx < 0 || xx >= w) continue
+                        val j = yy * w + xx
+                        if (out[j] || zone[j] == RING) continue
+                        if (dist(px[j], px[i]) >= SHADE_STEP || dist(px[j], fill) >= 2 * COLOUR_TOL) continue
+                        out[j] = true
+                        queue[tail++] = j
+                    }
+                }
+            }
+            return out
+        }
+
+        /**
+         * [letters] grown [depth] deep through the [outer]-coloured band
+         * around their [inner] colour, or null when the grown lettering is
+         * no longer lettering (it ran out of the box with the art).
+         */
+        private fun ring(letters: BooleanArray, inner: Int, outer: Int, depth: Int): BooleanArray? {
+            val seam = BooleanArray(n) { zone[it] != RING && blend(px[it], inner, outer) }
+            val grown = keepLetters(alongOutline(letters, near(px, zone, outer), seam, w, h, depth), reg, edgeShare = CUT_GLYPH)
+            return if (count(grown) >= count(letters)) grown else null
+        }
+
+        /**
          * Lettering on art, told apart by colour: the fill is the colour
          * common in the box and rare in the ring, the outline a second
          * colour hugging it. Null when nothing in the box looks like either.
@@ -416,7 +505,7 @@ object TextEraser {
             var f = verifyColour(px, zone, textColor, boxShare, ringShare)
                 ?: peakColour(px, boxShare, ringShare) { zone[it] == BOX }
                 ?: return null
-            var nearF = near(px, zone, f)
+            var nearF = shaded(near(px, zone, f), f)
             var letters = keepLetters(nearF, reg, edgeShare = CUT_GLYPH)
             if (count(letters) < minLetters) return null
             var o = findOutline(px, reg, letters, f, background, ringShare, outlineColor, fitted = false)
@@ -426,15 +515,29 @@ object TextEraser {
                 // touches anything that is neither.
                 if (exposure(nearF, nearO, zone, w, h) > exposure(nearO, nearF, zone, w, h)) {
                     val t = f; f = o; o = t
-                    nearF = nearO
+                    nearF = shaded(nearO, f)
                     letters = keepLetters(nearF, reg, edgeShare = CUT_GLYPH)
                     if (count(letters) < minLetters) return null
                 }
-                val depth = max(3, min(reg.boxR - reg.boxL, reg.boxB - reg.boxT) / 3)
-                val ff = f
-                val oo = o
-                val seam = BooleanArray(n) { zone[it] != RING && blend(px[it], ff, oo) }
-                letters = keepLetters(alongOutline(letters, near(px, zone, oo), seam, w, h, depth), reg, edgeShare = CUT_GLYPH)
+                // An outline is no wider than about the strokes it surrounds;
+                // past that the growth is following art of the same colour.
+                val half = halfStroke(letters, w, h)
+                val depth = max(3, min(2 * half + 2, min(reg.boxR - reg.boxL, reg.boxB - reg.boxT) / 3))
+                val outlined = ring(letters, f, o, depth)
+                if (outlined == null) {
+                    o = null
+                } else {
+                    letters = outlined
+                    // A second ring around the first: the paper-white edge a
+                    // letterer sets a sound effect off the art with. Only
+                    // white — any other colour out there is the art itself —
+                    // and only as deep as half a stroke, or it runs on into
+                    // the paper between panels.
+                    val glow = findOutline(px, reg, letters, o, background, ringShare, null, fitted = false, inside = f)
+                    if (glow != null && dist(glow, OPAQUE or 0xFFFFFF) < PAPER_WHITE && dist(glow, f) >= 80) {
+                        ring(letters, o, glow, max(3, half))?.let { letters = it }
+                    }
+                }
             }
             if (countIn(letters, zone, BOX) > MAX_COVER * reg.boxArea) {
                 letters = keepLetters(near(px, zone, f, COLOUR_TOL / 2), reg, edgeShare = CUT_GLYPH)
@@ -505,6 +608,9 @@ object TextEraser {
      */
     private const val CUT_GLYPH = 0.6f
 
+    /** Largest colour step between neighbours within one shaded fill. */
+    private const val SHADE_STEP = 16
+
     /** How far a pixel may stray from the paper colour and still be paper. */
     private const val PAPER_TOL = 24
 
@@ -545,7 +651,7 @@ object TextEraser {
         return settle(px, binCentre(best), select)
     }
 
-    /** [seed] moved to the mean of the selected pixels near it, twice. */
+    /** [seed] moved to the mean of the selected pixels near it, three times over. */
     private inline fun settle(px: IntArray, seed: Int, select: (Int) -> Boolean): Int? {
         var c = seed
         repeat(3) {
@@ -580,7 +686,8 @@ object TextEraser {
      * background. The ring counts against a candidate only lightly: art
      * often has the outline's colour too — white highlights, black line
      * work — just not packed around the fill. [fitted] when the background
-     * is flat, so the outline must also stand off the paper.
+     * is flat, so the outline must also stand off the paper. For a second
+     * ring, [fill] is the first outline and [inside] the lettering's fill.
      */
     private fun findOutline(
         px: IntArray,
@@ -591,10 +698,14 @@ object TextEraser {
         ring: FloatArray,
         given: Int?,
         fitted: Boolean,
+        inside: Int? = null,
     ): Int? {
         val zone = reg.zone
         val band = dilate(letters, reg.w, reg.h, 3)
-        for (i in band.indices) band[i] = band[i] && zone[i] != RING && dist(px[i], fill) >= COLOUR_TOL
+        for (i in band.indices) {
+            band[i] = band[i] && !letters[i] && zone[i] != RING && dist(px[i], fill) >= COLOUR_TOL &&
+                (inside == null || dist(px[i], inside) >= COLOUR_TOL)
+        }
         val n = count(band)
         if (n < 8) return null
         val bandShare = colourShares(px) { band[it] }
@@ -603,11 +714,13 @@ object TextEraser {
             ?: return null
         var hits = 0
         for (i in band.indices) if (band[i] && dist(px[i], candidate) < COLOUR_TOL) hits++
-        trace?.invoke("outline cand=${Integer.toHexString(candidate)} hits=$hits n=$n fill=${Integer.toHexString(fill)} bg=${Integer.toHexString(background)}")
         if (hits < n / 4) return null
         if (dist(candidate, fill) < 80) return null
+        // A colour on the way from the fill to the background is the fill's
+        // anti-aliasing — except around an outline, where a white edge on
+        // pale art lies on that way too and is wanted.
         val fb = euclid(fill, background)
-        if (euclid(fill, candidate) + euclid(candidate, background) < fb * 1.25f) return null
+        if (inside == null && euclid(fill, candidate) + euclid(candidate, background) < fb * 1.25f) return null
         if (fitted && dist(candidate, background) < 40) return null
         return candidate
     }
@@ -637,8 +750,8 @@ object TextEraser {
      * [fill] grown through [outline]-coloured pixels only as deep as the
      * outline runs. Growing layer by layer, each layer of a real outline is
      * about as long as the one before; once it is exhausted only the art's
-     * own lines, which merely touch it, carry on — a layer a fraction the
-     * size of the longest — and the growth stops there. The first
+     * own lines, which merely touch it, carry on — a layer half the size
+     * of the longest or less — and the growth stops there. The first
      * [EDGE_DEPTH] layers may also cross [edge] pixels: the anti-aliased
      * seam between fill and outline, which is neither colour. They are not
      * counted, and nothing grows through them any deeper, so a stretch of
@@ -690,7 +803,7 @@ object TextEraser {
         var limit = d
         for (k in 1..d) {
             widest = max(widest, layer[k])
-            if (k > EDGE_DEPTH && layer[k] < widest / 4) { limit = k - 1; break }
+            if (k > EDGE_DEPTH && layer[k] < widest / 2) { limit = k - 1; break }
         }
         return BooleanArray(n) { depth[it] in 0..limit }
     }
@@ -756,7 +869,6 @@ object TextEraser {
             }
             val share = inBox.toFloat() / size
             val sides = Integer.bitCount(edges)
-            if (size > 200) trace?.invoke("piece size=$size share=$share edges=$edges at ${piece[0] % reg.w},${piece[0] / reg.w}")
             if (share >= 0.35f && sides < 2 && (sides == 0 || share >= edgeShare)) {
                 for (k in 0 until size) keep[piece[k]] = true
             }
@@ -765,26 +877,62 @@ object TextEraser {
     }
 
     /**
-     * The size under which a piece of [raw] is a screentone dot rather than
-     * a stroke, or 0 when the lettering is not on screentone. Read off the
-     * pieces clear of the box: on a tone they are dozens of small dots of
-     * one size. Twice their median keeps the dots of an ellipsis, which
-     * are drawn with the pen and are much larger.
+     * The screentone the lettering sits on, read off the pieces of [raw]
+     * clear of the box — on a tone they are dozens of small dots of one
+     * size — or null when it is not on one.
      */
-    private fun screentoneDot(raw: BooleanArray, reg: Region): Int {
+    private fun screentone(raw: BooleanArray, reg: Region): Screentone? {
         val areas = ArrayList<Int>()
+        val cx = ArrayList<Float>()
+        val cy = ArrayList<Float>()
         var pieces = 0
         forEachPiece(raw, reg.w, reg.h) { piece, size ->
             for (k in 0 until size) if (reg.zone[piece[k]] == BOX) return@forEachPiece
             pieces++
-            if (size <= MAX_DOT) areas += size
+            if (size > MAX_DOT) return@forEachPiece
+            areas += size
+            var sx = 0f
+            var sy = 0f
+            for (k in 0 until size) { sx += piece[k] % reg.w; sy += piece[k] / reg.w }
+            cx += sx / size
+            cy += sy / size
         }
-        if (areas.size < 12 || areas.size < pieces * 3 / 5) return 0
+        if (areas.size < 12 || areas.size < pieces * 3 / 5) return null
+        // Dot spacing: the median distance from a dot to its nearest one.
+        val m = min(cx.size, 300)
+        val nearest = FloatArray(m) { i ->
+            var best = Float.MAX_VALUE
+            for (j in 0 until cx.size) {
+                if (j == i) continue
+                val dx = cx[i] - cx[j]
+                val dy = cy[i] - cy[j]
+                best = min(best, dx * dx + dy * dy)
+            }
+            sqrt(best)
+        }
+        nearest.sort()
         areas.sort()
-        return 2 * areas[areas.size / 2] + 1
+        return Screentone(2 * areas[areas.size / 2] + 1, max(3, nearest[m / 2].roundToInt()))
     }
 
+    /**
+     * A screentone: pieces under [dot] pixels are its dots rather than
+     * strokes — twice their median, which keeps the dots of an ellipsis,
+     * drawn with the pen and much larger — and they lie about [spacing]
+     * pixels apart.
+     */
+    private class Screentone(val dot: Int, val spacing: Int)
+
     private const val MAX_DOT = 80
+
+    /** The pieces of [mask] whose size passes [keep]. */
+    private inline fun pieces(mask: BooleanArray, w: Int, h: Int, keep: (Int) -> Boolean): BooleanArray {
+        val out = BooleanArray(mask.size)
+        forEachPiece(mask, w, h) { piece, size ->
+            if (keep(size)) for (k in 0 until size) out[piece[k]] = true
+        }
+        return out
+    }
 
     /** Size of the largest 8-connected piece of [mask]. */
     private fun largestPiece(mask: BooleanArray, w: Int, h: Int): Int {
@@ -828,22 +976,42 @@ object TextEraser {
         return d
     }
 
+    /** Half the width of the strokes of [mask], in pixels: the depth most of it reaches. */
+    private fun halfStroke(mask: BooleanArray, w: Int, h: Int): Int {
+        val depth = inner(mask, w, h)
+        val hist = IntArray(256)
+        var k = 0
+        for (i in depth.indices) if (depth[i] > 0) { hist[min(255, depth[i])]++; k++ }
+        return if (k == 0) 0 else (percentile(hist, k, 0.9f) + 2) / 3
+    }
+
     /**
      * [letters] without the pieces drawn far thinner than the lettering
      * itself: speed lines, hatching and the rays of a burst that a loose
      * box took in. The lettering's weight is read off the heaviest tenth
      * of the stroke-like ink — the lines can be most of it — counting only
      * pieces long for their width, so a solid patch of black art cannot
-     * pass for the weight of the text. A hairline is under [HAIRLINE] of it
-     * and longer than [LINE_LENGTH] stroke widths.
+     * pass for the weight of the text. A hairline is under [HAIRLINE] of it,
+     * longer than [LINE_LENGTH] stroke widths and [ELONGATED].
      */
     private fun dropHairlines(letters: BooleanArray, w: Int, h: Int): BooleanArray {
         val depth = inner(letters, w, h)
         val pieces = ArrayList<IntArray>()
         forEachPiece(letters, w, h) { piece, size ->
             var deepest = 0
-            for (k in 0 until size) deepest = max(deepest, depth[piece[k]])
-            pieces += intArrayOf(deepest, size, piece[0])
+            var x0 = w
+            var x1 = 0
+            var y0 = h
+            var y1 = 0
+            for (k in 0 until size) {
+                val i = piece[k]
+                deepest = max(deepest, depth[i])
+                val x = i % w
+                val y = i / w
+                x0 = min(x0, x); x1 = max(x1, x); y0 = min(y0, y); y1 = max(y1, y)
+            }
+            val extent = max(x1 - x0, y1 - y0) + 1
+            pieces += intArrayOf(deepest, size, piece[0], extent)
         }
         if (pieces.size < 2) return letters
         val strokes = pieces.filter { it[1] * 9 >= STROKE_LENGTH * it[0] * it[0] }
@@ -858,11 +1026,13 @@ object TextEraser {
         val thin = BooleanArray(letters.size)
         var any = false
         // Length along the piece, against the lettering's stroke width:
-        // a ray runs on, a dakuten or a full stop is as thin but short.
+        // a ray runs on, a dakuten or a full stop is as thin but short. And
+        // a line reaches far for its ink, where a thin-drawn ♡ curls up.
         val strokeWidth = 2 * weight
         for (p in pieces) {
             val length = p[1] * 3 / max(1, 2 * p[0])
-            if (p[0] < weight * HAIRLINE && length * 3 > LINE_LENGTH * strokeWidth) { thin[p[2]] = true; any = true }
+            val line = p[3] * p[3] >= ELONGATED * p[1]
+            if (p[0] < weight * HAIRLINE && length * 3 > LINE_LENGTH * strokeWidth && line) { thin[p[2]] = true; any = true }
         }
         if (!any) return letters
         val out = letters.copyOf()
@@ -881,6 +1051,9 @@ object TextEraser {
     private const val HAIRLINE = 0.4f
 
     private const val LINE_LENGTH = 4
+
+    /** Extent squared over area above which a piece is a line, not a curled-up glyph. */
+    private const val ELONGATED = 12
 
     private fun luminance(p: Int): Int = ((p shr 16 and 0xFF) * 299 + (p shr 8 and 0xFF) * 587 + (p and 0xFF) * 114) / 1000
 
@@ -971,7 +1144,9 @@ object TextEraser {
      * whole number of lattice steps away, on the nearest pixel that was not
      * lettering, over the smooth fill. Returns false, leaving [out] as it
      * was, when the background has no lattice to continue — lines and
-     * painted detail are left to the smooth fill and to AI clean-up.
+     * painted detail are left to the smooth fill and to AI clean-up. A
+     * [lattice] already known is used as it is, and detail is copied only
+     * from [source] pixels.
      */
     private fun retexture(
         chan: FloatArray,
@@ -981,17 +1156,12 @@ object TextEraser {
         w: Int,
         h: Int,
         out: IntArray,
+        lattice: IntArray? = null,
+        source: BooleanArray = known,
     ): Boolean {
         val n = w * h
         val low = PushPull.fill(chan, weights(known), w, h, FIT_LEVEL) ?: return false
-        val detail = FloatArray(n)
-        for (i in 0 until n) {
-            if (!known[i]) continue
-            detail[i] = 0.299f * (chan[3 * i] - low[3 * i]) + 0.587f * (chan[3 * i + 1] - low[3 * i + 1]) +
-                0.114f * (chan[3 * i + 2] - low[3 * i + 2])
-        }
-        val sample = BooleanArray(n) { known[it] && zone[it] == RING }
-        val basis = lattice(detail, sample, w, h) ?: return false
+        val basis = lattice ?: toneBasis(chan, known, zone, w, h, low) ?: return false
         val steps = latticeSteps(basis, min(96, max(w, h)))
         if (steps.isEmpty()) return false
         var moved = 0
@@ -1006,7 +1176,7 @@ object TextEraser {
                 val sy = y + steps[k + 1]
                 if (sx < 0 || sy < 0 || sx >= w || sy >= h) continue
                 val j = sy * w + sx
-                if (!known[j]) continue
+                if (!source[j]) continue
                 out[i] = rgb(
                     low[3 * i] + chan[3 * j] - low[3 * j],
                     low[3 * i + 1] + chan[3 * j + 1] - low[3 * j + 1],
@@ -1017,6 +1187,29 @@ object TextEraser {
             }
         }
         return moved * 2 > total
+    }
+
+    /**
+     * The dot lattice of the tone around the lettering, from the fine
+     * detail of the [known] ring pixels over their smooth fit [low].
+     */
+    private fun toneBasis(
+        chan: FloatArray,
+        known: BooleanArray,
+        zone: ByteArray,
+        w: Int,
+        h: Int,
+        low: FloatArray? = PushPull.fill(chan, weights(known), w, h, FIT_LEVEL),
+    ): IntArray? {
+        low ?: return null
+        val n = w * h
+        val detail = FloatArray(n)
+        for (i in 0 until n) {
+            if (!known[i]) continue
+            detail[i] = 0.299f * (chan[3 * i] - low[3 * i]) + 0.587f * (chan[3 * i + 1] - low[3 * i + 1]) +
+                0.114f * (chan[3 * i + 2] - low[3 * i + 2])
+        }
+        return lattice(detail, BooleanArray(n) { known[it] && zone[it] == RING }, w, h)
     }
 
     /**
@@ -1145,6 +1338,9 @@ object TextEraser {
     // ---- pixels ----
 
     private const val OPAQUE = -0x1000000
+
+    /** How near white a second ring must be to be a letterer's white edge. */
+    private const val PAPER_WHITE = 40
 
     private fun channels(px: IntArray): FloatArray {
         val c = FloatArray(px.size * 3)

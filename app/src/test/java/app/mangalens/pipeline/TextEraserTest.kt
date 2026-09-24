@@ -289,16 +289,13 @@ class TextEraserTest {
         val art = page.copyOf()
         val box = letter(page, "whisper", 100f, 160f, textPaint(46f, Color.BLACK))
         box.right = max(box.right, 330)
-        TextEraser.trace = { println("TR $it") }
-        TextEraser.erase(page, box, ItemKind.ART_TEXT)
-        TextEraser.trace = null
         val e = TextEraser.erase(page, box, ItemKind.ART_TEXT)!!
         val after = applied(page, e)
         preview("art_same_colour", page, after, e)
         val w = e.rect.width()
         val artPx = pixels(art, e.rect)
         var eaten = 0
-        for (i in artPx.indices) if (lum(artPx[i]) < 100 && e.mask[i]) { eaten++; if (eaten < 5) println("eaten at ${e.rect.left + i % w},${e.rect.top + i / w} box=$box rect=${e.rect}") }
+        for (i in artPx.indices) if (lum(artPx[i]) < 100 && e.mask[i]) eaten++
         assertEquals("art pixels erased", 0, eaten)
         val inBox = pixels(after, box)
         val dark = inBox.count { lum(it) < 120 }

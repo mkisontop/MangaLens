@@ -74,11 +74,6 @@ class TextEraserPagesTest {
             // Warm up once so the first item's time is not the JIT's.
             items.forEach { TextEraser.erase(page, it.box, it.kind) }
             for (item in items) {
-                if (item.src.startsWith("天地") || item.src.startsWith("쾅")) {
-                    TextEraser.trace = { if (!it.startsWith("piece")) println("   TR ${item.src.take(4)}: $it") }
-                    TextEraser.erase(page, item.box, item.kind)
-                    TextEraser.trace = null
-                }
                 val t = System.nanoTime()
                 val e = TextEraser.erase(page, item.box, item.kind)
                 val ms = (System.nanoTime() - t) / 1e6

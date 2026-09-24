@@ -408,6 +408,46 @@ class LetteringRenderTest {
     }
 
     @Test
+    fun `a sound drawn down a long column is lettered down it, inside the erased strip`() {
+        val clean = Bitmap.createBitmap(pageW, pageH, Bitmap.Config.ARGB_8888)
+        noiseArt(Canvas(clean), Rect(0, 0, pageW, pageH), 11)
+        val column = Rect(500, 200, 560, 620)
+        val page = copy(clean)
+        drawLettering(Canvas(page), column, vertical = true, fill = letteringInk)
+        val patch = patchFor(clean, page, column)
+        val v = view()
+        v.setBubbles(
+            listOf(
+                RenderBubble(
+                    box = Rect(column),
+                    translated = "*ba-dump ba-dump ba-dump ba-dump*",
+                    original = "ドキドキドキドキ",
+                    bgColor = Color.rgb(140, 140, 140),
+                    textColor = Color.rgb(20, 20, 24),
+                    vertical = true,
+                    kind = BubbleKind.SFX,
+                    patch = patch,
+                    patchRect = Rect(column),
+                    outlineColor = Color.WHITE,
+                )
+            )
+        )
+        v.draw(Canvas(page))
+        writePreview("free-sfx-column.png", page)
+        val text = v.placedRects().single()
+        val ink = bbox(overlayOnly(v), Rect(0, 0, pageW, pageH)) { Color.alpha(it) > 200 && luminance(it) < 60 }!!
+        assertTrue("the English runs down the column ($ink)", ink.height() > ink.width() * 2)
+        assertTrue(
+            "and stays on the erased strip, not the art beside it ($ink vs $column)",
+            ink.left >= column.left - column.width() / 4 && ink.right <= column.right + column.width() / 4,
+        )
+        assertTrue("within the column's length ($ink vs $column)", ink.top >= column.top - 8 && ink.bottom <= column.bottom + 8)
+        assertTrue("and fills it (${ink.height()} of ${column.height()})", ink.height() >= column.height() * 0.6f)
+        assertTrue(text.contains(ink))
+        assertRectsCoverOverlay(v, "sfx column")
+    }
+
+    @Test
     fun `a sound effect without a patch is lettered over its box, not captioned`() {
         val box = Rect(200, 300, 460, 400)
         val v = view()

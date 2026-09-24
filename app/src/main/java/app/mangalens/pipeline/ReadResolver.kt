@@ -6,6 +6,7 @@ import android.graphics.Rect
 import app.mangalens.ocr.Balloon
 import app.mangalens.ocr.BubbleKind
 import app.mangalens.ocr.OcrLine
+import app.mangalens.overlay.ArtMap
 import app.mangalens.overlay.LetterStyle
 import app.mangalens.overlay.RenderBubble
 import app.mangalens.translate.ItemKind
@@ -358,8 +359,12 @@ internal class ReadResolver(
             kind = BubbleKind.SFX,
             style = LetterStyle.SFX_NOTE,
             outlineColor = if (dark) 0xFF17181C.toInt() else Color.WHITE,
+            art = art,
         )
     }
+
+    /** Where the page is drawn, for placing notes off the art; measured once, when a note first needs it. */
+    private val art: ArtMap by lazy { ArtMap.of(bitmap) }
 
     companion object {
         /** Shares of the page a sound effect may span and still count as small. */
