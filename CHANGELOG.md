@@ -14,6 +14,13 @@ the README.
   Gemini is the default provider (the fastest, with a free tier); a key you
   saved for another provider keeps working. Without a key the pill says
   "Add your Gemini key in MangaLens" instead of translating.
+- **A new face: Fuki.** The home screen is one big button — Fuki, a
+  speech balloon that says GO! and turns red to STOP — on cream newsprint
+  with ink outlines and hard shadows. First run is two steps (float over
+  apps, paste a free Gemini key), and Fuki proves the key by lettering a
+  line. Every setting moved to one Tweaks page; the overlay's quick menu
+  opens it, its button and pill are restyled to read over white and black
+  pages, and in tap-to-translate mode a tap on 文A translates the page.
 - **A quieter pill.** While a page translates, the button's busy ring says
   so and the pill stays out of the way — no "translating…", no
   "upgrading…". It speaks up only for what you need to know: a page the AI

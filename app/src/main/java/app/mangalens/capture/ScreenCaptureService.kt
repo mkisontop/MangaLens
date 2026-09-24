@@ -180,6 +180,13 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         val running = MutableStateFlow(false)
 
         /**
+         * Whether translation is paused, for the home screen: it shows Fuki
+         * napping and offers "Wake up" instead of treating a paused session
+         * as a running one.
+         */
+        val pausedState = MutableStateFlow(false)
+
+        /**
          * Whether the screen moved between two frames. While our own
          * painting is settling — [ownPaintSettling] — the difference is taken
          * only over the cells [mask] leaves: a card fading in or a streamed
@@ -407,6 +414,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                     v.textScale = s.textScale
                     v.bgOpacity = s.bgOpacity
                 }
+                controller?.setManual(s.mode == CaptureMode.MANUAL)
             }
         }
     }
@@ -414,6 +422,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_START -> {
+                pausedState.value = paused
                 val code = intent.getIntExtra(EXTRA_RESULT_CODE, Activity.RESULT_CANCELED)
                 val data = IntentCompat.getParcelableExtra(intent, EXTRA_RESULT_DATA, Intent::class.java)
                 if (code != Activity.RESULT_OK || data == null) {
@@ -467,11 +476,16 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
             v.textScale = settings.textScale
             v.bgOpacity = settings.bgOpacity
         }
+        controller?.setManual(settings.mode == CaptureMode.MANUAL)
         controller?.onFootprintChanged = { refreshOverlayMask() }
         refreshOverlayMask()
         running.value = true
         startTicker()
-        setPill("MangaLens is live — open your manhwa", 2600)
+        setPill(
+            if (settings.mode == CaptureMode.AUTO) "I'm on! Stop scrolling and I'll translate"
+            else "I'm on! Tap 文\u2060A to translate a page",
+            2600,
+        )
     }
 
     private fun displaySize(): Triple<Int, Int, Int> {
@@ -1120,7 +1134,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                 } else if (failure != null) {
                     setPill(failurePill(failure, partly = shown.isNotEmpty()), FAILURE_MS)
                 } else if (shown.isEmpty() && !auto) {
-                    setPill("no text found", 1800)
+                    setPill("no text on this page", 1800)
                 } else if (spoke) {
                     setPill(null)
                 }
@@ -1236,7 +1250,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         // straight from one work to the next with neither.
         works.startNewWork()
         pipeline.forgetRecent()
-        answer("new series · names cleared", 2000)
+        answer("new series · old names forgotten", 2000)
     }
 
     override fun onTogglePause() {
@@ -1250,10 +1264,11 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
             state = State.SCANNING
             shownThumb = null
             clearCards()
-            answer("paused", 1600)
+            answer("napping · tap 文\u2060A to wake me", 1600)
         } else {
-            answer("live", 1200)
+            answer("awake!", 1200)
         }
+        pausedState.value = paused
         controller?.setPaused(paused)
         updateNotification()
     }
@@ -1261,7 +1276,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
     override fun onToggleMode() {
         val next = if (settings.mode == CaptureMode.AUTO) CaptureMode.MANUAL else CaptureMode.AUTO
         scope.launch { settingsRepo.setMode(next) }
-        answer(if (next == CaptureMode.AUTO) "auto-live mode" else "tap the button to translate", 2200)
+        answer(if (next == CaptureMode.AUTO) "hands-free · I translate when you stop" else "tap 文\u2060A to translate each page", 2200)
     }
 
     override fun onPeek() {
@@ -1288,6 +1303,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         startActivity(
             Intent(this, MainActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+                .putExtra(MainActivity.EXTRA_OPEN_TWEAKS, true)
         )
     }
 
@@ -1315,8 +1331,8 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         )
         return NotificationCompat.Builder(this, MangaLensApp.CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_bubble)
-            .setContentTitle("MangaLens is translating your screen")
-            .setContentText(if (paused) "Paused" else "Live — bubbles translate as you read")
+            .setContentTitle("MangaLens is reading along")
+            .setContentText(if (paused) "Napping. Tap Resume to wake me" else "On. I translate the pages as you read")
             .setOngoing(true)
             .setContentIntent(open)
             .addAction(0, if (paused) "Resume" else "Pause", serviceIntent(ACTION_TOGGLE_PAUSE, 2))
@@ -1330,6 +1346,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
 
     override fun onDestroy() {
         running.value = false
+        pausedState.value = false
         translateJob?.cancel()
         discardPrepared()
         scope.cancel()

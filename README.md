@@ -25,7 +25,8 @@ the normal APK.
 
 ## How it feels
 
-1. Tap **Start translating** → allow screen capture.
+1. Tap Fuki, the big yellow **GO!** balloon on the home screen → allow
+   screen capture.
 2. Switch to Brave and read your manhwa like normal.
 3. Every time you stop scrolling, English appears **in** the page, line by
    line as it is translated — each balloon wiped clean and re-lettered in a
@@ -37,9 +38,12 @@ the normal APK.
    page you scroll back to re-paints from cache: no re-translation, no extra
    cost.
 
-A floating **文A** toggle is always available: **tap** = translation on/off
-(with a busy ring while a pass runs), **long-press** = quick menu (translate
-now, pause, peek at the original art, tap-to-translate mode, settings, stop).
+A floating **文A** button is always available, with a busy ring while a pass
+runs. **Tap** pauses and resumes in hands-free mode, and translates the page
+in tap-to-translate mode; **long-press** opens the quick menu (translate this
+page, pause, peek at the original art, tap-to-translate mode, Tweaks, stop).
+Every setting lives on one **Tweaks** page, which the quick menu opens
+directly.
 
 ## Install
 
@@ -48,11 +52,13 @@ now, pause, peek at the original art, tap-to-translate mode, settings, stop).
    `checksums.txt` if you want to verify the download.
 2. Open it on your phone or tablet → allow installing from unknown sources
    (Android's standard prompt for apps outside the Play Store).
-3. Open MangaLens → grant "Display over other apps" → Start.
+3. Open MangaLens and follow Fuki's two steps: allow "Display over other
+   apps", then get a free Gemini key and tap **Paste my key**. Fuki proves the
+   key by lettering a Korean line, and you're ready to tap **GO!**.
 
 Updating is automatic-ish: the app makes one anonymous check against this
-repository's latest release when you open it, and shows a small banner when a
-newer version exists. Nothing downloads without your tap.
+repository's latest release when you open it, and shows a small **NEW!**
+sticker when a newer version exists. Nothing downloads without your tap.
 
 ### One-time update from 0.9.1
 
@@ -523,8 +529,8 @@ not the normal download.
 you're not in a Brave *private* tab — private tabs set `FLAG_SECURE`, which
 makes the captured screen black.
 
-**The browser bar gets translated?** Raise the "Ignore top of screen" slider in
-Reading settings.
+**The browser bar gets translated?** Raise **Skip the top of the screen** in
+Tweaks → Look.
 
 **Battery?** Use "Tap to translate" mode — capture idles until you tap.
 

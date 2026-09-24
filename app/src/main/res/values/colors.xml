@@ -1,5 +1,6 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
-    <color name="window_bg">#0F1020</color>
-    <color name="ic_launcher_background">#23255C</color>
+    <!-- Cream newsprint, the paper the home screen draws on: no flash of another colour on a cold start. -->
+    <color name="window_bg">#FFF4DC</color>
+    <color name="ic_launcher_background">#FFCC1A</color>
 </resources>

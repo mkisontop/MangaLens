@@ -7,6 +7,11 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Android 11+ hides other apps unless named: "Open Brave" needs to find it. -->
+    <queries>
+        <package android:name="com.brave.browser" />
+    </queries>
+
     <application
         android:name=".MangaLensApp"
         android:allowBackup="true"
