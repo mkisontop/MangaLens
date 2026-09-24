@@ -274,6 +274,43 @@ class ReadResolverTest {
         assertTrue("the face is left as drawn", out.none { it.balloon === balloon })
     }
 
+    /**
+     * The model's boxes for a whole panel slid 250 px down together. Two
+     * land on bare art and go back to their balloons; the third lands on a
+     * face drawn in line art, which passes for a balloon with its features
+     * under the box, and was wiped. It slides back with the others.
+     */
+    @Test
+    fun aLineWhosePanelSlidLeavesTheFaceItLandedOn() {
+        val bmp = artWithBalloon(Rect(60, 200, 220, 520))
+        val c = Canvas(bmp)
+        val white = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE }
+        val ink = android.graphics.Paint().apply { color = Color.BLACK }
+        val second = Rect(300, 200, 460, 520)
+        val third = Rect(540, 200, 700, 520)
+        val face = Rect(540, 540, 700, 800)
+        for (o in listOf(second, third, face)) c.drawOval(android.graphics.RectF(o), white)
+        for (k in 0 until 4) c.drawRect(365f, 260f + k * 50, 395f, 295f + k * 50, ink)
+        for (col in 0 until 2) for (k in 0 until 4) c.drawRect(595f + col * 40, 260f + k * 50, 625f + col * 40, 295f + k * 50, ink)
+        val line = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            style = android.graphics.Paint.Style.STROKE; strokeWidth = 4f; color = Color.BLACK
+        }
+        c.drawOval(android.graphics.RectF(580f, 580f, 610f, 605f), line)
+        c.drawOval(android.graphics.RectF(650f, 580f, 680f, 605f), line)
+        c.drawArc(android.graphics.RectF(605f, 735f, 655f, 760f), 0f, 180f, false, line)
+        val balloons = listOf(Rect(60, 200, 220, 520), second, third, face).map { detection(it, it) }
+        val items = listOf(
+            PageItem(Rect(125, 510, 155, 695), ItemKind.SPEECH, "どこ行くの", "Where are you going?", vertical = true),
+            PageItem(Rect(365, 510, 395, 695), ItemKind.SPEECH, "ちょっと外", "Just outside.", vertical = true),
+            PageItem(Rect(595, 510, 665, 695), ItemKind.SPEECH, "待ってよ\n一緒に行く", "Wait, I'm coming too!", vertical = true),
+        )
+        val out = ReadResolver(bmp, balloons, emptyList(), 0, 0, emptyList()).resolve(items)
+        assertTrue("the face is left as drawn", out.none { it.balloon === balloons[3] })
+        for ((k, item) in items.withIndex()) {
+            assertTrue("${item.en} is lettered in its own balloon", out.single { it.translated == item.en }.balloon === balloons[k])
+        }
+    }
+
     @Test
     fun cleanLetteringWhereTheBoxSaysKeepsItThere() {
         // Plain paper with the line drawn right where the box is, and a

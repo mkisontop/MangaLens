@@ -79,13 +79,16 @@ internal class ReadResolver(
         val home = usable.map(::balloonFor).toMutableList()
         val claimed = java.util.Collections.newSetFromMap(IdentityHashMap<Balloon, Boolean>())
         home.forEach { if (it != null) claimed.add(it) }
+        val slid = ArrayList<Slide>()
         for (i in usable.indices) {
             if (home[i] != null) continue
             drifted(usable[i], claimed)?.let {
                 home[i] = it
                 claimed.add(it)
+                drift[it]?.let { block -> slid.add(Slide(i, block.centerX() - usable[i].box.centerX(), block.centerY() - usable[i].box.centerY())) }
             }
         }
+        slideAlong(usable, home, claimed, slid)
         // Balloons page-wide detection missed — see-through ones, ones
         // breaking a border or cut by the page edge — found from their
         // lettering outward.
@@ -381,9 +384,10 @@ internal class ReadResolver(
     private fun balloonFor(item: PageItem): Balloon? = holding(whole, item)
 
     /** The smallest of [balloons] holding [item], by the rule [balloonFor] states. */
-    private fun holding(balloons: List<Balloon>, item: PageItem): Balloon? {
-        if (item.kind == ItemKind.SFX) return null
-        val box = item.box
+    private fun holding(balloons: List<Balloon>, item: PageItem): Balloon? =
+        if (item.kind == ItemKind.SFX) null else holding(balloons, item.box)
+
+    private fun holding(balloons: List<Balloon>, box: Rect): Balloon? {
         return balloons
             .filter { b -> containedShare(box, b.box) >= 0.6f && onInterior(b, box.centerX(), box.centerY()) }
             .minByOrNull { it.box.width().toLong() * it.box.height() }
@@ -413,12 +417,78 @@ internal class ReadResolver(
                 .getOrNull().also { erasures[item] = it }
         }
         if (here != null && here.flat && here.busy < 0.3f) return null
+        // The nearest, counting lettering of another size as further off:
+        // a box drifts with its line's size, and when a whole panel's boxes
+        // slid, the balloon nearest a line's box can be its neighbour's.
         val found = near
             .mapNotNull { b -> BalloonTrust.letteringBlock(bitmap, b)?.let { b to it } }
-            .minByOrNull { (b, _) -> kotlin.math.hypot((b.box.exactCenterX() - box.exactCenterX()).toDouble(), (b.box.exactCenterY() - box.exactCenterY()).toDouble()) }
+            .minByOrNull { (b, block) ->
+                kotlin.math.hypot((b.box.exactCenterX() - box.exactCenterX()).toDouble(), (b.box.exactCenterY() - box.exactCenterY()).toDouble()) *
+                    kotlin.math.exp(sizeGap(block, box))
+            }
             ?: return null
         drift[found.first] = found.second
         return found.first
+    }
+
+    /** A line [drifted] put back into its balloon, and how far its box had slid from the lettering there. */
+    private class Slide(val item: Int, val dx: Int, val dy: Int)
+
+    /**
+     * Now and then the model's boxes for a whole panel slide the same way
+     * together. [drifted] puts back the lines whose boxes landed on bare
+     * art, but a box that landed on art passing for a balloon — a face,
+     * features and all under the box — is held there, and the face was
+     * wiped. When two lines within a panel's reach of one — twice as far
+     * as a box may drift — were put back by the same shift, a line held
+     * by a detection that holds no block of lettering moves by that shift
+     * too, into a balloon no line claims whose lettering is its line's
+     * size.
+     */
+    private fun slideAlong(usable: List<PageItem>, home: MutableList<Balloon?>, claimed: MutableSet<Balloon>, slid: List<Slide>) {
+        if (slid.size < 2) return
+        val reach = bitmap.height * MAX_DRIFT * 2
+        for (i in usable.indices) {
+            val held = home[i] ?: continue
+            if (slid.any { it.item == i }) continue
+            val item = usable[i]
+            if (item.kind != ItemKind.SPEECH && item.kind != ItemKind.THOUGHT) continue
+            val box = item.box
+            val near = slid.filter { s ->
+                val b = usable[s.item].box
+                kotlin.math.hypot((b.exactCenterX() - box.exactCenterX()).toDouble(), (b.exactCenterY() - box.exactCenterY()).toDouble()) <= reach
+            }
+            val shift = agreed(near) ?: continue
+            if (BalloonTrust.letteringBlock(bitmap, held) != null) continue
+            val moved = Rect(box).apply { offset(shift.first, shift.second) }
+            val to = holding(whole, moved) ?: continue
+            if (to in claimed || to.inverted) continue
+            val block = BalloonTrust.letteringBlock(bitmap, to) ?: continue
+            if (sizeGap(block, box) > SAME_SIZE) continue
+            home[i] = to
+            claimed.add(to)
+            drift[to] = block
+            trace?.invoke("${item.src.take(8).replace('\n', ' ')}: slid with its panel to ${to.box}")
+        }
+    }
+
+    /** The shift two of [slides] agree on, averaged; null when no two agree. */
+    private fun agreed(slides: List<Slide>): Pair<Int, Int>? {
+        for (a in slides.indices) for (b in a + 1 until slides.size) {
+            val s = slides[a]
+            val t = slides[b]
+            val tol = maxOf(SLIDE_TOLERANCE_PX.toDouble(), 0.2 * kotlin.math.hypot(s.dx.toDouble(), s.dy.toDouble()))
+            if (kotlin.math.abs(s.dx - t.dx) <= tol && kotlin.math.abs(s.dy - t.dy) <= tol) return (s.dx + t.dx) / 2 to (s.dy + t.dy) / 2
+        }
+        return null
+    }
+
+    /** How far apart two boxes' sizes are: 0 for the same, ln 2 for one twice the other along its length. */
+    private fun sizeGap(a: Rect, b: Rect): Double {
+        fun gap(x: Int, y: Int) = kotlin.math.abs(kotlin.math.ln(x.coerceAtLeast(1).toDouble() / y.coerceAtLeast(1)))
+        val (aLong, aShort) = if (a.height() >= a.width()) a.height() to a.width() else a.width() to a.height()
+        val (bLong, bShort) = if (b.height() >= b.width()) b.height() to b.width() else b.width() to b.height()
+        return gap(aLong, bLong) + 0.5 * gap(aShort, bShort)
     }
 
     /**
@@ -674,6 +744,12 @@ internal class ReadResolver(
 
         /** Mask cells a joined balloon's lobe reaches into its neighbour's, so the two cleanings overlap. */
         private const val SEAM_CELLS = 2
+
+        /** Pixels two slides may differ by, at least, and still be the one shift of a panel. */
+        private const val SLIDE_TOLERANCE_PX = 24
+
+        /** [sizeGap] within which a balloon's lettering is a line's own size. */
+        private const val SAME_SIZE = 0.5
 
         /** Intersection over union past which a balloon found from its lettering is one already detected. */
         private const val SAME_BALLOON = 0.5f
