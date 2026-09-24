@@ -959,4 +959,12 @@ class PageReaderTest {
         // A line with no English in it is left as the model wrote it.
         assertEquals("はぁ♡", PageReader.englishOnly("はぁ♡"))
     }
+
+    @Test
+    fun `a sound set between asterisks like a stage direction is lettered without them`() {
+        assertEquals("Yaaawn...", PageReader.englishOnly("*Yaaawn*..."))
+        assertEquals("sigh Fine, fine.", PageReader.englishOnly("*sigh* Fine, fine."))
+        // Asterisks standing in for letters stay.
+        assertEquals("What the f***?!", PageReader.englishOnly("What the f***?!"))
+    }
 }

@@ -658,8 +658,13 @@ class PageReader internal constructor(
         internal fun englishOnly(en: String): String {
             if (en.none { it in 'A'..'Z' || it in 'a'..'z' }) return en
             val kept = en.filter { !(Script.isKana(it) || Script.isHangul(it)) }
+                // A sound set between asterisks like a stage direction
+                // ("*Yaaawn*..."), which lettering never shows; "f***" keeps its.
+                .replace(STARRED, "$1")
             return kept.replace(Regex("[ \t]{2,}"), " ").trim().ifEmpty { en }
         }
+
+        private val STARRED = Regex("\\*([^*\\s](?:[^*]*[^*\\s])?)\\*")
 
         private val LINE_BREAKS = Regex("[ \t]*[\r\n]+[ \t]*")
 
