@@ -792,6 +792,17 @@ class PageReaderTest {
     }
 
     @Test
+    fun `a line break copied from the source's columns is set as a space`() {
+        val item = toItem(
+            listOf(100, 400, 250, 460), "narration", "放課後の屋上。\n二人だけの衝突。",
+            "On the rooftop after school.\nA clash between just the two of them.",
+        )
+        assertEquals("On the rooftop after school. A clash between just the two of them.", item.en)
+        // The source keeps its columns: they say how it is set.
+        assertEquals("放課後の屋上。\n二人だけの衝突。", item.src)
+    }
+
+    @Test
     fun `shouting is read from the English of dialogue only`() {
         assertTrue(toItem(listOf(1, 1, 90, 90), "speech", "やめろ‼", "Stop it!!").loud)
         assertTrue(toItem(listOf(1, 1, 90, 90), "thought", "なに", "WHAT ARE YOU DOING?").loud)
