@@ -56,7 +56,6 @@ import androidx.compose.ui.platform.LocalUriHandler
 import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
-import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
@@ -76,15 +75,20 @@ import app.mangalens.translate.ModelCatalog
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
-/** Where Tweaks opens: at the top, or scrolled to an unfolded AI brain. */
-internal enum class TweaksTarget { TOP, AI }
+/**
+ * Where Tweaks opens: at the top, at the Your AI card (a missing or refused
+ * key, a server to set up), or at the other providers, unfolded under More
+ * options.
+ */
+internal enum class TweaksTarget { TOP, AI, OTHER_AI }
 
 /**
- * Every knob in one place. A full page rather than a sheet: it holds text
- * fields, the keyboard and dropdowns, and the overlay's quick menu opens
- * it directly. Reading, Look and Timing come first because they are what a
- * reader adjusts; the AI brain is folded, since its defaults rarely need
- * touching once a key is in.
+ * Tweaks, kept to what a reader actually changes: the language, hands-free
+ * or tap, the size of the lettering, and whether the AI's key works. That
+ * is all the page shows. Everything else — timing, data, the thinking
+ * setting, the model, other AI providers, diagnostics — has defaults that
+ * are right for nearly everyone, and waits folded under More options,
+ * where it can be found without being in the way.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -98,13 +102,21 @@ internal fun TweaksPage(
     onClose: () -> Unit,
 ) {
     val pop = LocalPop.current
-    var aiOpen by rememberSaveable { mutableStateOf(target == TweaksTarget.AI) }
+    var moreOpen by rememberSaveable { mutableStateOf(target == TweaksTarget.OTHER_AI) }
     val aiRequester = remember { BringIntoViewRequester() }
+    val otherAiRequester = remember { BringIntoViewRequester() }
     LaunchedEffect(target) {
-        if (target == TweaksTarget.AI) {
-            aiOpen = true
-            delay(250)
-            aiRequester.bringIntoView()
+        when (target) {
+            TweaksTarget.TOP -> Unit
+            TweaksTarget.AI -> {
+                delay(250)
+                aiRequester.bringIntoView()
+            }
+            TweaksTarget.OTHER_AI -> {
+                moreOpen = true
+                delay(250)
+                otherAiRequester.bringIntoView()
+            }
         }
     }
     BoxWithConstraints(Modifier.fillMaxSize()) {
@@ -131,17 +143,22 @@ internal fun TweaksPage(
                     }
                 }
                 Text(
-                    "Every knob in one place. The defaults are good!",
+                    "The defaults are good. Most people never need more than this.",
                     style = MaterialTheme.typography.bodyMedium,
                     color = pop.inkSoft,
                 )
 
                 ReadingSection(settings, sink, columns = if (narrow) 2 else 4)
-                LookSection(settings, sink)
-                TimingSection(settings, sink)
+                TextSizeSection(settings, sink)
+                YourAiSection(drafts, sayHi, Modifier.bringIntoViewRequester(aiRequester))
 
-                Spacer(Modifier.height(24.dp))
-                AiBrain(settings, sink, drafts, sayHi, aiOpen, { aiOpen = !aiOpen }, Modifier.bringIntoViewRequester(aiRequester))
+                Spacer(Modifier.height(28.dp))
+                MoreOptions(
+                    settings, sink, drafts,
+                    open = moreOpen,
+                    onToggle = { moreOpen = !moreOpen },
+                    otherAi = Modifier.bringIntoViewRequester(otherAiRequester),
+                )
 
                 Spacer(Modifier.height(32.dp))
                 Text(
@@ -165,6 +182,19 @@ private fun SectionTitle(text: String) {
         text.uppercase(),
         style = MaterialTheme.typography.labelMedium,
         color = LocalPop.current.inkSoft,
+        modifier = Modifier.semantics { heading() },
+    )
+    Spacer(Modifier.height(8.dp))
+}
+
+/** A heading inside More options: smaller than a section, to keep the fold one piece. */
+@Composable
+private fun GroupTitle(text: String) {
+    Spacer(Modifier.height(20.dp))
+    Text(
+        text,
+        style = MaterialTheme.typography.titleMedium,
+        color = LocalPop.current.ink,
         modifier = Modifier.semantics { heading() },
     )
     Spacer(Modifier.height(8.dp))
@@ -213,7 +243,7 @@ private fun ReadingSection(settings: AppSettings, sink: SettingsSink, columns: I
 }
 
 @Composable
-private fun LookSection(settings: AppSettings, sink: SettingsSink) {
+private fun TextSizeSection(settings: AppSettings, sink: SettingsSink) {
     val pop = LocalPop.current
     SectionTitle("Look")
     PopSlider(
@@ -237,66 +267,166 @@ private fun LookSection(settings: AppSettings, sink: SettingsSink) {
     )
     Spacer(Modifier.height(6.dp))
     Helper("How big I letter the English on the page.")
-    Spacer(Modifier.height(16.dp))
-    PopSlider(
-        "Skip the top of the screen",
-        settings.ignoreTopPct,
-        0f..0.15f,
-        { "${(it * 100).toInt()}%" },
-        sink::setIgnoreTopPct,
-    )
-    Helper("Keeps me off your browser's address bar.")
-}
-
-@Composable
-private fun TimingSection(settings: AppSettings, sink: SettingsSink) {
-    SectionTitle("Timing")
-    PopSlider(
-        "Reaction time",
-        settings.stabilityMs.toFloat(),
-        200f..900f,
-        { "${it.toInt()} ms" },
-        { sink.setStabilityMs(it.toInt()) },
-        startLabel = "Snappy",
-        endLabel = "Patient",
-    )
-    Helper("How long a page sits still before I read it.")
 }
 
 /**
- * "Gemini · key saved ✓", or what is still missing, in the header of the
- * folded AI brain. [refused] is whether the provider turned away the key
- * held now: setup then asks for a new key, and a header still ticking it
- * off would contradict it.
+ * "Gemini · key saved ✓", or what is still missing, as the Your AI card
+ * and the home screen say it. [refused] is whether the provider turned
+ * away the key held now: setup then asks for a new key, and a line still
+ * ticking it off would contradict it.
  */
 internal fun aiBrainSummary(s: AppSettings, refused: Boolean = false): Pair<String, Boolean> {
     val label = LlmHttp.providerLabel(s)
     val custom = s.provider == LlmProvider.CUSTOM
     return when {
-        LlmHttp.setupNeeded(s) != null -> (if (custom) "$label · no endpoint yet" else "$label · no key yet") to false
+        LlmHttp.setupNeeded(s) != null -> (if (custom) "$label · no server URL yet" else "$label · no key yet") to false
         refused -> (if (custom) "$label · token refused" else "$label · key refused") to false
-        else -> (if (custom) "$label · endpoint set ✓" else "$label · key saved ✓") to true
+        else -> (if (custom) "$label · server set ✓" else "$label · key saved ✓") to true
     }
 }
 
+/**
+ * The AI, reduced to what a reader needs to know: is the key in, and does
+ * it work. A saved key shows as a line with Test it and Change key; the
+ * key box itself appears only when there is no key yet, the key was
+ * refused, or the reader asked to change it. A custom server's URL is
+ * asked for here too, since nothing works without it.
+ */
 @Composable
-private fun AiBrain(
+private fun YourAiSection(drafts: AiDrafts, sayHi: SayHi, modifier: Modifier) {
+    val pop = LocalPop.current
+    val uri = LocalUriHandler.current
+    val clipboard = LocalClipboardManager.current
+    val view = LocalView.current
+    val reduced = LocalReducedMotion.current
+    val scope = rememberCoroutineScope()
+    val pasteWiggle = rememberWiggle()
+    val s = drafts.settings
+    val provider = s.provider
+    val (summary, ready) = aiBrainSummary(s, sayHi.rejects(s))
+    var changing by remember(provider) { mutableStateOf(false) }
+    var notice by remember(provider) { mutableStateOf<String?>(null) }
+    val phase = sayHi.phase
+    LaunchedEffect(phase) {
+        when {
+            // A refused key can only be fixed by a new one: open the box and point at Paste.
+            phase is SayHi.Phase.Failed && phase.rejected -> {
+                changing = true
+                view.buzz(Buzz.REJECT)
+                pasteWiggle.play(reduced)
+            }
+            phase is SayHi.Phase.Ok -> changing = false
+        }
+    }
+
+    SectionTitle("Your AI")
+    PopSurface(modifier.fillMaxWidth(), RoundedCornerShape(20.dp), color = pop.surface) {
+        Column(Modifier.fillMaxWidth().padding(16.dp)) {
+            Text(
+                summary,
+                style = MaterialTheme.typography.titleMedium,
+                color = if (ready) pop.ink else pop.punchText,
+            )
+            if (provider == LlmProvider.CUSTOM) {
+                Spacer(Modifier.height(12.dp))
+                SecretField(
+                    value = drafts.customUrl,
+                    onValueChange = drafts::editCustomUrl,
+                    label = "Server URL (chat completions)",
+                    secret = false,
+                    keyboardType = KeyboardType.Uri,
+                    isError = drafts.customUrl.isBlank(),
+                    placeholder = "https://host/v1/chat/completions",
+                )
+            }
+            if (ready && !changing) {
+                Spacer(Modifier.height(12.dp))
+                val testing = phase == SayHi.Phase.Running
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    StickerButton(
+                        if (testing) "Testing…" else "Test it",
+                        { if (!testing && !sayHi.runIfReady(s)) view.buzz(Buzz.REJECT) },
+                        modifier = Modifier.weight(1f),
+                        style = StickerStyle.Surface,
+                        height = 48.dp,
+                        contentDescription = if (provider == LlmProvider.CUSTOM) "Test the server on a line" else "Test the key on a line",
+                    )
+                    StickerButton(
+                        if (provider == LlmProvider.CUSTOM) "Change token" else "Change key",
+                        { changing = true },
+                        modifier = Modifier.weight(1f),
+                        style = StickerStyle.Surface,
+                        height = 48.dp,
+                    )
+                }
+            } else if (provider != LlmProvider.CUSTOM || drafts.customUrl.isNotBlank()) {
+                Spacer(Modifier.height(12.dp))
+                Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), verticalAlignment = Alignment.CenterVertically) {
+                    SecretField(
+                        value = drafts.key,
+                        onValueChange = {
+                            notice = null
+                            drafts.editKey(it)
+                        },
+                        label = apiKeyLabel(provider),
+                        modifier = Modifier.weight(1f),
+                        showLabel = false,
+                        placeholder = apiKeyLabel(provider),
+                    )
+                    Spacer(Modifier.width(10.dp))
+                    StickerButton(
+                        "Paste",
+                        {
+                            notice = null
+                            val check = drafts.submitKey(clipboard.getText()?.text.orEmpty(), sayHi)
+                            pasteNotice(check)?.let {
+                                notice = it
+                                view.buzz(Buzz.REJECT)
+                                scope.launch { pasteWiggle.play(reduced) }
+                            }
+                        },
+                        modifier = Modifier.fillMaxHeight(),
+                        style = StickerStyle.Zap,
+                        height = 48.dp,
+                        fillWidth = false,
+                        wiggle = pasteWiggle,
+                        contentDescription = "Paste key from clipboard",
+                    )
+                }
+                notice?.let {
+                    Spacer(Modifier.height(6.dp))
+                    Text(it, style = MaterialTheme.typography.bodyMedium, color = pop.punchText)
+                }
+                providerKeyHelp(provider).url?.let { url ->
+                    Spacer(Modifier.height(4.dp))
+                    TextLink(providerKeyHelp(provider).linkLabel, { uri.openUri(url) })
+                }
+            }
+        }
+    }
+    SayHiResult(phase, onRetry = { sayHi.runIfReady(s) })
+}
+
+/**
+ * Everything whose default is right for nearly everyone, folded: timing
+ * and data, how the AI works, which AI, and troubleshooting.
+ */
+@Composable
+private fun MoreOptions(
     settings: AppSettings,
     sink: SettingsSink,
     drafts: AiDrafts,
-    sayHi: SayHi,
     open: Boolean,
     onToggle: () -> Unit,
-    modifier: Modifier,
+    otherAi: Modifier,
 ) {
     val pop = LocalPop.current
     val reduced = LocalReducedMotion.current
     val interaction = remember { MutableInteractionSource() }
-    val sink2 = rememberSink(interaction)
+    val sunk = rememberSink(interaction)
     val chevron = animateFloatAsState(if (open) 180f else 0f, if (reduced) snap() else tween(200), label = "chevron")
-    val (summary, ready) = aiBrainSummary(drafts.settings, sayHi.rejects(drafts.settings))
-    Column(modifier.fillMaxWidth()) {
-        PopSurface(Modifier.fillMaxWidth(), RoundedCornerShape(20.dp), color = pop.surface, sunk = { sink2.value }) {
+    Column(Modifier.fillMaxWidth()) {
+        PopSurface(Modifier.fillMaxWidth(), RoundedCornerShape(20.dp), color = pop.surface, sunk = { sunk.value }) {
             Row(
                 Modifier
                     .clickable(interaction, indication = null, role = Role.Button, onClick = onToggle)
@@ -309,15 +439,15 @@ private fun AiBrain(
             ) {
                 Column(Modifier.weight(1f)) {
                     Text(
-                        "AI brain",
+                        "More options",
                         style = MaterialTheme.typography.titleLarge,
                         color = pop.ink,
                         modifier = Modifier.semantics { heading() },
                     )
                     Text(
-                        summary,
+                        "Timing, data, model, other AIs. Leave these alone if things work.",
                         style = MaterialTheme.typography.bodyMedium,
-                        color = if (ready) pop.ink else pop.punchText,
+                        color = pop.inkSoft,
                     )
                 }
                 Text(
@@ -335,138 +465,46 @@ private fun AiBrain(
                 .fillMaxWidth()
                 .then(if (reduced) Modifier else Modifier.animateContentSize())
         ) {
-            if (open) AiBrainBody(settings, sink, drafts, sayHi)
+            if (open) MoreOptionsBody(settings, sink, drafts, otherAi)
         }
     }
 }
 
 @Composable
-private fun AiBrainBody(settings: AppSettings, sink: SettingsSink, drafts: AiDrafts, sayHi: SayHi) {
+private fun MoreOptionsBody(settings: AppSettings, sink: SettingsSink, drafts: AiDrafts, otherAi: Modifier) {
     val pop = LocalPop.current
     val provider = settings.provider
-    val uri = LocalUriHandler.current
-    val clipboard = LocalClipboardManager.current
-    val view = LocalView.current
-    val reduced = LocalReducedMotion.current
-    val scope = rememberCoroutineScope()
-    val pasteWiggle = rememberWiggle()
-    var notice by remember(provider) { mutableStateOf<String?>(null) }
-    // A refused key can only be fixed by a new one: point at Paste.
-    val phase = sayHi.phase
-    LaunchedEffect(phase) {
-        if (phase is SayHi.Phase.Failed && phase.rejected) {
-            view.buzz(Buzz.REJECT)
-            pasteWiggle.play(reduced)
-        }
-    }
 
-    Spacer(Modifier.height(16.dp))
-    Text("Who translates", style = MaterialTheme.typography.titleMedium, color = pop.ink)
-    Spacer(Modifier.height(8.dp))
-    PopTiles(
-        listOf(
-            PopTile(LlmProvider.GEMINI, "Gemini", caption = "Free · fastest"),
-            PopTile(LlmProvider.ANTHROPIC, "Claude", caption = "by Anthropic"),
-            PopTile(LlmProvider.OPENAI, "OpenAI", caption = "Paid key"),
-            PopTile(LlmProvider.OPENROUTER, "OpenRouter", caption = "Many models"),
-            PopTile(LlmProvider.CUSTOM, "Custom", caption = "Your own server"),
-        ),
-        selected = provider,
-        onSelect = sink::setProvider,
-        columns = 2,
-        minHeight = 56.dp,
+    GroupTitle("Timing and data")
+    PopSlider(
+        "Reaction time",
+        settings.stabilityMs.toFloat(),
+        200f..900f,
+        { "${it.toInt()} ms" },
+        { sink.setStabilityMs(it.toInt()) },
+        startLabel = "Snappy",
+        endLabel = "Patient",
     )
-
-    // A custom server cannot work without its URL, so that field comes
-    // first and says so until it is filled; the token is optional.
-    if (provider == LlmProvider.CUSTOM) {
-        Spacer(Modifier.height(16.dp))
-        val missing = drafts.customUrl.isBlank()
-        SecretField(
-            value = drafts.customUrl,
-            onValueChange = drafts::editCustomUrl,
-            label = "Chat-completions endpoint URL",
-            secret = false,
-            keyboardType = KeyboardType.Uri,
-            isError = missing,
-        )
-        if (missing) {
-            Spacer(Modifier.height(4.dp))
-            Text(
-                "Required: your server's chat-completions URL, e.g. https://host/v1/chat/completions",
-                style = MaterialTheme.typography.bodyMedium,
-                color = pop.punchText,
-            )
-        }
-    }
-
+    Helper("How long a page sits still before I read it.")
     Spacer(Modifier.height(16.dp))
-    FieldLabel(apiKeyLabel(provider))
-    Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), verticalAlignment = Alignment.CenterVertically) {
-        SecretField(
-            value = drafts.key,
-            onValueChange = {
-                notice = null
-                drafts.editKey(it)
-            },
-            label = apiKeyLabel(provider),
-            modifier = Modifier.weight(1f),
-            showLabel = false,
-        )
-        Spacer(Modifier.width(10.dp))
-        StickerButton(
-            "Paste",
-            {
-                notice = null
-                val check = drafts.submitKey(clipboard.getText()?.text.orEmpty(), sayHi)
-                pasteNotice(check)?.let {
-                    notice = it
-                    view.buzz(Buzz.REJECT)
-                    scope.launch { pasteWiggle.play(reduced) }
-                }
-            },
-            modifier = Modifier.fillMaxHeight(),
-            style = StickerStyle.Surface,
-            height = 48.dp,
-            fillWidth = false,
-            wiggle = pasteWiggle,
-            contentDescription = "Paste key from clipboard",
-        )
-    }
-    notice?.let {
-        Spacer(Modifier.height(6.dp))
-        Text(it, style = MaterialTheme.typography.bodyMedium, color = pop.punchText)
-    }
-    val help = providerKeyHelp(provider)
-    Spacer(Modifier.height(6.dp))
-    Helper(help.message)
-    help.url?.let { url -> TextLink(help.linkLabel, { uri.openUri(url) }) }
-
-    Spacer(Modifier.height(12.dp))
-    SecretField(
-        value = drafts.model,
-        onValueChange = drafts::editModel,
-        label = "Model",
-        secret = false,
-        placeholder = "Blank = " + drafts.settings.copy(model = "").effectiveModel().ifEmpty { "your server's default" },
+    PopSlider(
+        "Skip the top of the screen",
+        settings.ignoreTopPct,
+        0f..0.15f,
+        { "${(it * 100).toInt()}%" },
+        sink::setIgnoreTopPct,
     )
-    if (provider == LlmProvider.GEMINI) {
-        Spacer(Modifier.height(12.dp))
-        GeminiModelPicker(apiKey = drafts.key.trim(), onPick = drafts::editModel)
-    }
-
+    Helper("Keeps me off your browser's address bar.")
     Spacer(Modifier.height(16.dp))
-    val sees = settings.aiVision != AiVisionMode.OFF
     PopToggleRow(
-        "Let the AI see the page",
-        if (sees) "Sends the page image so I catch handwriting and wild lettering (about 150–300 KB a page, less with Data saver)."
-        else "Sends only the text I read on your phone (a few KB). Best on very slow internet; fancy lettering may be missed.",
-        sees,
-        { sink.setAiVision(if (it) AiVisionMode.AUTO else AiVisionMode.OFF) },
+        "Data saver",
+        "Smaller page uploads. Tiny text may read a little less sharply.",
+        settings.dataSaver,
+        sink::setDataSaver,
     )
 
-    Spacer(Modifier.height(16.dp))
-    Text("Thinking time", style = MaterialTheme.typography.titleMedium, color = pop.ink)
+    GroupTitle("How the AI works")
+    Text("Thinking time", style = MaterialTheme.typography.bodyLarge, color = pop.ink)
     Spacer(Modifier.height(8.dp))
     PopTiles(
         listOf(
@@ -482,48 +520,102 @@ private fun AiBrainBody(settings: AppSettings, sink: SettingsSink, drafts: AiDra
     Spacer(Modifier.height(8.dp))
     Helper(
         when (settings.aiReasoning) {
-            AiReasoning.FAST -> "Least thinking: the first lines land soonest. Fine for clean lettering."
-            AiReasoning.BALANCED -> "A little thinking on the page image, the least on text. Lines stream in one by one."
-            AiReasoning.THOROUGH ->
-                "Full thinking: best at who's speaking and wild lettering, with a longer wait for the first line."
+            AiReasoning.FAST -> "Quickest first line. Fine for clean lettering."
+            AiReasoning.BALANCED -> "The best mix of speed and care. Recommended."
+            AiReasoning.THOROUGH -> "Most careful with who's speaking and wild lettering, but slower."
         }
     )
-
     Spacer(Modifier.height(16.dp))
-    PopToggleRow(
-        "Data saver",
-        "Smaller page uploads. Tiny text may read a little less sharply.",
-        settings.dataSaver,
-        sink::setDataSaver,
-    )
+    ModelChoice(drafts)
     if (provider == LlmProvider.GEMINI) {
-        Spacer(Modifier.height(12.dp))
+        Spacer(Modifier.height(16.dp))
         PopToggleRow(
             "AI art redraw",
-            "Cleaning always happens on your phone. This asks an image model to redraw detailed art under text " +
-                "drawn on it: one extra image request per page that needs it, often refused on explicit art " +
-                "(the local cleaning then stays).",
+            "Asks an image model to repaint busy art under text. Often refused on explicit pages; off is fine.",
             settings.aiCleanup,
             sink::setAiCleanup,
         )
+    } else {
+        Spacer(Modifier.height(16.dp))
+        val sees = settings.aiVision != AiVisionMode.OFF
+        PopToggleRow(
+            "Let the AI see the page",
+            if (sees) "Sends the page image, so handwriting and wild lettering are read too."
+            else "Sends only the text your phone reads. Uses less data; fancy lettering may be missed.",
+            sees,
+            { sink.setAiVision(if (it) AiVisionMode.AUTO else AiVisionMode.OFF) },
+        )
     }
-    Spacer(Modifier.height(12.dp))
+
+    Column(otherAi) {
+        GroupTitle("Use a different AI")
+        Helper("Gemini is the fastest here and its key is free. Pick another only if you already pay for it.")
+    }
+    Spacer(Modifier.height(8.dp))
+    PopTiles(
+        listOf(
+            PopTile(LlmProvider.GEMINI, "Gemini", caption = "Free · fastest"),
+            PopTile(LlmProvider.ANTHROPIC, "Claude", caption = "by Anthropic"),
+            PopTile(LlmProvider.OPENAI, "OpenAI", caption = "Paid key"),
+            PopTile(LlmProvider.OPENROUTER, "OpenRouter", caption = "Many models"),
+            PopTile(LlmProvider.CUSTOM, "Custom", caption = "Your own server"),
+        ),
+        selected = provider,
+        onSelect = sink::setProvider,
+        columns = 2,
+        minHeight = 56.dp,
+    )
+    Spacer(Modifier.height(8.dp))
+    Helper("The key and, for Custom, the server URL go in Your AI above.")
+
+    GroupTitle("Troubleshooting")
     PopToggleRow(
         "Diagnostics",
-        "Outlines every balloon I find and keeps a status line up: ocr · balloons · regions · cards. " +
-            "If a balloon stays untranslated, it shows which step lost it.",
+        "Outlines what I find on the page and shows a status line, to see why a balloon was missed.",
         settings.diagnostics,
         sink::setDiagnostics,
     )
+}
 
-    Spacer(Modifier.height(16.dp))
-    val testing = sayHi.phase == SayHi.Phase.Running
-    StickerButton(
-        if (testing) "Testing…" else "Say hi (test translation)",
-        { if (!testing && !sayHi.runIfReady(drafts.settings)) view.buzz(Buzz.REJECT) },
-        style = StickerStyle.Surface,
-    )
-    SayHiResult(sayHi.phase, onRetry = { sayHi.runIfReady(drafts.settings) })
+/**
+ * The model: automatic — the newest Flash, which follows Google's releases
+ * with no app update — unless the reader picked one. For Gemini it is
+ * chosen from the account's live list, never typed; other providers take
+ * a model id, blank for their default.
+ */
+@Composable
+private fun ModelChoice(drafts: AiDrafts) {
+    val pop = LocalPop.current
+    val s = drafts.settings
+    Text("Model", style = MaterialTheme.typography.bodyLarge, color = pop.ink)
+    Spacer(Modifier.height(6.dp))
+    if (s.provider == LlmProvider.GEMINI) {
+        val pinned = drafts.model.isNotBlank()
+        Helper(if (pinned) drafts.model else "Automatic: the newest Gemini Flash. Best for almost everyone.")
+        Spacer(Modifier.height(8.dp))
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+            GeminiModelPicker(apiKey = drafts.key.trim(), onPick = drafts::editModel, modifier = Modifier.weight(1f))
+            if (pinned) {
+                StickerButton(
+                    "Automatic",
+                    { drafts.editModel("") },
+                    modifier = Modifier.weight(1f),
+                    style = StickerStyle.Surface,
+                    height = 48.dp,
+                    contentDescription = "Use the automatic model",
+                )
+            }
+        }
+    } else {
+        SecretField(
+            value = drafts.model,
+            onValueChange = drafts::editModel,
+            label = "Model",
+            secret = false,
+            showLabel = false,
+            placeholder = "Blank = " + s.copy(model = "").effectiveModel().ifEmpty { "your server's default" },
+        )
+    }
 }
 
 /**
@@ -534,20 +626,20 @@ private fun AiBrainBody(settings: AppSettings, sink: SettingsSink, drafts: AiDra
  * translation useless, the maker's name reads as that engine coming back.
  */
 @Composable
-private fun GeminiModelPicker(apiKey: String, onPick: (String) -> Unit) {
+private fun GeminiModelPicker(apiKey: String, onPick: (String) -> Unit, modifier: Modifier = Modifier) {
     val pop = LocalPop.current
     val scope = rememberCoroutineScope()
     var open by remember { mutableStateOf(false) }
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var models by remember { mutableStateOf<List<ModelCatalog.LiveModel>>(emptyList()) }
-    Box {
+    Box(modifier) {
         StickerButton(
-            if (loading) "Asking Gemini…" else "Pick from Gemini's live list ▾",
+            if (loading) "Asking Gemini…" else "Choose a model ▾",
             {
                 if (loading) return@StickerButton
                 if (apiKey.isBlank()) {
-                    error = "Paste your API key first. The list comes from your account."
+                    error = "Add your key first. The list comes from your account."
                     return@StickerButton
                 }
                 error = null

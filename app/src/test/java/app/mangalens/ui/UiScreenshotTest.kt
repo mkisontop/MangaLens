@@ -268,7 +268,7 @@ class UiScreenshotTest {
     }
 
     @Test
-    fun `14c tweaks, say hi before a custom endpoint is set`() {
+    fun `14c tweaks, a custom server with no URL yet`() {
         home(
             HomeUiState(
                 AppSettings(provider = LlmProvider.CUSTOM), overlayGranted = true, browserName = "Brave",
@@ -276,12 +276,12 @@ class UiScreenshotTest {
             )
         )
         compose.onNodeWithContentDescription("Tweaks:", substring = true).performScrollTo().performClick()
-        compose.onNodeWithText("AI brain").performScrollTo().performClick()
-        compose.onNodeWithText("Say hi (test translation)").performScrollTo().performClick()
-        compose.onNodeWithText("Add your endpoint URL above first, then say hi.").assertExists()
+        // The server URL is asked for in Your AI, with nothing to test until it is in.
+        compose.onNodeWithText("Custom AI · no server URL yet").performScrollTo()
+        compose.onNodeWithText("Test it").assertDoesNotExist()
         // Down to the footer, which the tall renders cannot reach.
         compose.onNodeWithText("MangaLens 1.0.0", substring = true).performScrollTo()
-        both("14c-tweaks-say-hi-blocked")
+        both("14c-tweaks-custom-no-url")
     }
 
     @Test
@@ -343,7 +343,7 @@ class UiScreenshotTest {
 }
 
 /**
- * Tall renders: the whole Tweaks page, AI brain unfolded, in one picture,
+ * Tall renders: the whole Tweaks page, More options unfolded, in one picture,
  * on a phone-width window tall enough to hold it.
  */
 @RunWith(RobolectricTestRunner::class)
@@ -379,7 +379,7 @@ class TweaksScreenshotTest {
         compose.waitForIdle()
         compose.onNodeWithContentDescription("Tweaks:", substring = true).performScrollTo().performClick()
         compose.waitForIdle()
-        compose.onNodeWithText("AI brain").performScrollTo().performClick()
+        compose.onNodeWithText("More options").performScrollTo().performClick()
         compose.waitForIdle()
         for (isDark in listOf(false, true)) {
             dark = isDark
@@ -394,7 +394,7 @@ class TweaksScreenshotTest {
     }
 
     @Test
-    fun `19 tweaks with the AI brain open and a lettered test line`() {
+    fun `19 tweaks with More options open and a lettered test line`() {
         render(
             AppSettings(apiKey = "test-key-" + "x".repeat(24), sourceLang = SourceLang.AUTO),
             SayHi.Phase.Ok(UiScreenshotTest.LETTERED),

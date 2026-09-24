@@ -133,13 +133,13 @@ class KeyFlowTest {
         assertFalse(hi.runIfReady(AppSettings()))
         assertEquals(0, calls)
         val failed = hi.phase as SayHi.Phase.Failed
-        assertEquals("Paste your Gemini key above first, then say hi.", failed.message)
+        assertEquals("Paste your Gemini key above first, then test.", failed.message)
         assertFalse(failed.rejected)
         assertFalse(failed.retry)
         assertFalse(hi.rejects(AppSettings()))
 
         assertFalse(hi.runIfReady(AppSettings(provider = LlmProvider.CUSTOM, apiKey = key)))
-        assertEquals("Add your endpoint URL above first, then say hi.", (hi.phase as SayHi.Phase.Failed).message)
+        assertEquals("Add your server's URL above first, then test.", (hi.phase as SayHi.Phase.Failed).message)
         assertEquals(0, calls)
 
         assertTrue(hi.runIfReady(AppSettings(apiKey = key)))
@@ -154,7 +154,7 @@ class KeyFlowTest {
         val drafts = AiDrafts(AppSettings(provider = LlmProvider.CUSTOM), RecordingSink())
         assertEquals(PasteCheck.OK, drafts.submitKey(key, hi))
         assertEquals(0, calls)
-        assertEquals("Add your endpoint URL above first, then say hi.", (hi.phase as SayHi.Phase.Failed).message)
+        assertEquals("Add your server's URL above first, then test.", (hi.phase as SayHi.Phase.Failed).message)
     }
 
     @Test

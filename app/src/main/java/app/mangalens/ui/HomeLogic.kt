@@ -74,7 +74,7 @@ internal fun friendlyTestFailure(cause: String, provider: String): String = when
     cause == "rate limited" ->
         "$provider says slow down: it's busy, or today's free quota is used up. Try again in a minute."
     cause == "model unavailable" || cause == "HTTP 404" ->
-        "That model isn't on your key. Clear the Model box in Tweaks → AI brain."
+        "That model isn't on your key. In Tweaks → More options, set the model back to Automatic."
     cause == "declined" -> "$provider declined my test line. Odd! Try again."
     cause.startsWith("HTTP 5") -> "$provider is having a moment. Try again shortly."
     cause == "timeout" -> "$provider took too long to answer. Try again?"
@@ -89,8 +89,8 @@ internal fun friendlyTestFailure(cause: String, provider: String): String = when
  */
 internal fun sayHiBlocker(s: AppSettings): String? = when {
     LlmHttp.setupNeeded(s) == null -> null
-    s.provider == LlmProvider.CUSTOM -> "Add your endpoint URL above first, then say hi."
-    else -> "Paste your ${LlmHttp.providerLabel(s)} key above first, then say hi."
+    s.provider == LlmProvider.CUSTOM -> "Add your server's URL above first, then test."
+    else -> "Paste your ${LlmHttp.providerLabel(s)} key above first, then test."
 }
 
 /** The one-line summary on the home screen's Tweaks sticker. */

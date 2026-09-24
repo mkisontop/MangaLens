@@ -90,6 +90,7 @@ internal fun SetupChecklist(
     browser: String,
     onGrantOverlay: () -> Unit,
     onOpenAiTweaks: () -> Unit,
+    onOpenOtherAi: () -> Unit,
     onAllSet: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
@@ -200,11 +201,11 @@ internal fun SetupChecklist(
             onHeaderClick = { tapped = 2 },
             headerTrailing = if (custom) null else ({ TextLink("Change", { tapped = 2 }) }),
             done = {
-                DoneLine(if (custom) "Done! Endpoint saved." else "Done! $label key saved.")
+                DoneLine(if (custom) "Done! Server saved." else "Done! $label key saved.")
                 SayHiResult(sayHi.phase, onRetry = { sayHi.runIfReady(drafts.settings) })
             },
         ) {
-            BrainStep(settings, drafts, sayHi, onOpenAiTweaks)
+            BrainStep(settings, drafts, sayHi, onOpenAiTweaks, onOpenOtherAi)
         }
 
         AnimatedVisibility(
@@ -417,6 +418,7 @@ private fun ColumnScope.BrainStep(
     drafts: AiDrafts,
     sayHi: SayHi,
     onOpenAiTweaks: () -> Unit,
+    onOpenOtherAi: () -> Unit,
 ) {
     val pop = LocalPop.current
     val provider = settings.provider
@@ -467,7 +469,7 @@ private fun ColumnScope.BrainStep(
 
     if (provider == LlmProvider.CUSTOM) {
         Text(
-            "Add your endpoint URL. I'll talk to any OpenAI-compatible server.",
+            "Add your server's URL. I'll talk to any OpenAI-compatible server.",
             style = MaterialTheme.typography.bodyLarge,
             color = pop.inkSoft,
         )
@@ -548,6 +550,6 @@ private fun ColumnScope.BrainStep(
         }
     }
     if (provider == LlmProvider.GEMINI) {
-        TextLink("Use Claude, OpenAI or another AI →", onOpenAiTweaks)
+        TextLink("Use Claude, OpenAI or another AI →", onOpenOtherAi)
     }
 }

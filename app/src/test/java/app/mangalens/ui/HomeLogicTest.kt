@@ -101,7 +101,7 @@ class HomeLogicTest {
         assertEquals("Gemini said no to that key. Copy the whole key again, then tap Paste.", messages[0])
         assertEquals("I can't reach the internet. Check your connection and try again.", messages[1])
         assertTrue(messages[2].startsWith("Gemini says slow down"))
-        assertTrue(messages[3].contains("Tweaks → AI brain"))
+        assertTrue(messages[3].contains("Tweaks → More options"))
         assertTrue(messages[4].startsWith("Gemini declined"))
         assertEquals("Gemini is having a moment. Try again shortly.", messages[6])
         assertEquals("Gemini took too long to answer. Try again?", messages[7])
@@ -143,12 +143,12 @@ class HomeLogicTest {
     }
 
     @Test
-    fun `the AI brain header says what is still missing`() {
+    fun `the Your AI card says what is still missing`() {
         assertEquals("Gemini · no key yet" to false, aiBrainSummary(AppSettings()))
         assertEquals("Gemini · key saved ✓" to true, aiBrainSummary(AppSettings(apiKey = "test-key-" + "x".repeat(24))))
-        assertEquals("Custom AI · no endpoint yet" to false, aiBrainSummary(AppSettings(provider = LlmProvider.CUSTOM)))
+        assertEquals("Custom AI · no server URL yet" to false, aiBrainSummary(AppSettings(provider = LlmProvider.CUSTOM)))
         assertEquals(
-            "Custom AI · endpoint set ✓" to true,
+            "Custom AI · server set ✓" to true,
             aiBrainSummary(AppSettings(provider = LlmProvider.CUSTOM, customUrl = "http://127.0.0.1/v1/chat")),
         )
         // A key the provider turned away is not ticked off, so the header agrees with setup.
@@ -161,12 +161,12 @@ class HomeLogicTest {
 
     @Test
     fun `the test line says what to fill in before it goes to the network`() {
-        assertEquals("Paste your Gemini key above first, then say hi.", sayHiBlocker(AppSettings()))
+        assertEquals("Paste your Gemini key above first, then test.", sayHiBlocker(AppSettings()))
         assertEquals(
-            "Paste your OpenRouter key above first, then say hi.",
+            "Paste your OpenRouter key above first, then test.",
             sayHiBlocker(AppSettings(provider = LlmProvider.OPENROUTER)),
         )
-        assertEquals("Add your endpoint URL above first, then say hi.", sayHiBlocker(AppSettings(provider = LlmProvider.CUSTOM)))
+        assertEquals("Add your server's URL above first, then test.", sayHiBlocker(AppSettings(provider = LlmProvider.CUSTOM)))
         assertNull(sayHiBlocker(AppSettings(apiKey = "test-key-" + "x".repeat(24))))
         // A custom endpoint's token is optional; the URL is what it needs.
         assertNull(sayHiBlocker(AppSettings(provider = LlmProvider.CUSTOM, customUrl = "http://127.0.0.1/v1/chat")))

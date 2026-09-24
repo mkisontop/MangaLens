@@ -378,6 +378,7 @@ private fun HomePage(
                         browser = browser,
                         onGrantOverlay = actions.onGrantOverlay,
                         onOpenAiTweaks = { openTweaks(TweaksTarget.AI) },
+                        onOpenOtherAi = { openTweaks(TweaksTarget.OTHER_AI) },
                         onAllSet = onAllSet,
                     )
                     Spacer(Modifier.height(20.dp))
