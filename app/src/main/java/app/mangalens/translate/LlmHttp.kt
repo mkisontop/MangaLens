@@ -5,11 +5,13 @@ import app.mangalens.settings.AppSettings
 import app.mangalens.settings.LlmProvider
 import java.io.IOException
 import java.util.concurrent.TimeUnit
-import kotlin.coroutines.resume
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resumeWithException
-import kotlinx.coroutines.Job
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import okhttp3.Call
 import okhttp3.Callback
@@ -95,6 +97,10 @@ internal object LlmHttp {
      * Executes a call so coroutine cancellation aborts the HTTP request —
      * scrolling away kills in-flight translations instead of letting them
      * finish for nobody.
+     *
+     * A response can land in the same instant its caller is cancelled, and
+     * is then never delivered; it is closed rather than left holding its
+     * connection.
      */
     suspend fun await(call: Call): Response = suspendCancellableCoroutine { cont ->
         call.enqueue(object : Callback {
@@ -103,14 +109,79 @@ internal object LlmHttp {
             }
 
             override fun onResponse(call: Call, response: Response) {
-                if (cont.isActive) cont.resume(response) else response.close()
+                cont.resume(response) { _, undelivered, _ -> undelivered.close() }
             }
         })
         cont.invokeOnCancellation { runCatching { call.cancel() } }
     }
 
+    /**
+     * Runs a blocking read so that cancelling the caller cancels [call] at
+     * once. The read blocks its thread between events, so nothing on that
+     * thread can notice the cancellation; a hook on the caller cancels the
+     * call instead, which fails the read and ends the stream. Without it a
+     * cancelled request would hold its connection until the next event —
+     * up to several seconds before the first token.
+     *
+     * The hook is in place before the read starts and runs on whichever
+     * thread does the cancelling. A watcher that first had to be scheduled
+     * would miss a cancel landing before its turn, and would never get a
+     * turn while every thread it could run on sat blocked in a read; a
+     * completion handler on the caller's job would wait for the read to
+     * return first.
+     *
+     * A read that ends on its own leaves the call alone: cancelling a
+     * finished HTTP/1.1 call closes its socket, and the next page would pay
+     * for a fresh handshake.
+     */
+    internal suspend fun <T> abortOnCancel(call: Call, block: suspend () -> T): T = coroutineScope {
+        val ended = AtomicBoolean(false)
+        val hook = launch(start = CoroutineStart.UNDISPATCHED) {
+            suspendCancellableCoroutine<Unit> { cont ->
+                cont.invokeOnCancellation { if (!ended.get()) runCatching { call.cancel() } }
+            }
+        }
+        try {
+            block()
+        } catch (e: IOException) {
+            currentCoroutineContext().ensureActive()
+            throw e
+        } finally {
+            ended.set(true)
+            hook.cancel()
+        }
+    }
+
+    /**
+     * [key] as it can go in a header: trimmed, and without anything outside
+     * printable ASCII. A key copied from a web page or a chat often brings
+     * a zero-width or no-break space along, which no key contains and
+     * OkHttp refuses in a header.
+     */
+    fun cleanKey(key: String): String = key.filter { it in ' '..'~' }.trim()
+
+    /**
+     * [builder] with [key], cleaned, in the header [name]. OkHttp quotes a
+     * value it refuses in its error unless the header is one it knows to
+     * be secret, and it does not know x-goog-api-key or x-api-key: a key it
+     * refused would be shown on screen in full.
+     */
+    fun keyHeader(builder: Request.Builder, name: String, key: String): Request.Builder =
+        withoutKeyInErrors { builder.header(name, cleanKey(key)) }
+
+    /**
+     * Runs [build], rethrowing a refused header without the value OkHttp
+     * quoted — and without the original as its cause, since the cause's
+     * message is the one that holds the key.
+     */
+    internal inline fun <T> withoutKeyInErrors(build: () -> T): T = try {
+        build()
+    } catch (e: IllegalArgumentException) {
+        throw IllegalArgumentException("API key contains characters that are not allowed")
+    }
+
     fun requireConfig(settings: AppSettings) {
-        if (settings.provider != LlmProvider.CUSTOM && settings.apiKey.isBlank()) {
+        if (settings.provider != LlmProvider.CUSTOM && cleanKey(settings.apiKey).isEmpty()) {
             throw RuntimeException("No API key set for " + providerLabel(settings))
         }
         if (settings.provider == LlmProvider.CUSTOM && settings.customUrl.isBlank()) {
@@ -143,12 +214,27 @@ internal object LlmHttp {
         onDelta: (suspend (String) -> Unit)? = null,
     ): String {
         if (settings.provider == LlmProvider.GEMINI) {
-            val body = geminiBody(settings, system, stable, images, page, effort, vision)
-            val model = settings.effectiveModel()
-            return if (onDelta != null) {
-                GeminiApi.stream(settings.apiKey, model, body, onDelta)
+            // A model picked months ago may since have been retired; the
+            // newest Flash answers instead, and once Google has said the
+            // model is gone it is not asked again.
+            val chosen = settings.effectiveModel()
+            val model = if (chosen != GeminiApi.FALLBACK_MODEL && GeminiApi.isMissing(chosen)) GeminiApi.FALLBACK_MODEL else chosen
+            var shown = false
+            val relay: (suspend (String) -> Unit)? = if (onDelta == null) {
+                null
             } else {
-                GeminiApi.text(GeminiApi.generate(settings.apiKey, model, body))
+                { text ->
+                    shown = true
+                    onDelta(text)
+                }
+            }
+            return try {
+                gemini(settings, model, system, stable, images, page, effort, vision, relay)
+            } catch (e: GeminiModelMissing) {
+                // Text already handed on cannot be taken back, so a model
+                // that goes missing mid-reply is that reply's failure.
+                if (model == GeminiApi.FALLBACK_MODEL || shown) throw e
+                gemini(settings, GeminiApi.FALLBACK_MODEL, system, stable, images, page, effort, vision, onDelta)
             }
         }
         val anthropic = settings.provider == LlmProvider.ANTHROPIC
@@ -162,9 +248,9 @@ internal object LlmHttp {
             .url(settings.endpoint())
             .post(body.toString().toRequestBody(JSON))
         if (anthropic) {
-            builder.header("x-api-key", settings.apiKey).header("anthropic-version", "2023-06-01")
-        } else if (settings.apiKey.isNotBlank()) {
-            builder.header("Authorization", "Bearer " + settings.apiKey)
+            keyHeader(builder, "x-api-key", settings.apiKey).header("anthropic-version", "2023-06-01")
+        } else if (cleanKey(settings.apiKey).isNotEmpty()) {
+            keyHeader(builder, "Authorization", "Bearer " + cleanKey(settings.apiKey))
         }
         val call = client.newCall(builder.build())
         await(call).use { resp ->
@@ -186,6 +272,26 @@ internal object LlmHttp {
             val out = if (anthropic) anthropicText(text) else openAiText(text)
             if (streaming) onDelta!!(out)
             return out
+        }
+    }
+
+    /** One request to Gemini's native API for [model], with a body built for that model. */
+    private suspend fun gemini(
+        settings: AppSettings,
+        model: String,
+        system: String,
+        stable: String,
+        images: List<String>,
+        page: String,
+        effort: String,
+        vision: Boolean,
+        onDelta: (suspend (String) -> Unit)?,
+    ): String {
+        val body = geminiBody(settings, system, stable, images, page, effort, vision, model)
+        return if (onDelta != null) {
+            GeminiApi.stream(settings.apiKey, model, body, onDelta)
+        } else {
+            GeminiApi.text(GeminiApi.generate(settings.apiKey, model, body))
         }
     }
 
@@ -322,6 +428,10 @@ internal object LlmHttp {
      *
      * Greedy decoding as elsewhere, except on Gemini 3 and later: Google
      * warns that lowering their temperature sends them into loops.
+     *
+     * Built for [model], which is the reader's choice unless it has been
+     * retired: a fallback gets the thinking configuration and temperature
+     * of its own generation, not those of the model it stands in for.
      */
     internal fun geminiBody(
         settings: AppSettings,
@@ -331,8 +441,8 @@ internal object LlmHttp {
         page: String,
         effort: String,
         vision: Boolean,
+        model: String = settings.effectiveModel(),
     ): JSONObject {
-        val model = settings.effectiveModel()
         val parts = JSONArray().put(JSONObject().put("text", stable))
         for (image in images) {
             parts.put(JSONObject().put("inlineData", JSONObject().put("mimeType", "image/jpeg").put("data", image)))
@@ -370,51 +480,39 @@ internal object LlmHttp {
     /**
      * Reads a server-sent event stream to its end, handing each text delta
      * to [onDelta] and returning the whole text. The read blocks the
-     * thread between events; cancelling the coroutine cancels the call,
-     * which fails the read and ends the stream.
+     * thread between events; cancelling the coroutine cancels the call
+     * ([abortOnCancel]), which fails the read and ends the stream.
      */
     private suspend fun readEvents(
         call: Call,
         source: BufferedSource,
         anthropic: Boolean,
         onDelta: suspend (String) -> Unit,
-    ): String {
+    ): String = abortOnCancel(call) {
         val full = StringBuilder()
-        val handle = currentCoroutineContext()[Job]?.invokeOnCompletion { cause ->
-            if (cause != null) runCatching { call.cancel() }
-        }
-        try {
-            val data = StringBuilder()
-            suspend fun dispatch() {
-                if (data.isEmpty()) return
-                val payload = data.toString()
-                data.setLength(0)
-                if (payload == "[DONE]") return
-                val o = runCatching { JSONObject(payload) }.getOrNull() ?: return
-                val text = if (anthropic) anthropicDelta(o) else openAiDelta(o)
-                if (text.isNotEmpty()) {
-                    full.append(text)
-                    onDelta(text)
-                }
+        val data = StringBuilder()
+        suspend fun dispatch() {
+            if (data.isEmpty()) return
+            val payload = data.toString()
+            data.setLength(0)
+            if (payload == "[DONE]") return
+            val o = runCatching { JSONObject(payload) }.getOrNull() ?: return
+            val text = if (anthropic) anthropicDelta(o) else openAiDelta(o)
+            if (text.isNotEmpty()) {
+                full.append(text)
+                onDelta(text)
             }
-            while (true) {
-                val line = try {
-                    source.readUtf8Line()
-                } catch (e: IOException) {
-                    currentCoroutineContext().ensureActive()
-                    throw e
-                } ?: break
-                when {
-                    line.isEmpty() -> dispatch()
-                    line.startsWith("data:") -> data.append(line.substring(5).trim())
-                    // event: and comment lines carry nothing the payload does not.
-                }
-            }
-            dispatch()
-        } finally {
-            handle?.dispose()
         }
-        return full.toString()
+        while (true) {
+            val line = source.readUtf8Line() ?: break
+            when {
+                line.isEmpty() -> dispatch()
+                line.startsWith("data:") -> data.append(line.substring(5).trim())
+                // event: and comment lines carry nothing the payload does not.
+            }
+        }
+        dispatch()
+        full.toString()
     }
 
     private fun anthropicDelta(o: JSONObject): String = when (o.optString("type")) {

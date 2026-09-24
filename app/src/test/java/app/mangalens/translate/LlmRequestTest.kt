@@ -3,11 +3,35 @@ package app.mangalens.translate
 import app.mangalens.settings.AiReasoning
 import app.mangalens.settings.AppSettings
 import app.mangalens.settings.LlmProvider
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.yield
+import okhttp3.Call
+import okhttp3.Callback
+import okhttp3.MediaType
+import okhttp3.Protocol
+import okhttp3.Request
+import okhttp3.Response
+import okhttp3.ResponseBody
+import okio.Buffer
+import okio.BufferedSource
+import okio.ForwardingSource
+import okio.Timeout
+import okio.buffer
+import org.json.JSONArray
 import org.json.JSONObject
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -218,5 +242,142 @@ class LlmRequestTest {
     fun `a bare array reply is still read as bubbles`() {
         val o: JSONObject = LlmHttp.extractJsonObject("[{\"id\":0,\"en\":\"Hi\"}]")
         assertEquals("Hi", o.getJSONArray("bubbles").getJSONObject(0).getString("en"))
+    }
+
+    // ---- over HTTP ----
+
+    private var server: FakeHttpServer? = null
+
+    @Before
+    fun setUp() = GeminiApi.resetLearned()
+
+    @After
+    fun tearDown() {
+        server?.close()
+        GeminiApi.base = GeminiApi.BASE
+        GeminiApi.resetLearned()
+    }
+
+    private fun serve(handler: (FakeHttpServer.Exchange) -> Unit): FakeHttpServer =
+        FakeHttpServer(handler).also {
+            server = it
+            GeminiApi.base = it.base
+        }
+
+    private fun answer(text: String): String = JSONObject().put(
+        "candidates",
+        JSONArray().put(
+            JSONObject()
+                .put("content", JSONObject().put("role", "model").put("parts", JSONArray().put(JSONObject().put("text", text))))
+                .put("finishReason", "STOP")
+        ),
+    ).toString()
+
+    private fun modelOf(target: String) = target.substringAfterLast('/').substringBefore(':')
+
+    @Test
+    fun `a retired gemini model falls back to the newest flash on the text path too`() = runBlocking {
+        val retired = "gemini-2.5-retired-test"
+        val srv = serve { ex ->
+            when {
+                ex.target.contains(retired) ->
+                    ex.respond(404, "{\"error\":{\"code\":404,\"message\":\"models/$retired is not found\"}}")
+                ex.target.contains("alt=sse") -> {
+                    ex.startEvents()
+                    ex.event(answer("{\"bubbles\":[]}"))
+                }
+                else -> ex.respond(200, answer("{\"bubbles\":[]}"))
+            }
+        }
+        val s = settings(LlmProvider.GEMINI, retired)
+        assertEquals("{\"bubbles\":[]}", LlmHttp.complete(s, "SYS", "STABLE", emptyList(), "PAGE", "low", vision = false))
+        val deltas = ArrayList<String>()
+        val streamed = LlmHttp.complete(s, "SYS", "STABLE", emptyList(), "PAGE", "low", vision = false) { deltas += it }
+        assertEquals("{\"bubbles\":[]}", streamed)
+        assertEquals(listOf(streamed), deltas)
+        // Asked once; after that the retired model is skipped outright.
+        assertEquals(listOf(retired, GeminiApi.FALLBACK_MODEL, GeminiApi.FALLBACK_MODEL), srv.exchanges.map { modelOf(it.target) })
+        // The fallback's request is built for the fallback: a thinking level, not the old model's budget.
+        val config = JSONObject(srv.exchanges[1].body).getJSONObject("generationConfig")
+        assertTrue(config.getJSONObject("thinkingConfig").has("thinkingLevel"))
+        assertFalse(config.has("temperature"))
+    }
+
+    @Test
+    fun `a pasted key is cleaned on the compatible path too, and one of nothing but invisibles is no key`() = runBlocking {
+        val srv = FakeHttpServer { ex -> ex.respond(200, "{\"choices\":[{\"message\":{\"content\":\"ok\"}}]}") }.also { server = it }
+        val s = AppSettings(provider = LlmProvider.CUSTOM, model = "m", customUrl = srv.base + "chat", apiKey = "\u200bSECRETKEY ")
+        assertEquals("ok", LlmHttp.complete(s, "SYS", "STABLE", emptyList(), "PAGE", "low", vision = false))
+        assertEquals("Bearer SECRETKEY", srv.exchanges.single().headers["authorization"])
+        try {
+            LlmHttp.requireConfig(settings(LlmProvider.GEMINI, "").copy(apiKey = "\u200b\u00a0"))
+            fail("expected no key")
+        } catch (e: RuntimeException) {
+            assertEquals("No API key set for Gemini", e.message)
+        }
+    }
+
+    /** A call that holds on to its callback, so a test decides when the response lands. */
+    private class HeldCall(private val request: Request) : Call {
+        @Volatile
+        var callback: Callback? = null
+
+        override fun request(): Request = request
+        override fun execute(): Response = throw UnsupportedOperationException()
+        override fun enqueue(responseCallback: Callback) {
+            callback = responseCallback
+        }
+        override fun cancel() = Unit
+        override fun isExecuted(): Boolean = callback != null
+        override fun isCanceled(): Boolean = false
+        override fun timeout(): Timeout = Timeout.NONE
+        override fun clone(): Call = HeldCall(request)
+    }
+
+    @Test
+    fun `a response that lands just as its caller is cancelled is closed, not leaked`() = runBlocking {
+        val request = Request.Builder().url("http://127.0.0.1/").build()
+        val call = HeldCall(request)
+        var closed = false
+        val source = object : ForwardingSource(Buffer().writeUtf8("{}")) {
+            override fun close() {
+                closed = true
+                super.close()
+            }
+        }.buffer()
+        val body = object : ResponseBody() {
+            override fun contentType(): MediaType? = null
+            override fun contentLength(): Long = -1L
+            override fun source(): BufferedSource = source
+        }
+        val response = Response.Builder().request(request).protocol(Protocol.HTTP_1_1).code(200).message("OK").body(body).build()
+        val waiting = launch { LlmHttp.await(call).close() }
+        yield()
+        // The response is handed over, and the caller is cancelled before it
+        // gets to run again: the response never reaches it.
+        call.callback!!.onResponse(call, response)
+        waiting.cancel()
+        waiting.join()
+        assertTrue("the dropped response was closed", closed)
+    }
+
+    @Test
+    fun `cancelling a streamed reply from a compatible server aborts it at once`() = runBlocking {
+        val srv = FakeHttpServer { ex ->
+            ex.startEvents()
+            ex.awaitHangUp()
+        }.also { server = it }
+        val s = AppSettings(provider = LlmProvider.CUSTOM, model = "m", customUrl = srv.base + "chat")
+        // Its own scope: were the cancel lost, the stuck read must not hold the test up.
+        val reading = CoroutineScope(Dispatchers.IO).async {
+            LlmHttp.complete(s, "SYS", "STABLE", emptyList(), "PAGE", "low", vision = false) { }
+        }
+        withTimeout(5_000) { while (srv.exchanges.isEmpty()) delay(10) }
+        delay(200)
+        val t0 = System.nanoTime()
+        reading.cancel()
+        withTimeout(3_000) { reading.join() }
+        val ms = (System.nanoTime() - t0) / 1_000_000
+        assertTrue("cancel took $ms ms", ms < 1_000)
     }
 }

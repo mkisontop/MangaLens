@@ -9,12 +9,15 @@ import android.graphics.Rect
 import android.util.Base64
 import app.mangalens.settings.AppSettings
 import app.mangalens.settings.LlmProvider
+import app.mangalens.translate.FakeHttpServer
+import app.mangalens.translate.GeminiApi
 import app.mangalens.translate.GeminiBlocked
 import app.mangalens.translate.GeminiModelMissing
 import java.io.ByteArrayOutputStream
 import kotlinx.coroutines.runBlocking
 import org.json.JSONArray
 import org.json.JSONObject
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotNull
@@ -125,7 +128,16 @@ class AiCleanerTest {
     private val settings = AppSettings(provider = LlmProvider.GEMINI, apiKey = "k", aiCleanup = true)
 
     @Before
-    fun rested() = AiCleaner.resetRest()
+    fun rested() {
+        AiCleaner.resetRest()
+        GeminiApi.resetLearned()
+    }
+
+    @After
+    fun forget() {
+        AiCleaner.resetRest()
+        GeminiApi.resetLearned()
+    }
 
     @Test
     fun onlyTheLetteringAndItsSurroundingsAreSent() {
@@ -195,6 +207,73 @@ class AiCleanerTest {
         assertFalse(AiCleaner.supports(settings))
         assertNull(refusing.cleanRegions(art(), listOf(rect)))
         assertEquals(2, calls)
+    }
+
+    /** A refusal as Google really sends it: HTTP 200, no image, the reason beside it. */
+    private fun blockedPrompt(reason: String) = JSONObject()
+        .put("promptFeedback", JSONObject().put("blockReason", reason))
+
+    private fun stopped(finish: String) = JSONObject().put(
+        "candidates",
+        JSONArray().put(
+            JSONObject()
+                .put("finishReason", finish)
+                .put("content", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", "I can't edit this image."))))
+        ),
+    )
+
+    @Test
+    fun aRefusalAnsweredAsAnOrdinaryReplyStillCountsTowardsTheRest() = runBlocking {
+        for (answer in listOf(blockedPrompt("PROHIBITED_CONTENT"), stopped("IMAGE_SAFETY"), stopped("PROHIBITED_CONTENT"))) {
+            AiCleaner.resetRest()
+            var calls = 0
+            val refusing = AiCleaner(settings) { _, _ ->
+                calls++
+                answer
+            }
+            assertNull(refusing.cleanRegions(art(), listOf(rect)))
+            assertTrue(AiCleaner.supports(settings))
+            assertNull(refusing.cleanRegions(art(), listOf(rect)))
+            assertFalse("rests after two refusals: $answer", AiCleaner.supports(settings))
+            assertNull(refusing.cleanRegions(art(), listOf(rect)))
+            assertEquals(2, calls)
+        }
+    }
+
+    @Test
+    fun aReplyWithNoImageAndNoReasonIsNotARefusal() = runBlocking {
+        var calls = 0
+        val wordy = AiCleaner(settings) { _, _ ->
+            calls++
+            stopped("STOP")
+        }
+        repeat(3) { assertNull(wordy.cleanRegions(art(), listOf(rect))) }
+        assertTrue(AiCleaner.supports(settings))
+        assertEquals(3, calls)
+    }
+
+    @Test
+    fun aRetiredImageModelIsNotAskedAgainOnTheNextPage() = runBlocking {
+        val white = Bitmap.createBitmap(300, 200, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.WHITE) }
+        val drawn = reply(white).toString()
+        val server = FakeHttpServer { ex ->
+            if (ex.target.contains("/" + AiCleaner.MODEL + ":")) {
+                ex.respond(404, "{\"error\":{\"code\":404,\"message\":\"models/${AiCleaner.MODEL} is not found\"}}")
+            } else {
+                ex.respond(200, drawn)
+            }
+        }
+        GeminiApi.base = server.base
+        try {
+            val cleaner = AiCleaner(settings)
+            assertNotNull(cleaner.cleanRegions(art(), listOf(rect)))
+            assertNotNull(cleaner.cleanRegions(art(), listOf(rect)))
+            val asked = server.exchanges.map { it.target.substringAfterLast('/').substringBefore(':') }
+            assertEquals(listOf(AiCleaner.MODEL, AiCleaner.FALLBACK_MODEL, AiCleaner.FALLBACK_MODEL), asked)
+        } finally {
+            server.close()
+            GeminiApi.base = GeminiApi.BASE
+        }
     }
 
     @Test
