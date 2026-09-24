@@ -437,7 +437,7 @@ internal class ReadResolver(
         if (item.kind == ItemKind.SFX && (erasure == null || !erasure.flat)) return sfxNote(item)
         if (erasure != null) {
             return RenderBubble(
-                box = inkBox(erasure) ?: Rect(item.box),
+                box = inkBox(erasure, item.box) ?: Rect(item.box),
                 translated = item.en.trim(),
                 original = item.src,
                 bgColor = erasure.background,
@@ -448,6 +448,7 @@ internal class ReadResolver(
                 patch = erasure.patch,
                 patchRect = Rect(erasure.rect),
                 outlineColor = erasure.outlineColor,
+                panel = panelOf(item.box),
             )
         }
         // Nothing letter-like under the model's box. Only on-device OCR
@@ -475,10 +476,15 @@ internal class ReadResolver(
      * Where the erased lettering actually was: the model's box around text
      * in a balloon the detector missed is often the whole balloon, and
      * English sized and centred on that is set far larger than the line it
-     * replaces. Null when nothing was masked.
+     * replaces. Only the erased pixels in and just round the model's [box]
+     * count: a stroke of art the erasure also took — a sparkle above the
+     * text, a strand of hair — once dragged the English a line or more
+     * off the text it replaces. Null when nothing was masked there.
      */
-    private fun inkBox(e: Erasure): Rect? {
+    private fun inkBox(e: Erasure, box: Rect): Rect? {
         val w = e.rect.width()
+        val m = (minOf(box.width(), box.height()) * INK_REACH).toInt() + 2
+        val near = Rect(box.left - m, box.top - m, box.right + m, box.bottom + m)
         var l = Int.MAX_VALUE
         var t = Int.MAX_VALUE
         var r = -1
@@ -487,6 +493,7 @@ internal class ReadResolver(
             if (!e.mask[i]) continue
             val x = i % w
             val y = i / w
+            if (!near.contains(e.rect.left + x, e.rect.top + y)) continue
             if (x < l) l = x
             if (x > r) r = x
             if (y < t) t = y
@@ -495,6 +502,10 @@ internal class ReadResolver(
         if (r < 0) return null
         return Rect(e.rect.left + l, e.rect.top + t, e.rect.left + r + 1, e.rect.top + b + 1)
     }
+
+    /** The panel [box]'s lettering is drawn in, when the page's panels were read. */
+    private fun panelOf(box: Rect): Rect? =
+        panels.filter { it.contains(box.centerX(), box.centerY()) }.minByOrNull { it.width().toLong() * it.height() }
 
     /** Small enough that erasing it could only ever take a sliver of art with it. */
     private fun smallSfx(item: PageItem): Boolean =
@@ -536,6 +547,9 @@ internal class ReadResolver(
 
         /** Overlap past which a balloon found from its lettering is one already detected. */
         private const val SAME_BALLOON = 0.6f
+
+        /** How far past the model's box, in its narrow dimension, erased ink still counts as the lettering's. */
+        private const val INK_REACH = 0.35f
 
         fun styleOf(item: PageItem): LetterStyle = when (item.kind) {
             ItemKind.SFX -> LetterStyle.SFX

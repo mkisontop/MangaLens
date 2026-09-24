@@ -98,6 +98,12 @@ data class RenderBubble(
     val art: ArtMap? = null,
     /** Panels other than the one a [LetterStyle.SFX_NOTE]'s sound is in: its note never crosses into one. */
     val otherPanels: List<Rect> = emptyList(),
+    /**
+     * The panel free lettering stands in: its English stays inside it, as a
+     * letterer keeps a line to its own panel, rather than running on over
+     * the border into the next one. Null when the page's panels were not read.
+     */
+    val panel: Rect? = null,
 )
 
 /**
@@ -225,6 +231,17 @@ class BubbleOverlayView(context: Context) : View(context) {
     private companion object {
         /** Smallest type, in dp, the text shrinks to. */
         const val MIN_TYPE_SIZE = 9f
+
+        /**
+         * Smallest type, in dp, inside a balloon. A dense vertical balloon's
+         * own lettering is often smaller than [MIN_TYPE_SIZE], and English
+         * needs more letters than it: a step smaller keeps the line inside
+         * the balloon rather than running out over its outline.
+         */
+        const val BALLOON_MIN_TYPE_SIZE = 7.5f
+
+        /** Margin, in dp, free lettering keeps from its panel's border. */
+        const val PANEL_MARGIN = 3f
         const val LINE_SPACING = 1.06f
 
         /** Capitals have no descenders to clear; sound effects stack tight. */
@@ -391,18 +408,19 @@ class BubbleOverlayView(context: Context) : View(context) {
         font(R.font.comic_neue_bold) ?: Typeface.create("sans-serif-medium", Typeface.NORMAL)
     private val regularFace: Typeface =
         font(R.font.comic_neue_regular) ?: Typeface.create("sans-serif", Typeface.NORMAL)
-    private val italicFace: Typeface =
-        font(R.font.comic_neue_italic) ?: Typeface.create("sans-serif", Typeface.ITALIC)
     private val boldItalicFace: Typeface =
         font(R.font.comic_neue_bold_italic) ?: Typeface.create("sans-serif-condensed", Typeface.BOLD_ITALIC)
 
     private fun font(id: Int): Typeface? =
         runCatching { ResourcesCompat.getFont(context, id) }.getOrNull()
 
+    /**
+     * Thoughts lean but keep dialogue's weight, as a scanlation sets them:
+     * a thin italic beside bold speech read as faint, almost unlettered.
+     */
     private fun faceFor(style: LetterStyle): Typeface = when (style) {
-        LetterStyle.THOUGHT -> italicFace
         LetterStyle.NARRATION -> regularFace
-        LetterStyle.SFX, LetterStyle.SFX_NOTE -> boldItalicFace
+        LetterStyle.THOUGHT, LetterStyle.SFX, LetterStyle.SFX_NOTE -> boldItalicFace
         else -> boldFace
     }
 
@@ -504,7 +522,15 @@ class BubbleOverlayView(context: Context) : View(context) {
             var dy = 0f
             val claim = RectF(l.card ?: l.inkRect)
             if (l.movable) {
+                val before = RectF(claim)
                 nudgeClear(claim, occupied, screenH)
+                // Off other lettering, but not out of its own panel.
+                val panel = b.panel
+                if (panel != null && before.top >= panel.top && before.bottom <= panel.bottom &&
+                    (claim.top < panel.top || claim.bottom > panel.bottom)
+                ) {
+                    claim.set(before)
+                }
                 dy = claim.top - (l.card ?: l.inkRect).top
             }
             val bounds = RectF(l.inkRect).apply { offset(0f, dy) }
@@ -942,7 +968,7 @@ class BubbleOverlayView(context: Context) : View(context) {
             val hyphenFloor = max(MIN_TYPE_SIZE, startSize * HYPHEN_FLOOR)
             search@ for (pass in 0..1) {
                 var size = startSize
-                while (size >= (if (pass == 0) hyphenFloor else MIN_TYPE_SIZE)) {
+                while (size >= (if (pass == 0) hyphenFloor else BALLOON_MIN_TYPE_SIZE)) {
                     tp.textSize = dp(size)
                     val words = if (pass == 0) {
                         text
@@ -965,11 +991,15 @@ class BubbleOverlayView(context: Context) : View(context) {
                         textY = box.top + blockCenterRow * cellH - candidate.height / 2f
                         break@search
                     }
-                    size = (size - 1.25f).coerceAtLeast(if (size > MIN_TYPE_SIZE) MIN_TYPE_SIZE else 0f)
+                    size = (size - 1.25f).coerceAtLeast(if (size > BALLOON_MIN_TYPE_SIZE) BALLOON_MIN_TYPE_SIZE else 0f)
                 }
             }
         }
 
+        // Words that fit no size of the balloon's shape spill over its
+        // outline; they are then haloed in its paper so they stay legible
+        // where they cross the outline and the art beyond.
+        var spills = false
         if (layout == null) {
             // Elliptical taper into the box: the shape could not be read, or
             // the words will not fit it at any size.
@@ -978,7 +1008,7 @@ class BubbleOverlayView(context: Context) : View(context) {
             var size = startSize
             while (true) {
                 tp.textSize = dp(size)
-                val last = size <= MIN_TYPE_SIZE
+                val last = size <= BALLOON_MIN_TYPE_SIZE
                 val words = if (last) TypeSet.hyphenate(text, measure, maxTextW) else text
                 val lines = TypeSet.breakLines(words, measure, maxTextW)
                 var widest = 0f
@@ -986,16 +1016,22 @@ class BubbleOverlayView(context: Context) : View(context) {
                 val candidate = blockOf(lines, tp, spacing)
                 layout = candidate
                 if (widest <= maxTextW && candidate.height <= maxTextH) break
-                if (last) break
-                size = (size - 1.25f).coerceAtLeast(MIN_TYPE_SIZE)
+                if (last) {
+                    spills = true
+                    break
+                }
+                size = (size - 1.25f).coerceAtLeast(BALLOON_MIN_TYPE_SIZE)
             }
             val chosen = layout ?: return null
-            textX = box.exactCenterX() - chosen.width / 2f
-            textY = box.exactCenterY() - chosen.height / 2f
+            // On the balloon's body, not the middle of a box a tail stretches.
+            val cx = shape?.let { box.left + it.centerX * box.width() / balloon.maskW } ?: box.exactCenterX()
+            val cy = shape?.let { box.top + it.centerY * box.height() / balloon.maskH } ?: box.exactCenterY()
+            textX = cx - chosen.width / 2f
+            textY = cy - chosen.height / 2f
         }
         val chosen = layout ?: return null
         val size = tp.textSize
-        val edge = b.outlineColor?.let(::opaque) ?: if (style == LetterStyle.ART) fill else 0
+        val edge = b.outlineColor?.let(::opaque) ?: if (style == LetterStyle.ART || spills) fill else 0
         val edgeWidth = size * (if (b.outlineColor != null) OUTLINE_SHARE else HALO_SHARE)
         return lettering(
             layout = chosen,
@@ -1156,10 +1192,19 @@ class BubbleOverlayView(context: Context) : View(context) {
 
         val tp = paintFor(style).apply { color = ink }
         val spacing = if (sfx) SFX_LINE_SPACING else LINE_SPACING
+        // The panel the lettering stands in bounds the block: a line runs
+        // on over the border into the next panel no more in English than it
+        // did in the original.
+        val panel = b.panel?.let { RectF(it).apply { inset(dp(PANEL_MARGIN), dp(PANEL_MARGIN)) } }
+            ?.takeIf { it.width() > dp(MIN_TYPE_SIZE) * 3 && it.height() > dp(MIN_TYPE_SIZE) * 2 }
         val lines = if (sfx) {
             fitSfx(text, tp, box, edgeShare, spacing)
         } else {
-            fitFree(b, text, tp, spacing, screenW - dp(4f))
+            fitFree(
+                b, text, tp, spacing,
+                room = min(screenW - dp(4f), panel?.width() ?: Float.MAX_VALUE),
+                maxH = panel?.height() ?: Float.MAX_VALUE,
+            )
         }
         val layout = blockOf(lines, tp, spacing)
 
@@ -1201,6 +1246,15 @@ class BubbleOverlayView(context: Context) : View(context) {
         }
         var y = box.exactCenterY() - inkMid
         val pad = inkPad(size, style, if (edge != 0) size * edgeShare else 0f, weightFor(style, size))
+        // Inside the panel when the block fits it, then on the screen.
+        if (panel != null && !sfx) {
+            if (layout.width + pad * 2 <= panel.width()) {
+                x = x.coerceAtMost(panel.right - layout.width - pad).coerceAtLeast(panel.left + pad)
+            }
+            if (layout.height + pad * 2 <= panel.height()) {
+                y = y.coerceAtMost(panel.bottom - layout.height - pad).coerceAtLeast(panel.top + pad)
+            }
+        }
         x = x.coerceAtMost(screenW - layout.width - pad).coerceAtLeast(pad)
         y = y.coerceAtMost(screenH - layout.height - pad).coerceAtLeast(pad)
         return lettering(
@@ -1356,7 +1410,14 @@ class BubbleOverlayView(context: Context) : View(context) {
      * that cannot fit at all is set at the smallest size and allowed to run
      * long, since clipped words are worse than a tall block.
      */
-    private fun fitFree(b: RenderBubble, text: String, tp: TextPaint, spacing: Float, room: Float): List<String> {
+    private fun fitFree(
+        b: RenderBubble,
+        text: String,
+        tp: TextPaint,
+        spacing: Float,
+        room: Float,
+        maxH: Float = Float.MAX_VALUE,
+    ): List<String> {
         val box = b.box
         val w = box.width().toFloat()
         val h = box.height().toFloat()
@@ -1374,17 +1435,17 @@ class BubbleOverlayView(context: Context) : View(context) {
                     val narrowest = min(max(w * 1.05f, size * 5f), room)
                     val squarish = sqrt(CAPTION_ASPECT * measure(text) * lineH)
                     val widest = min(maxOf(narrowest, min(h * 0.85f, max(w + glyph * 3f, squarish))), room)
-                    Budget(narrowest, widest, max(h * 1.08f, lineH), narrowest, CAPTION_ASPECT)
+                    Budget(narrowest, widest, min(max(h * 1.08f, lineH), maxH), narrowest, CAPTION_ASPECT)
                 }
                 column -> {
                     val widest = min(max(w * 1.5f, w + glyph * 1.5f), room)
                     val narrowest = min(max(w * 1.05f, size * 3.5f), widest)
-                    Budget(narrowest, widest, max(h * 1.08f, lineH), w * 1.3f, w * 1.3f / h)
+                    Budget(narrowest, widest, min(max(h * 1.08f, lineH), maxH), w * 1.3f, w * 1.3f / h)
                 }
                 else -> {
                     val narrowest = min(max(w, size * 2.5f), room)
                     val widest = min(max(narrowest, w * 1.3f), room)
-                    Budget(narrowest, widest, max(h * 1.3f + lineH * 0.5f, lineH), w, w / h)
+                    Budget(narrowest, widest, min(max(h * 1.3f + lineH * 0.5f, lineH), maxH), w, w / h)
                 }
             }
         }
