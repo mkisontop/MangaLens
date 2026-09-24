@@ -68,17 +68,25 @@ class PageReaderTest {
     /**
      * Records every request and plays [behave] for it. The upload is
      * reported done at once unless [uploadMs] says how long it takes, or
-     * never when that is negative.
+     * never when that is negative. A reply that ends reports [finish] as
+     * the model's reason for stopping.
      */
     private class FakeTransport(
         private val uploadMs: (call: Int) -> Long = { 0 },
+        private val finish: (call: Int) -> String = { "STOP" },
         private val behave: suspend (call: Int, model: String, onDelta: suspend (String) -> Unit) -> String,
     ) : PageReader.Transport {
         val calls = CopyOnWriteArrayList<Pair<String, JSONObject>>()
         val startedAt = CopyOnWriteArrayList<Long>()
         val cancelled = AtomicInteger()
 
-        override suspend fun stream(model: String, body: JSONObject, onSent: () -> Unit, onDelta: suspend (String) -> Unit): String {
+        override suspend fun stream(
+            model: String,
+            body: JSONObject,
+            onSent: () -> Unit,
+            onFinish: (String) -> Unit,
+            onDelta: suspend (String) -> Unit,
+        ): String {
             val n = synchronized(calls) {
                 calls.add(model to body)
                 startedAt.add(System.nanoTime())
@@ -90,7 +98,7 @@ class PageReaderTest {
                     if (upload > 0) delay(upload)
                     onSent()
                 }
-                return behave(n, model, onDelta)
+                return behave(n, model, onDelta).also { onFinish(finish(n)) }
             } catch (e: CancellationException) {
                 cancelled.incrementAndGet()
                 throw e
@@ -130,7 +138,8 @@ class PageReaderTest {
         hedgeMs: Long = 10_000,
         s: AppSettings = settings,
         staggerMs: Long = 10_000,
-    ) = PageReader(s, null, null, transport, race, hedgeMs, staggerMs)
+        uploadGraceMs: Long = 10_000,
+    ) = PageReader(s, null, null, transport, race, hedgeMs, staggerMs, uploadGraceMs)
 
     // ---- streaming and parsing ----
 
@@ -202,8 +211,87 @@ class PageReaderTest {
         val text = reply(hello, bye)
         val cut = text.indexOf("Goodbye")
         val transport = FakeTransport { _, _, onDelta -> streamOut(text.substring(0, cut), onDelta) }
-        val items = reader(transport, race = 1).read(page(), SourceLang.JA)
-        assertEquals(listOf("Hello."), items.map { it.en })
+        val read = reader(transport, race = 1).start(this, page(), SourceLang.JA)
+        assertEquals(listOf("Hello."), read.collect().map { it.en })
+        assertTrue("broken-off JSON is a cut-off read", read.cutOff)
+    }
+
+    @Test
+    fun `a reply stopped part-way is shown, and marked cut off`() = runBlocking {
+        // Two items stream out, then the model is stopped before it closes the reply.
+        val text = reply(hello, bye)
+        val cut = text.indexOf("}", text.indexOf("Goodbye.")) + 1
+        for (reason in listOf("SAFETY", "PROHIBITED_CONTENT", "RECITATION", "MAX_TOKENS", "BLOCKLIST", "SPII", "OTHER")) {
+            val transport = FakeTransport(finish = { reason }) { _, _, onDelta -> streamOut(text.substring(0, cut), onDelta) }
+            val read = reader(transport, race = 1).start(this, page(), SourceLang.JA)
+            assertEquals(reason, listOf("Hello.", "Goodbye."), read.collect().map { it.en })
+            assertTrue(reason, read.cutOff)
+            assertTrue(read.summary, read.summary.contains("cut off: $reason"))
+        }
+    }
+
+    @Test
+    fun `a reply that closes but did not finish is cut off too`() = runBlocking {
+        val transport = FakeTransport(finish = { "MAX_TOKENS" }) { _, _, onDelta -> streamOut(reply(hello, bye), onDelta) }
+        val read = reader(transport, race = 1).start(this, page(), SourceLang.JA)
+        assertEquals(2, read.collect().size)
+        assertTrue(read.cutOff)
+    }
+
+    @Test
+    fun `a finished reply is whole, whether or not the stream named its finish`() = runBlocking {
+        for (reason in listOf("STOP", "")) {
+            val transport = FakeTransport(finish = { reason }) { _, _, onDelta -> streamOut(reply(hello, bye), onDelta) }
+            val read = reader(transport, race = 1).start(this, page(), SourceLang.JA)
+            assertEquals(2, read.collect().size)
+            assertFalse("finish '$reason'", read.cutOff)
+            assertFalse(read.summary, read.summary.contains("cut off"))
+        }
+    }
+
+    @Test
+    fun `a cut-off page teaches the series memory nothing`() = runBlocking {
+        val context = RuntimeEnvironment.getApplication()
+        val glossary = GlossaryStore(context).apply { setScope("reader-test-cut-off") }
+        val text = reply(hello, terms = JSONArray().put(JSONObject().put("src", "海斗").put("en", "Kaito")))
+        val transport = FakeTransport(finish = { "MAX_TOKENS" }) { _, _, onDelta -> streamOut(text, onDelta) }
+        val read = PageReader(settings, glossary, null, transport, 1, 10_000).start(this, page(), SourceLang.JA)
+        assertEquals(listOf("Hello."), read.collect().map { it.en })
+        assertTrue(read.cutOff)
+        assertTrue(glossary.snapshot().isEmpty())
+        assertTrue(StoryContext.snapshot().isEmpty())
+        glossary.clear()
+    }
+
+    /** One `streamGenerateContent` event carrying [text], and [finish] when given. */
+    private fun event(text: String, finish: String? = null): String {
+        val candidate = JSONObject().put(
+            "content",
+            JSONObject().put("role", "model").put("parts", JSONArray().put(JSONObject().put("text", text))),
+        )
+        if (finish != null) candidate.put("finishReason", finish)
+        return JSONObject().put("candidates", JSONArray().put(candidate)).toString()
+    }
+
+    @Test
+    fun `a reply Google stops part-way is cut off through the real client`() = runBlocking {
+        val text = reply(hello, bye)
+        val cut = text.indexOf("}", text.indexOf("Hello.")) + 1
+        val server = FakeHttpServer { ex ->
+            ex.startEvents()
+            ex.event(event(text.substring(0, cut)))
+            ex.event(event(text.substring(cut, cut + 6), finish = "PROHIBITED_CONTENT"))
+        }
+        GeminiApi.base = server.base
+        try {
+            val read = PageReader(settings).start(this, page(), SourceLang.JA)
+            assertEquals(listOf("Hello."), withTimeout(10_000) { read.collect() }.map { it.en })
+            assertTrue(read.summary, read.cutOff)
+            assertTrue(read.summary, read.summary.contains("cut off: PROHIBITED_CONTENT"))
+        } finally {
+            server.close()
+            GeminiApi.base = GeminiApi.BASE
+        }
     }
 
     @Test
@@ -378,6 +466,38 @@ class PageReaderTest {
         assertEquals(2, transport.calls.size)
         assertEquals("the stalled request is abandoned", 1, transport.cancelled.get())
         assertTrue("hedged after $ms ms", ms >= 150)
+    }
+
+    @Test
+    fun `a lone request's hedge is timed from the end of its upload`() = runBlocking {
+        // Data saver: one request, and a slow uplink that takes 400 ms to send the page.
+        val transport = FakeTransport(uploadMs = { if (it == 0) 400 else 0 }) { call, _, onDelta ->
+            if (call == 0) awaitCancellation()
+            streamOut(reply(hello), onDelta)
+        }
+        val saver = settings.copy(dataSaver = true)
+        val items = withTimeout(5_000) { reader(transport, race = 2, hedgeMs = 200, s = saver).read(page(), SourceLang.JA) }
+        assertEquals(listOf("Hello."), items.map { it.en })
+        assertEquals(2, transport.calls.size)
+        val lag = (transport.startedAt[1] - transport.startedAt[0]) / 1_000_000
+        assertTrue("hedged $lag ms after the first request, upload included", lag >= 600)
+    }
+
+    @Test
+    fun `a lone request's hedge goes anyway when its upload never reports back`() = runBlocking {
+        val transport = FakeTransport(uploadMs = { if (it == 0) -1 else 0 }) { call, _, onDelta ->
+            if (call == 0) awaitCancellation()
+            streamOut(reply(hello), onDelta)
+        }
+        val saver = settings.copy(dataSaver = true)
+        val items = withTimeout(5_000) {
+            reader(transport, race = 2, hedgeMs = 150, s = saver, uploadGraceMs = 250).read(page(), SourceLang.JA)
+        }
+        assertEquals(listOf("Hello."), items.map { it.en })
+        assertEquals(2, transport.calls.size)
+        val lag = (transport.startedAt[1] - transport.startedAt[0]) / 1_000_000
+        // The hedge plus the grace (400 ms), where the hedge alone would be 150.
+        assertTrue("hedged after $lag ms", lag in 350..2_000)
     }
 
     @Test

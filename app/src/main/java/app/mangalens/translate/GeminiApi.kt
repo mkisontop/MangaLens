@@ -3,14 +3,8 @@ package app.mangalens.translate
 import app.mangalens.settings.AiReasoning
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
-import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicLong
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.awaitCancellation
-import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.currentCoroutineContext
-import kotlinx.coroutines.ensureActive
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import okhttp3.Call
 import okhttp3.Callback
@@ -56,7 +50,8 @@ class GeminiBlocked(val reason: String) : RuntimeException("Gemini declined the 
  * string the caller cannot tell from a page with no text.
  *
  * The key travels in the `x-goog-api-key` header, never in the URL, where
- * it would end up in proxy and crash logs.
+ * it would end up in proxy and crash logs — and never in an error message
+ * either ([LlmHttp.keyHeader]).
  */
 internal object GeminiApi {
 
@@ -166,6 +161,23 @@ internal object GeminiApi {
         body: JSONObject,
         onSent: () -> Unit,
         onDelta: (suspend (String) -> Unit)?,
+    ): String = stream(apiKey, model, body, onSent, onFinish = {}, onDelta = onDelta)
+
+    /**
+     * [stream], also handing [onFinish] the reason the model gave for
+     * stopping, once the reply has ended: "STOP" when it said all it meant
+     * to; anything else — a filter tripping part-way, the token cap — when
+     * the text it returns is only the start of an answer; empty when the
+     * stream never said. A reply withheld before any text at all is still
+     * a [GeminiBlocked].
+     */
+    suspend fun stream(
+        apiKey: String,
+        model: String,
+        body: JSONObject,
+        onSent: () -> Unit,
+        onFinish: (String) -> Unit,
+        onDelta: (suspend (String) -> Unit)?,
     ): String = withContext(Dispatchers.IO) {
         val url = base + model + ":streamGenerateContent?alt=sse"
         withThinkingRetry(model, body) { b ->
@@ -173,7 +185,7 @@ internal object GeminiApi {
             LlmHttp.await(call).use { resp ->
                 if (!resp.isSuccessful) throw httpError(model, resp)
                 val source = resp.body?.source() ?: return@use ""
-                abortOnCancel(call) { readEvents(source, onDelta, model) }
+                LlmHttp.abortOnCancel(call) { readEvents(source, onDelta, model, onFinish) }
             }
         }
     }
@@ -197,14 +209,12 @@ internal object GeminiApi {
      * watching. Fire-and-forget, at most once a minute, never throws.
      */
     fun warm(apiKey: String, model: String) {
-        if (apiKey.isBlank() || model.isBlank()) return
+        if (LlmHttp.cleanKey(apiKey).isEmpty() || model.isBlank()) return
         val now = System.currentTimeMillis()
         val last = lastWarm.get()
         if (now - last < WARM_INTERVAL_MS || !lastWarm.compareAndSet(last, now)) return
         runCatching {
-            val request = Request.Builder()
-                .url(base + model)
-                .header("x-goog-api-key", apiKey)
+            val request = LlmHttp.keyHeader(Request.Builder().url(base + model), "x-goog-api-key", apiKey)
                 .get()
                 .build()
             client.newCall(request).enqueue(object : Callback {
@@ -238,9 +248,7 @@ internal object GeminiApi {
                 onSent()
             }
         }
-        return Request.Builder()
-            .url(url)
-            .header("x-goog-api-key", apiKey)
+        return LlmHttp.keyHeader(Request.Builder().url(url), "x-goog-api-key", apiKey)
             .post(signalling)
             .build()
     }
@@ -275,50 +283,20 @@ internal object GeminiApi {
         }
     }
 
-    /**
-     * Runs a blocking read so that cancelling the caller cancels [call] at
-     * once. The read blocks its thread between events, so nothing on that
-     * thread can notice the cancellation; a watcher on another thread
-     * cancels the call instead, which fails the read and ends the stream.
-     * Without it a cancelled request would hold its connection until the
-     * next event — up to several seconds before the first token.
-     *
-     * A read that ends on its own leaves the call alone: cancelling a
-     * finished HTTP/1.1 call closes its socket, and the next page would pay
-     * for a fresh handshake.
-     */
-    private suspend fun <T> abortOnCancel(call: Call, block: suspend () -> T): T = coroutineScope {
-        val ended = AtomicBoolean(false)
-        val watcher = launch {
-            try {
-                awaitCancellation()
-            } finally {
-                if (!ended.get()) call.cancel()
-            }
-        }
-        try {
-            block()
-        } catch (e: IOException) {
-            currentCoroutineContext().ensureActive()
-            throw e
-        } finally {
-            ended.set(true)
-            watcher.cancel()
-        }
-    }
-
     // ---- responses ----
 
     /**
      * Reads a `streamGenerateContent?alt=sse` event stream to its end,
      * handing each visible text part to [onDelta] and returning the whole
      * text. Thought parts are dropped: they are the model's reasoning, not
-     * its answer.
+     * its answer. [onFinish] hears the last finish reason the stream gave,
+     * or an empty one when it gave none.
      */
     internal suspend fun readEvents(
         source: BufferedSource,
         onDelta: (suspend (String) -> Unit)?,
         model: String = "",
+        onFinish: (String) -> Unit = {},
     ): String {
         val full = StringBuilder()
         val data = StringBuilder()
@@ -354,6 +332,7 @@ internal object GeminiApi {
         }
         dispatch()
         if (full.isEmpty() && finish in BLOCKING_FINISH) throw GeminiBlocked(finish)
+        onFinish(finish)
         return full.toString()
     }
 
@@ -369,6 +348,22 @@ internal object GeminiApi {
         val finish = candidate.optString("finishReason", "")
         if (text.isEmpty() && finish in BLOCKING_FINISH) throw GeminiBlocked(finish)
         return text
+    }
+
+    /**
+     * Why Google withheld [response], or null when nothing in it says so:
+     * a block on the prompt, or a candidate stopped by a filter. For
+     * answers that are not text — an image model's refusal is a 200 like
+     * any other, with no image in it and the reason beside it.
+     */
+    fun refusal(response: JSONObject): String? {
+        blockReason(response)?.let { return it }
+        val candidates = response.optJSONArray("candidates") ?: return null
+        for (i in 0 until candidates.length()) {
+            val finish = candidates.optJSONObject(i)?.optString("finishReason", "").orEmpty()
+            if (finish in BLOCKING_FINISH) return finish
+        }
+        return null
     }
 
     private fun blockReason(o: JSONObject): String? =

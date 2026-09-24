@@ -35,10 +35,10 @@ object ModelCatalog {
     }
 
     private suspend fun fetchGemini(apiKey: String): List<LiveModel> {
-        val request = Request.Builder()
+        val builder = Request.Builder()
             .url("https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000")
-            // Header, not query parameter: keys don't belong in URLs or logs.
-            .header("x-goog-api-key", apiKey)
+        // Header, not query parameter: keys don't belong in URLs or logs.
+        val request = LlmHttp.keyHeader(builder, "x-goog-api-key", apiKey)
             .get()
             .build()
         LlmHttp.await(LlmHttp.client.newCall(request)).use { resp ->

@@ -54,6 +54,7 @@ class PageReader internal constructor(
     private val race: Int = RACE,
     private val hedgeMs: Long = HEDGE_MS,
     private val staggerMs: Long = STAGGER_MS,
+    private val uploadGraceMs: Long = UPLOAD_GRACE_MS,
 ) {
 
     constructor(
@@ -64,10 +65,17 @@ class PageReader internal constructor(
 
     /**
      * One streamed request; the network, or a test's stand-in for it.
-     * [onSent] reports that the request has been uploaded.
+     * [onSent] reports that the request has been uploaded, [onFinish] the
+     * model's reason for stopping once the reply has ended.
      */
     internal fun interface Transport {
-        suspend fun stream(model: String, body: JSONObject, onSent: () -> Unit, onDelta: suspend (String) -> Unit): String
+        suspend fun stream(
+            model: String,
+            body: JSONObject,
+            onSent: () -> Unit,
+            onFinish: (String) -> Unit,
+            onDelta: suspend (String) -> Unit,
+        ): String
     }
 
     val label: String get() = LlmHttp.providerLabel(settings)
@@ -109,7 +117,7 @@ class PageReader internal constructor(
     private suspend fun perform(read: Read, page: PageRequest) {
         var model = settings.effectiveModel()
         if (model != GeminiApi.FALLBACK_MODEL && GeminiApi.isMissing(model)) model = GeminiApi.FALLBACK_MODEL
-        val raw = try {
+        val answer = try {
             race(read, page, model)
         } catch (e: GeminiModelMissing) {
             // A model picked months ago may since have been retired; the
@@ -119,7 +127,7 @@ class PageReader internal constructor(
             race(read, page, model)
         }
         read.model = model
-        val reply = runCatching { LlmHttp.extractJsonObject(raw) }.getOrNull()
+        val reply = runCatching { LlmHttp.extractJsonObject(answer.text) }.getOrNull()
         // The streamed items are the answer. The full parse only adds any
         // the stream could not split out, and a reply cut off mid-array
         // still keeps every item that closed.
@@ -129,7 +137,15 @@ class PageReader internal constructor(
         } else if (!read.hasItems) {
             throw RuntimeException("Gemini reply had no readable items")
         }
-        if (reply != null) learn(reply, read.items)
+        // Whole only when the model said it was done and its JSON closed.
+        // A filter that trips part-way, or the token cap, leaves items that
+        // are real but not the page: shown, never kept as its answer.
+        read.cutBy = when {
+            answer.finish.isNotEmpty() && answer.finish != "STOP" -> answer.finish
+            items == null -> "incomplete JSON"
+            else -> null
+        }
+        if (reply != null && !read.cutOff) learn(reply, read.items)
         read.finish(null)
     }
 
@@ -139,14 +155,17 @@ class PageReader internal constructor(
      * duplicates go out once the first request reports its page uploaded,
      * or after [staggerMs] if it has not said so. After a rate limit (and
      * with data saver, where the upload is what costs) one request goes
-     * out, with a duplicate hedged in only if it has shown nothing after
-     * [hedgeMs]. Either way a spare still held back is sent at once when
-     * everything already sent has failed in a way a second try could
-     * survive.
+     * out, with a duplicate hedged in only if it has shown nothing [hedgeMs]
+     * after its page was uploaded: on a slow uplink the upload alone can
+     * outlast the hedge, and a duplicate sent then would only split the
+     * bandwidth. If the upload never reports back, the hedge goes
+     * [uploadGraceMs] later than it would have. Either way a spare still
+     * held back is sent at once when everything already sent has failed in
+     * a way a second try could survive.
      *
-     * @return the winning request's full reply text.
+     * @return the winning request's full reply and why it ended.
      */
-    private suspend fun race(read: Read, page: PageRequest, model: String): String = coroutineScope {
+    private suspend fun race(read: Read, page: PageRequest, model: String): Reply = coroutineScope {
         val body = page.body(model)
         val events = Channel<Event>(Channel.UNLIMITED)
         val contenders = ArrayList<Job>()
@@ -155,11 +174,12 @@ class PageReader internal constructor(
             read.requests++
             contenders += launch {
                 val stream = BubbleStream("items")
+                var finish = ""
                 try {
-                    val text = transport.stream(model, body, { events.trySend(Event.Sent(id)) }) { delta ->
+                    val text = transport.stream(model, body, { events.trySend(Event.Sent(id)) }, { finish = it }) { delta ->
                         for (o in stream.feed(delta)) page.item(o)?.let { events.trySend(Event.Item(id, it)) }
                     }
-                    events.trySend(Event.Done(id, text))
+                    events.trySend(Event.Done(id, Reply(text, finish)))
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Throwable) {
@@ -170,14 +190,15 @@ class PageReader internal constructor(
 
         val single = race <= 1 || settings.dataSaver || calm()
         var spares = if (!single) race - 1 else if (hedgeMs > 0) 1 else 0
-        val timer = if (spares > 0) {
-            launch {
-                delay(if (single) hedgeMs else staggerMs)
+        var timer: Job? = null
+        fun sparesIn(ms: Long) {
+            timer?.cancel()
+            timer = launch {
+                delay(ms)
                 events.trySend(Event.SparesDue)
             }
-        } else {
-            null
         }
+        if (spares > 0) sparesIn(if (single) hedgeMs + uploadGraceMs else staggerMs)
         fun releaseSpares() {
             timer?.cancel()
             repeat(spares) { launchContender() }
@@ -193,7 +214,7 @@ class PageReader internal constructor(
             timer?.cancel()
             contenders.forEachIndexed { i, job -> if (i != id) job.cancel() }
         }
-        suspend fun winnersReply(): String {
+        suspend fun winnersReply(): Reply {
             while (true) {
                 when (val ev = events.receive()) {
                     is Event.Item -> {
@@ -202,9 +223,13 @@ class PageReader internal constructor(
                     }
                     is Event.Done -> {
                         if (winner < 0) crown(ev.id)
-                        if (ev.id == winner) return ev.text
+                        if (ev.id == winner) return ev.reply
                     }
-                    is Event.Sent -> if (!single && winner < 0) releaseSpares()
+                    // Spares are still held only while the first request is
+                    // the one out, so this is its upload reporting done.
+                    is Event.Sent -> if (winner < 0 && spares > 0) {
+                        if (single) sparesIn(hedgeMs) else releaseSpares()
+                    }
                     Event.SparesDue -> if (winner < 0) releaseSpares()
                     is Event.Failed -> {
                         if (ev.error is GeminiRateLimited) calmDown()
@@ -226,10 +251,13 @@ class PageReader internal constructor(
         }
     }
 
+    /** A request's whole reply text, and the model's reason for stopping ("" when it gave none). */
+    private class Reply(val text: String, val finish: String)
+
     private sealed interface Event {
         class Sent(val id: Int) : Event
         class Item(val id: Int, val item: PageItem) : Event
-        class Done(val id: Int, val text: String) : Event
+        class Done(val id: Int, val reply: Reply) : Event
         class Failed(val id: Int, val error: Throwable) : Event
         object SparesDue : Event
     }
@@ -311,6 +339,8 @@ class PageReader internal constructor(
             val items: List<PageItem> = emptyList(),
             val finished: Boolean = false,
             val error: Throwable? = null,
+            /** Kept with the ending itself, so no collector sees one without the other. */
+            val endMs: Long? = null,
         )
 
         private val state = MutableStateFlow(State())
@@ -324,15 +354,22 @@ class PageReader internal constructor(
         @Volatile
         var model = ""
 
+        /**
+         * Why the reply ended early — the model's finish reason, or its
+         * JSON breaking off — or null when it ended whole. Set before the
+         * read finishes, so a collector sees it once [collect] returns.
+         */
+        @Volatile
+        var cutBy: String? = null
+
+        override val cutOff: Boolean get() = cutBy != null
+
         @Volatile
         private var firstMs: Long? = null
 
-        @Volatile
-        private var endMs: Long? = null
-
         override val firstItemMs: Long? get() = firstMs
 
-        override val doneMs: Long? get() = endMs
+        override val doneMs: Long? get() = state.value.endMs
 
         val items: List<PageItem> get() = state.value.items
 
@@ -347,6 +384,7 @@ class PageReader internal constructor(
                 doneMs?.let { append(" · done ").append(it).append(" ms") }
                 append(" · ").append(requests).append(if (requests == 1) " request" else " requests")
                 if (model.isNotEmpty()) append(" · ").append(model)
+                cutBy?.let { append(" · cut off: ").append(it) }
             }
 
         /** Adds [item] unless it repeats one already read. */
@@ -360,12 +398,8 @@ class PageReader internal constructor(
         }
 
         fun finish(error: Throwable?) {
-            var ended = false
-            state.update { s ->
-                ended = !s.finished
-                if (ended) State(s.items, finished = true, error = error) else s
-            }
-            if (ended) endMs = elapsedMs(started)
+            val at = elapsedMs(started)
+            state.update { s -> if (!s.finished) State(s.items, finished = true, error = error, endMs = at) else s }
         }
 
         override suspend fun collect(onItem: (suspend (PageItem) -> Unit)?): List<PageItem> {
@@ -403,6 +437,16 @@ class PageReader internal constructor(
          */
         const val STAGGER_MS = 1000L
 
+        /**
+         * How much longer than [HEDGE_MS] a lone request's hedge waits when
+         * its upload never reports done. Generous, since a duplicate that
+         * joins mid-upload halves the bandwidth the first one still needs,
+         * and a phone's uplink can take seconds over a page; but finite,
+         * since an upload that never reports back may be stuck, and a fresh
+         * request is then the cure.
+         */
+        const val UPLOAD_GRACE_MS = 8000L
+
         /** How long a rate limit stops the racing, process-wide. */
         private const val CALM_MS = 5 * 60_000L
 
@@ -423,9 +467,9 @@ class PageReader internal constructor(
         /** Whether the configured provider reads pages AI-first. */
         fun supports(settings: AppSettings): Boolean = settings.provider == LlmProvider.GEMINI
 
-        private fun geminiTransport(settings: AppSettings) = Transport { model, body, onSent, onDelta ->
+        private fun geminiTransport(settings: AppSettings) = Transport { model, body, onSent, onFinish, onDelta ->
             LlmHttp.requireConfig(settings)
-            GeminiApi.stream(settings.apiKey, model, body, onSent, onDelta)
+            GeminiApi.stream(settings.apiKey, model, body, onSent, onFinish, onDelta)
         }
 
         private fun elapsedMs(since: Long): Long = (System.nanoTime() - since) / 1_000_000

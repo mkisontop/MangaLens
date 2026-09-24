@@ -2,12 +2,17 @@ package app.mangalens.translate
 
 import app.mangalens.settings.AiReasoning
 import java.io.IOException
+import java.util.concurrent.Executors
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.CoroutineStart
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import okhttp3.Request
 import okio.Buffer
 import org.json.JSONArray
 import org.json.JSONObject
@@ -151,6 +156,43 @@ class GeminiApiTest {
     }
 
     @Test
+    fun `the reason the model stopped is handed on, empty when the stream gave none`() {
+        fun finishOf(events: String): String? {
+            var finish: String? = null
+            runBlocking { GeminiApi.readEvents(Buffer().writeUtf8(events), null, onFinish = { finish = it }) }
+            return finish
+        }
+        assertEquals("STOP", finishOf("data: " + chunk(text("{}"), finish = "STOP") + "\n\n"))
+        val begun = "data: " + chunk(text("{\"items\":[{\"en\":\"a\"}")) + "\n\n"
+        for (reason in listOf("SAFETY", "PROHIBITED_CONTENT", "RECITATION", "MAX_TOKENS", "OTHER")) {
+            assertEquals(reason, finishOf(begun + "data: " + chunk(finish = reason) + "\n\n"))
+        }
+        assertEquals("", finishOf(begun))
+    }
+
+    @Test
+    fun `stream tells its caller why the reply ended`() = runBlocking {
+        serve { ex ->
+            ex.startEvents()
+            ex.event(chunk(text("{\"items\":[{\"en\":\"a\"}")))
+            ex.event(chunk(finish = "SAFETY"))
+        }
+        var finish: String? = null
+        val out = GeminiApi.stream("K", "gemini-test-flash", body(), onSent = {}, onFinish = { finish = it }) { }
+        assertEquals("{\"items\":[{\"en\":\"a\"}", out)
+        assertEquals("SAFETY", finish)
+    }
+
+    @Test
+    fun `a refusal is found in a reply that is not text`() {
+        assertEquals("PROHIBITED_CONTENT", GeminiApi.refusal(JSONObject("{\"promptFeedback\":{\"blockReason\":\"PROHIBITED_CONTENT\"}}")))
+        assertEquals("IMAGE_SAFETY", GeminiApi.refusal(JSONObject(chunk(text("I can't help with that."), finish = "IMAGE_SAFETY"))))
+        assertEquals(null, GeminiApi.refusal(JSONObject(chunk(text("Here you go."), finish = "STOP"))))
+        assertEquals(null, GeminiApi.refusal(JSONObject(chunk(finish = "MAX_TOKENS"))))
+        assertEquals(null, GeminiApi.refusal(JSONObject("{}")))
+    }
+
+    @Test
     fun `an error event mid-stream surfaces as an HTTP error`() {
         val events = "data: " + chunk(text("{")) + "\n\n" +
             "data: {\"error\":{\"code\":503,\"message\":\"The model is overloaded.\"}}\n\n"
@@ -200,6 +242,56 @@ class GeminiApiTest {
         assertEquals("SECRET", ex.headers["x-goog-api-key"])
         assertFalse("the key never goes in the URL", ex.target.contains("SECRET") || ex.target.contains("key="))
         assertFalse(JSONObject(ex.body).has("safetySettings"))
+    }
+
+    /** Every message on [e] and on its causes, since any of them can reach the screen or a log. */
+    private fun messages(e: Throwable): String =
+        generateSequence(e) { it.cause }.joinToString(" | ") { it.toString() }
+
+    @Test
+    fun `a key pasted with invisible characters is cleaned, and never quoted in an error`() = runBlocking {
+        // A zero-width space and a no-break space ride along with a key copied from a web page.
+        val pasted = "\u00a0SECRETKEY\u200b123 "
+        val srv = serve { ex ->
+            if (ex.target.contains("refusing-model")) {
+                ex.respond(400, "{\"error\":{\"code\":400,\"message\":\"API key not valid. Please pass a valid API key.\"}}")
+            } else {
+                ex.startEvents()
+                ex.event(chunk(text("{}"), finish = "STOP"))
+            }
+        }
+        assertEquals("{}", GeminiApi.stream(pasted, "gemini-test-flash", body()))
+        assertEquals("SECRETKEY123", srv.exchanges.single().headers["x-goog-api-key"])
+        for (attempt in listOf<suspend () -> Unit>(
+            { GeminiApi.stream(pasted, "refusing-model", body()) },
+            { GeminiApi.generate(pasted, "refusing-model", body()) },
+        )) {
+            try {
+                attempt()
+                fail("expected the server's refusal")
+            } catch (e: Exception) {
+                assertFalse(messages(e), messages(e).contains("SECRETKEY"))
+            }
+        }
+    }
+
+    @Test
+    fun `a key OkHttp would refuse is never quoted back`() {
+        val raw = "SECRETKEY\u200b123"
+        // Unguarded, OkHttp names the whole key: x-goog-api-key is not a header it keeps secret.
+        val bare = runCatching { Request.Builder().header("x-goog-api-key", raw) }.exceptionOrNull()
+        assertTrue(bare is IllegalArgumentException && bare.message!!.contains("SECRETKEY"))
+        try {
+            LlmHttp.withoutKeyInErrors { Request.Builder().header("x-goog-api-key", raw) }
+            fail("expected the header to be refused")
+        } catch (e: IllegalArgumentException) {
+            assertEquals("API key contains characters that are not allowed", e.message)
+            assertFalse(messages(e), messages(e).contains("SECRETKEY"))
+        }
+        // Through keyHeader the key is cleaned first and goes through.
+        val request = LlmHttp.keyHeader(Request.Builder().url("http://127.0.0.1/"), "x-goog-api-key", raw).build()
+        assertEquals("SECRETKEY123", request.header("x-goog-api-key"))
+        assertEquals("", LlmHttp.cleanKey(" \u200b\u00a0\t"))
     }
 
     @Test
@@ -320,6 +412,47 @@ class GeminiApiTest {
         val ms = (System.nanoTime() - t0) / 1_000_000
         assertTrue("cancel took $ms ms", ms < 1_000)
         assertTrue(call.isCancelled)
+    }
+
+    @Test
+    fun `a cancel reaches the request even with every thread taken by the read`() = runBlocking {
+        val srv = serve { ex ->
+            ex.startEvents()
+            ex.awaitHangUp()
+        }
+        val call = GeminiApi.client.newCall(Request.Builder().url(srv.base + "gemini-test-flash").build())
+        val response = call.execute()
+        val one = Executors.newSingleThreadExecutor()
+        try {
+            // One thread, and the read holds it: nothing that waits to be
+            // scheduled there runs until the read ends.
+            val reading = CoroutineScope(one.asCoroutineDispatcher()).launch {
+                LlmHttp.abortOnCancel(call) { response.body!!.source().readUtf8Line() }
+            }
+            delay(200)
+            val t0 = System.nanoTime()
+            reading.cancel()
+            withTimeout(3_000) { reading.join() }
+            val ms = (System.nanoTime() - t0) / 1_000_000
+            assertTrue("cancel took $ms ms", ms < 1_000)
+            assertTrue(call.isCanceled())
+        } finally {
+            response.close()
+            one.shutdownNow()
+        }
+    }
+
+    @Test
+    fun `a read that ends on its own leaves its call alone`() = runBlocking {
+        val srv = serve { ex ->
+            ex.startEvents()
+            ex.event(chunk(text("{}"), finish = "STOP"))
+        }
+        val call = GeminiApi.client.newCall(Request.Builder().url(srv.base + "gemini-test-flash").build())
+        call.execute().use { response ->
+            assertTrue(LlmHttp.abortOnCancel(call) { response.body!!.source().readUtf8Line() }!!.startsWith("data:"))
+        }
+        assertFalse(call.isCanceled())
     }
 
     @Test

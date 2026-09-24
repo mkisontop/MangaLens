@@ -78,12 +78,22 @@ class AiCleaner internal constructor(
                 for (crop in plan.crops) canvas.drawBitmap(page, crop.src, crop.dst, FILTER)
             }
             val body = request(encode(collage))
+            // A model Google has said is gone is not asked again: the
+            // answer would not change, and every page would wait for it.
+            val model = if (GeminiApi.isMissing(MODEL)) FALLBACK_MODEL else MODEL
             val reply = try {
-                transport.generate(MODEL, body)
+                transport.generate(model, body)
             } catch (e: GeminiModelMissing) {
+                if (model == FALLBACK_MODEL) throw e
                 transport.generate(FALLBACK_MODEL, body)
             }
-            val bytes = imageBytes(reply) ?: return null
+            val bytes = imageBytes(reply)
+            if (bytes == null) {
+                // A refusal comes back as an ordinary reply, with no image
+                // and the reason beside it; it counts as much as a thrown one.
+                GeminiApi.refusal(reply)?.let { throw GeminiBlocked(it) }
+                return null
+            }
             val drawn = BitmapFactory.decodeByteArray(bytes, 0, bytes.size) ?: return null
             // The model keeps the collage's framing, measured to within a
             // pixel, but not its resolution: its crops are found by scale.
