@@ -3,6 +3,7 @@ package app.mangalens.pipeline
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Color
+import android.graphics.Paint
 import android.graphics.Rect
 import app.mangalens.ocr.OcrEngine
 import app.mangalens.ocr.OcrLine
@@ -20,6 +21,7 @@ import app.mangalens.translate.PendingRead
 import app.mangalens.translate.StoryContext
 import app.mangalens.translate.TranslationCache
 import app.mangalens.translate.TranslationService
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -68,12 +70,34 @@ class AiOnlyReadTest {
         override fun cancel() = Unit
     }
 
+    private companion object {
+        const val OCR_MS = 2500L
+    }
+
     private val box = Rect(220, 400, 500, 450)
     private val line = OcrLine("괜찮아. 내가 지켜줄게.", box, false)
     private val item = PageItem(Rect(box), ItemKind.SPEECH, "괜찮아. 내가 지켜줄게.", "It's okay. I've got you.")
 
+    /** A page with nothing drawn where the model says the line is: only OCR can vouch for it. */
     private val page: Bitmap = Bitmap.createBitmap(720, 1280, Bitmap.Config.ARGB_8888).apply {
         Canvas(this).drawColor(Color.WHITE)
+    }
+
+    /** The same page with the line lettered in black, as a real page would show it. */
+    private val lettered: Bitmap = page.copy(Bitmap.Config.ARGB_8888, true).apply {
+        val ink = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.BLACK
+            strokeWidth = 4f
+            style = Paint.Style.STROKE
+        }
+        val c = Canvas(this)
+        for (i in 0 until 8) {
+            val x = box.left + 12f + i * 32f
+            val y = box.top + 10f
+            c.drawLine(x, y, x + 22f, y, ink)
+            c.drawLine(x + 11f, y, x + 11f, y + 30f, ink)
+            c.drawLine(x, y + 30f, x + 22f, y + 18f, ink)
+        }
     }
 
     private val settings = AppSettings(provider = LlmProvider.GEMINI, apiKey = "k")
@@ -101,10 +125,10 @@ class AiOnlyReadTest {
             GeminiApi.base = it.base
         }
 
-    private fun pass(read: PendingRead): Pair<List<TranslatePipeline.PageResult>, TranslatePipeline.PageResult> = runBlocking {
+    private fun pass(read: PendingRead, on: Bitmap = page): Pair<List<TranslatePipeline.PageResult>, TranslatePipeline.PageResult> = runBlocking {
         val cache = TranslationCache()
         val pipeline = TranslatePipeline(OneLineOcr(line), TranslationService(cache), cache)
-        val analysis = pipeline.analyze(page, settings)
+        val analysis = pipeline.analyze(on, settings)
         val partials = ArrayList<TranslatePipeline.PageResult>()
         val result = pipeline.translate(analysis, settings, onPartial = { partials += it }, read = read)
         partials to result
@@ -113,7 +137,7 @@ class AiOnlyReadTest {
     @Test
     fun `a page read AI-first letters only the AI's lines, each once`() {
         val ai = failingAi()
-        val (partials, result) = pass(CannedRead(listOf(item)))
+        val (partials, result) = pass(CannedRead(listOf(item)), on = lettered)
 
         assertEquals(listOf(item.en), result.bubbles.map { it.translated })
         assertTrue("the line streamed onto the page", partials.isNotEmpty())
@@ -125,6 +149,46 @@ class AiOnlyReadTest {
         assertNull(result.alert)
         // Nothing but the read was asked to translate the page.
         assertTrue(ai.exchanges.isEmpty())
+    }
+
+    @Test
+    fun `a line with nothing to erase under it is lettered once OCR has read it there`() {
+        // OCR is read beside the request, not before it: the line may reach
+        // the screen only once OCR lands, but it is there when the read ends.
+        val ai = failingAi()
+        val (partials, result) = pass(CannedRead(listOf(item)))
+
+        assertEquals(listOf(item.en), result.bubbles.map { it.translated })
+        for (p in partials) assertTrue(p.bubbles.all { it.translated == item.en })
+        assertNull(result.failure)
+        assertTrue(ai.exchanges.isEmpty())
+    }
+
+    @Test
+    fun `a slow OCR never holds back the first line`() {
+        // ML Kit takes from a fraction of a second to a few on a phone.
+        // Read AI-first it only backs the model up, so the first line is
+        // painted the moment it streams, not once OCR is done.
+        failingAi()
+        val slow = object : OcrEngine() {
+            override suspend fun recognize(bitmap: Bitmap, setting: SourceLang): Result {
+                delay(OCR_MS)
+                return Result(listOf(line), SourceLang.KO)
+            }
+            override suspend fun recognizeRegion(bitmap: Bitmap, lang: SourceLang?): List<OcrLine> = emptyList()
+        }
+        runBlocking {
+            val cache = TranslationCache()
+            val pipeline = TranslatePipeline(slow, TranslationService(cache), cache)
+            val started = System.nanoTime()
+            val analysis = pipeline.analyze(lettered, settings)
+            var firstAt = -1L
+            val result = pipeline.translate(analysis, settings, read = CannedRead(listOf(item)), onPartial = {
+                if (firstAt < 0) firstAt = (System.nanoTime() - started) / 1_000_000
+            })
+            assertTrue("first line painted at $firstAt ms, with OCR taking $OCR_MS", firstAt in 0 until OCR_MS / 2)
+            assertEquals(listOf(item.en), result.bubbles.map { it.translated })
+        }
     }
 
     @Test

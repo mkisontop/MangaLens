@@ -10,6 +10,7 @@ import app.mangalens.ocr.BubbleGrouper
 import app.mangalens.ocr.BubbleKind
 import app.mangalens.ocr.OcrEngine
 import app.mangalens.ocr.OcrLine
+import app.mangalens.ocr.PageScan
 import app.mangalens.ocr.Script
 import app.mangalens.ocr.TextAnchor
 import app.mangalens.overlay.RenderBubble
@@ -39,6 +40,7 @@ import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * One pass over one stable frame.
@@ -108,6 +110,10 @@ class TranslatePipeline(
         internal val exclusions: List<Rect>,
         internal val useVision: Boolean,
         internal val diag: String?,
+        /** The page's balloons and panels as found, for filling OCR in later. */
+        internal val scan: PageScan = PageScan(emptyList(), panels),
+        /** On-device OCR was put off: the model reads the page, and [withOcr] adds it after. */
+        internal val ocrPending: Boolean = false,
     ) {
         val balloons: List<Rect> get() = detected.map { it.box }
     }
@@ -252,6 +258,10 @@ class TranslatePipeline(
      * Reads the page: balloons and panels from the pixels, lines from OCR,
      * both at once since neither needs the other, then a second enlarged
      * look at any balloon OCR read nothing in.
+     *
+     * Read AI-first, the model reads the page itself and OCR only backs it
+     * up once the stream has ended: it is left out here, so nothing
+     * painted waits on it, and [withOcr] adds it when it is wanted.
      */
     suspend fun analyze(
         bitmap: Bitmap,
@@ -275,6 +285,10 @@ class TranslatePipeline(
         val scanJob = async(Dispatchers.Default) {
             BalloonFinder.analyze(bitmap, ignoreTop, ignoreBottom, exclusions)
         }
+        if (readsAiFirst(settings) && useVision) {
+            val none = OcrEngine.Result(emptyList(), settings.sourceLang)
+            return@coroutineScope assemble(bitmap, settings, exclusions, scanJob.await(), none, emptyList(), useVision, pending = true)
+        }
         val firstPass = ocr.recognize(bitmap, settings.sourceLang)
         val scan = scanJob.await()
 
@@ -285,15 +299,50 @@ class TranslatePipeline(
         // up the model, and the lettering remembered from the last stop
         // should not wait on crops the model will read anyway.
         val rereads = if (readsAiFirst(settings)) emptyList() else reread(bitmap, scan.balloons, firstPass, settings)
+        assemble(bitmap, settings, exclusions, scan, firstPass, rereads, useVision, pending = false)
+    }
+
+    /**
+     * [analysis] with the on-device OCR a read AI-first put off, as it
+     * would have been had none been. OCR that fails reads nothing: it only
+     * backs the model up, and never fails a read the model made.
+     */
+    internal suspend fun withOcr(analysis: Analysis, settings: AppSettings): Analysis {
+        if (!analysis.ocrPending) return analysis
+        val firstPass = try {
+            ocr.recognize(analysis.bitmap, settings.sourceLang)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Exception) {
+            OcrEngine.Result(emptyList(), settings.sourceLang)
+        }
+        return assemble(analysis.bitmap, settings, analysis.exclusions, analysis.scan, firstPass, emptyList(), analysis.useVision, pending = false)
+    }
+
+    private fun assemble(
+        bitmap: Bitmap,
+        settings: AppSettings,
+        exclusions: List<Rect>,
+        scan: PageScan,
+        firstPass: OcrEngine.Result,
+        rereads: List<OcrLine>,
+        useVision: Boolean,
+        pending: Boolean,
+    ): Analysis {
+        val ignoreTop = (bitmap.height * settings.ignoreTopPct).toInt()
+        val ignoreBottom = (bitmap.height * settings.ignoreBottomPct).toInt()
         val lines = if (rereads.isEmpty()) firstPass.lines else firstPass.lines + rereads
         val ocrResult = OcrEngine.Result(lines, firstPass.lang)
 
         // A balloon the frame edge cuts through is only trusted where OCR
         // actually read lettering inside it: the visible part of a panel
         // can pass every shape test, and an empty partial region would be
-        // handed to the vision model as a balloon to read.
+        // handed to the vision model as a balloon to read. With OCR put
+        // off, the model's own lines are that evidence: the resolver only
+        // letters into a balloon an item lies in, and only one BalloonTrust
+        // finds holding nothing but that lettering.
         val detected = scan.balloons.filter { b ->
-            !b.partial || lines.any { l ->
+            !b.partial || pending || lines.any { l ->
                 Script.clean(l.text).length >= 2 && b.box.contains(l.box.centerX(), l.box.centerY())
             }
         }
@@ -317,11 +366,12 @@ class TranslatePipeline(
         // at all, whether it survived into a region, and whether the translator
         // answered for it.
         val diag = if (!settings.diagnostics) null else
-            "ocr ${firstPass.lines.size}+${rereads.size} · balloons ${balloons.size} · panels ${scan.panels.size} · regions ${bubbles.size}"
+            (if (pending) "ocr after" else "ocr ${firstPass.lines.size}+${rereads.size}") +
+                " · balloons ${balloons.size} · panels ${scan.panels.size} · regions ${bubbles.size}"
 
-        Analysis(
+        return Analysis(
             bitmap, ocrResult, detected, scan.panels, bubbles, anchorLines,
-            ignoreTop, ignoreBottom, exclusions, useVision, diag,
+            ignoreTop, ignoreBottom, exclusions, useVision, diag, scan, pending,
         )
     }
 
@@ -604,6 +654,29 @@ class TranslatePipeline(
             analysis.ignoreTop, analysis.ignoreBottom, analysis.exclusions, analysis.panels,
         )
 
+        // On-device OCR, when it was put off: read while the request is in
+        // flight, after lettering remembered from the last stop is back on
+        // screen, and never waited for until the stream has ended. A line
+        // the eraser found nothing under is backed by it as soon as it lands.
+        var ocrJob: Deferred<Analysis>? = null
+        val ocrRead = AtomicReference<Analysis?>()
+        var anchored = !analysis.ocrPending
+        fun ocrStart() {
+            if (ocrJob == null && analysis.ocrPending) {
+                ocrJob = async(Dispatchers.Default) { withOcr(analysis, settings).also(ocrRead::set) }
+            }
+        }
+        fun anchorIfRead() {
+            if (anchored) return
+            val lined = ocrRead.get() ?: return
+            resolver.anchor(lined.anchorLines)
+            anchored = true
+        }
+        suspend fun withLines(): Analysis = (ocrJob?.await() ?: withOcr(analysis, settings)).also {
+            if (!anchored) resolver.anchor(it.anchorLines)
+            anchored = true
+        }
+
         // Lettering remembered from earlier stops, found again on this frame.
         var recalled: List<PageItem>? = null
         suspend fun recall(): List<PageItem> = recalled ?: runCatching {
@@ -643,12 +716,14 @@ class TranslatePipeline(
             read = reader.start(this, bitmap, lang)
         }
         if (remembered.isNotEmpty()) paint()
+        ocrStart()
 
         var failure: Exception? = null
         val items: List<PageItem>? = try {
             read.collect { item ->
                 if (firstAt < 0) firstAt = elapsed()
                 streamed.add(item)
+                anchorIfRead()
                 paint()
             }
         } catch (e: CancellationException) {
@@ -670,9 +745,10 @@ class TranslatePipeline(
             // translates the page: the failure is reported, so the reader
             // knows why lettering stays raw rather than seeing some other
             // translation in the AI's place.
+            val lined = withLines()
             val partial = resolver.resolve(Wording.keep(remembered, streamed))
             val text = try {
-                aiTextTranslate(bitmap, bubbles, lang, settings, analysis.detected)
+                aiTextTranslate(bitmap, lined.bubbles, lined.ocr.lang, settings, lined.detected)
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
@@ -689,7 +765,10 @@ class TranslatePipeline(
         }
 
         val answered = fresh(items)
-        val gap = gapItems(bubbles, analysis.detected, answered + remembered, lang, settings)
+        // What OCR read backs up the model from here: lines it left out,
+        // and cards for lettering the eraser could not find under its box.
+        val lined = withLines()
+        val gap = gapItems(lined.bubbles, lined.detected, answered + remembered, lined.ocr.lang, settings)
         val complete = answered + gap.items
         val finalItems = Wording.keep(remembered, complete)
         // What is stored is what the reader sees, so the next stop and a

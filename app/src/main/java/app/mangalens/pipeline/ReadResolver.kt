@@ -31,7 +31,7 @@ import java.util.IdentityHashMap
 internal class ReadResolver(
     private val bitmap: Bitmap,
     private val detected: List<Balloon>,
-    private val anchorLines: List<OcrLine>,
+    private var anchorLines: List<OcrLine>,
     private val ignoreTop: Int,
     private val ignoreBottom: Int,
     private val exclusions: List<Rect>,
@@ -39,9 +39,28 @@ internal class ReadResolver(
     private val panels: List<Rect> = emptyList(),
 ) {
 
+    /**
+     * Balloons found whole, and ones the frame edge cuts through. A cut
+     * one can be a fragment of its balloon, or a panel's corner passing
+     * for one: lettered into, it left the rest of the line on the page.
+     * It is used only for a line nothing else placed, or placed in a
+     * balloon that does not hold up (see [resolve]).
+     */
+    private val whole = detected.filter { !it.partial }
+    private val cut = detected.filter { it.partial }
+
     private val erasures = HashMap<PageItem, Erasure?>()
     private val fills = IdentityHashMap<Balloon, Bitmap?>()
     private val interiors = IdentityHashMap<Balloon, Int>()
+
+    /**
+     * OCR's lines, once read: they back up a line the model reported where
+     * the eraser found no lettering. Lines already resolved keep their
+     * place; only one that had nothing to show can gain a card.
+     */
+    fun anchor(lines: List<OcrLine>) {
+        anchorLines = lines
+    }
 
     /** The erasure made for [item] so far, if it was placed on the art. */
     fun erasureOf(item: PageItem): Erasure? = erasures[item]
@@ -79,6 +98,32 @@ internal class ReadResolver(
                 if (it !in seededHere) seededHere.add(it)
             }
         }
+        // A balloon the frame edge cuts through, for a line nothing else
+        // placed, or placed only in a balloon that does not hold up. A
+        // placement that holds up is kept: a cut detection of the same
+        // balloon can stop short of the lettering, where one found whole,
+        // or from the lettering outward, covers all of it. A cut balloon
+        // taken up for one line takes the lines seeding placed inside it
+        // too, when it holds up with all of them: two balloons drawn joined
+        // are one detection, and neither line alone looks like its only
+        // lettering.
+        val placed = IdentityHashMap<Balloon, MutableList<Int>>()
+        home.forEachIndexed { i, b -> if (b != null) placed.getOrPut(b) { mutableListOf() }.add(i) }
+        val needs = BooleanArray(usable.size) { i -> home[i]?.let { !trusted(it, placed.getValue(it), usable, home) } ?: true }
+        val moved = BooleanArray(usable.size)
+        for (c in cut.sortedBy { it.box.width().toLong() * it.box.height() }) {
+            val held = usable.indices.filter { i ->
+                !moved[i] && holding(listOf(c), usable[i]) != null &&
+                    (needs[i] || home[i].let { b -> b != null && whole.none { it === b } })
+            }
+            if (held.none { needs[it] }) continue
+            val takers = if (trusted(c, held, usable, home)) held else held.filter { needs[it] }
+            for (i in takers) {
+                home[i] = c
+                moved[i] = true
+                claimed.add(c)
+            }
+        }
         val byBalloon = IdentityHashMap<Balloon, MutableList<Int>>()
         home.forEachIndexed { i, b -> if (b != null) byBalloon.getOrPut(b) { mutableListOf() }.add(i) }
 
@@ -99,25 +144,7 @@ internal class ReadResolver(
                 continue
             }
             for (k in group) done[k] = true
-            // A detection whose interior shows anything but this lettering
-            // is art that passed for a balloon — a face, a highlight, the
-            // inside of a big glyph — and wiping it would paint over the
-            // drawing. Its lettering is erased on its own instead. A "!!"
-            // or heart the model gave as a sound of its own is lettering
-            // too, not stray ink, though it never claims the balloon.
-            val lettering = group.map { usable[it].box } + listOfNotNull(drift[balloon]) + usable.indices
-                .filter { home[it] == null && usable[it].kind == ItemKind.SFX && containedShare(usable[it].box, balloon.box) > 0.8f }
-                .map { usable[it].box }
-            val trusted = trust.getOrPut(trustKey(balloon, lettering)) {
-                BalloonTrust.holdsOnly(bitmap, balloon, lettering) ||
-                    // A see-through balloon: the art shows faintly through its
-                    // wash and reads as texture. Found again from its own
-                    // lettering outward — walled, convex, paper round the text
-                    // — it is a balloon, and the wash is cleaned with its tone.
-                    (BalloonTrust.holdsOnly(bitmap, balloon, lettering, BalloonTrust.SEEN_THROUGH_TEXTURE) &&
-                        vouched(balloon, group.map { usable[it] })) ||
-                    stoppedShort(balloon, group.map { usable[it] })
-            }
+            val trusted = trusted(balloon, group, usable, home)
             trace?.invoke(
                 "${group.joinToString(" + ") { usable[it].src.take(8).replace('\n', ' ') }}: " +
                     (if (balloon in seedCache.values) "seeded" else "detected") + " ${balloon.box} trusted=$trusted",
@@ -160,6 +187,30 @@ internal class ReadResolver(
         }
         freeItems = free
         return out
+    }
+
+    /**
+     * Whether [balloon] can be wiped for the items of [group]. A detection
+     * whose interior shows anything but this lettering is art that passed
+     * for a balloon — a face, a highlight, the inside of a big glyph — and
+     * wiping it would paint over the drawing; its lettering is erased on
+     * its own instead. A "!!" or heart the model gave as a sound of its own
+     * is lettering too, not stray ink, though it never claims the balloon.
+     */
+    private fun trusted(balloon: Balloon, group: List<Int>, usable: List<PageItem>, home: List<Balloon?>): Boolean {
+        val lettering = group.map { usable[it].box } + listOfNotNull(drift[balloon]) + usable.indices
+            .filter { home[it] == null && usable[it].kind == ItemKind.SFX && containedShare(usable[it].box, balloon.box) > 0.8f }
+            .map { usable[it].box }
+        return trust.getOrPut(trustKey(balloon, lettering)) {
+            BalloonTrust.holdsOnly(bitmap, balloon, lettering) ||
+                // A see-through balloon: the art shows faintly through its
+                // wash and reads as texture. Found again from its own
+                // lettering outward — walled, convex, paper round the text
+                // — it is a balloon, and the wash is cleaned with its tone.
+                (BalloonTrust.holdsOnly(bitmap, balloon, lettering, BalloonTrust.SEEN_THROUGH_TEXTURE) &&
+                    vouched(balloon, group.map { usable[it] })) ||
+                stoppedShort(balloon, group.map { usable[it] })
+        }
     }
 
     private val lobeCache = HashMap<String, List<Balloon?>>()
@@ -327,10 +378,13 @@ internal class ReadResolver(
      * claim a balloon — a stray "…" or "!!" lettered inside one must not
      * take over the speech it sits beside.
      */
-    private fun balloonFor(item: PageItem): Balloon? {
+    private fun balloonFor(item: PageItem): Balloon? = holding(whole, item)
+
+    /** The smallest of [balloons] holding [item], by the rule [balloonFor] states. */
+    private fun holding(balloons: List<Balloon>, item: PageItem): Balloon? {
         if (item.kind == ItemKind.SFX) return null
         val box = item.box
-        return detected
+        return balloons
             .filter { b -> containedShare(box, b.box) >= 0.6f && onInterior(b, box.centerX(), box.centerY()) }
             .minByOrNull { it.box.width().toLong() * it.box.height() }
     }
@@ -347,7 +401,7 @@ internal class ReadResolver(
         if (item.kind != ItemKind.SPEECH && item.kind != ItemKind.THOUGHT) return null
         val box = item.box
         val reach = bitmap.height * MAX_DRIFT
-        val near = detected.filter { b ->
+        val near = whole.filter { b ->
             b !in claimed && !b.inverted &&
                 b.box.width() >= box.width() * 0.6f && b.box.height() >= box.height() * 0.6f &&
                 kotlin.math.hypot((b.box.exactCenterX() - box.exactCenterX()).toDouble(), (b.box.exactCenterY() - box.exactCenterY()).toDouble()) <= reach
@@ -383,7 +437,7 @@ internal class ReadResolver(
             runCatching { BalloonSeed.find(bitmap, item.box) }.getOrNull()
         } ?: return null
         // The same balloon a detection already holds, found again from inside.
-        (claimed + detected).firstOrNull { d -> overlap(d.box, fresh.box) > SAME_BALLOON }?.let { return it }
+        (claimed + whole).firstOrNull { d -> overlap(d.box, fresh.box) > SAME_BALLOON }?.let { return it }
         return fresh
     }
 
