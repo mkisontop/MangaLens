@@ -81,7 +81,7 @@ class PageHarnessTest {
             val pipeline = TranslatePipeline(NoOcr(), TranslationService(cache, glossary, cast), cache, glossary, cast)
             val page = BitmapFactory.decodeFile(file.path, BitmapFactory.Options().apply {
                 inPreferredConfig = Bitmap.Config.ARGB_8888
-            })
+            }).apply { density = Bitmap.DENSITY_NONE }
             val t0 = System.nanoTime()
             fun ms() = (System.nanoTime() - t0) / 1_000_000
             val result = runBlocking {
@@ -109,16 +109,21 @@ class PageHarnessTest {
                 }
                 println("    [${b.style} $where] ${b.original.replace('\n', ' ').take(40)} => ${b.translated}")
             }
-            val view = BubbleOverlayView(app).apply { layout(0, 0, page.width, page.height) }
+            // Letter at the density a phone showing this page would have:
+            // about 400 dp across, as on a real screen.
+            RuntimeEnvironment.setQualifiers("+" + densityFor(page.width))
+            val view = BubbleOverlayView(RuntimeEnvironment.getApplication()).apply { layout(0, 0, page.width, page.height) }
             view.setBubbles(result.bubbles)
+            // Pixels, not density-scaled: the page and the overlay share the screen's coordinates.
             val translated = Bitmap.createBitmap(page.width, page.height, Bitmap.Config.ARGB_8888)
+                .apply { density = Bitmap.DENSITY_NONE }
             Canvas(translated).apply {
                 drawBitmap(page, 0f, 0f, null)
-                // Let any fade-in run to the end before the frame is taken.
-                Thread.sleep(400)
+                // A view with no window draws its final, fully faded-in state.
                 view.draw(this)
             }
             val pair = Bitmap.createBitmap(page.width * 2 + 16, page.height, Bitmap.Config.ARGB_8888)
+                .apply { density = Bitmap.DENSITY_NONE }
             Canvas(pair).apply {
                 drawColor(Color.DKGRAY)
                 drawBitmap(page, 0f, 0f, null)
@@ -128,7 +133,7 @@ class PageHarnessTest {
             save(translated, File(out, "$stem.png"))
             save(pair, File(out, "$stem-pair.png"))
             // Balloons found on-device, for judging what the resolver had to work with.
-            val marked = page.copy(Bitmap.Config.ARGB_8888, true)
+            val marked = page.copy(Bitmap.Config.ARGB_8888, true).apply { density = Bitmap.DENSITY_NONE }
             val stroke = Paint().apply { style = Paint.Style.STROKE; strokeWidth = 3f; color = Color.MAGENTA }
             Canvas(marked).apply { for (r in result.balloons) drawRect(Rect(r), stroke) }
             save(marked, File(out, "$stem-balloons.png"))
@@ -162,7 +167,7 @@ class PageHarnessTest {
         for (file in frames) {
             val page = BitmapFactory.decodeFile(file.path, BitmapFactory.Options().apply {
                 inPreferredConfig = Bitmap.Config.ARGB_8888
-            })
+            }).apply { density = Bitmap.DENSITY_NONE }
             val t0 = System.nanoTime()
             fun ms() = (System.nanoTime() - t0) / 1_000_000
             val result = runBlocking {
@@ -183,15 +188,25 @@ class PageHarnessTest {
                 r
             }
             for (b in result.bubbles) println("    ${b.original.replace('\n', ' ').take(30)} => ${b.translated}")
-            val view = BubbleOverlayView(app).apply { layout(0, 0, page.width, page.height) }
+            RuntimeEnvironment.setQualifiers("+" + densityFor(page.width))
+            val view = BubbleOverlayView(RuntimeEnvironment.getApplication()).apply { layout(0, 0, page.width, page.height) }
             view.setBubbles(result.bubbles)
+            // Pixels, not density-scaled: the page and the overlay share the screen's coordinates.
             val translated = Bitmap.createBitmap(page.width, page.height, Bitmap.Config.ARGB_8888)
+                .apply { density = Bitmap.DENSITY_NONE }
             Canvas(translated).apply {
                 drawBitmap(page, 0f, 0f, null)
                 view.draw(this)
             }
             save(translated, File(out, "scroll-${file.nameWithoutExtension}.png"))
         }
+    }
+
+    /** The density bucket that makes a page [widthPx] wide about 400 dp across. */
+    private fun densityFor(widthPx: Int): String {
+        val want = widthPx / 400f
+        return listOf(1f to "mdpi", 1.5f to "hdpi", 2f to "xhdpi", 3f to "xxhdpi", 4f to "xxxhdpi")
+            .minBy { kotlin.math.abs(it.first - want) }.second
     }
 
     private fun save(bmp: Bitmap, file: File) {
