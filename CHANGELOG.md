@@ -1,5 +1,39 @@
 # Changelog
 
+## 1.0.4
+
+Faster, above all when you scroll.
+
+**Download:** `MangaLens.apk` below updates 0.9.2 and newer in place.
+
+- **A scroll reads only what's new.** After a scroll, only the strip the
+  scroll revealed goes to the AI, and the lines you had already read come
+  back the moment you stop, moved with the page, instead of the whole screen
+  being read again. On real pages, the first new line after a small scroll
+  arrived in 1.7 s instead of 4.2 s, and the whole screen was done in 2.7 s
+  instead of 5.7 s. These times were measured from a server; your phone adds
+  the time it takes to upload the page.
+- **A new page's first line comes sooner.** The AI's first line is painted as
+  soon as it arrives, without waiting for the phone's own text recognition,
+  and the page is sent the moment it settles: about 1.7–1.9 s to the first
+  line instead of 2.4 s, measured the same way.
+- **Lines cut by the screen's edge stay translated** after a scroll.
+- **When Google is overloaded**, MangaLens switches to a stand-in model at
+  once instead of waiting it out, and gives up on a connection that has gone
+  silent.
+- **Cleaner balloons.** A balloon the AI only partly boxed is cleaned whole,
+  and white lettering edged in black on dark art, and the white halo around
+  lettering, are erased with it.
+- **Better typesetting.** Names and short words stay whole whenever they fit,
+  words break where a dictionary would break them, free lettering keeps off
+  its neighbours' lines, and sounds the AI wraps in asterisks are lettered
+  without them.
+- The reading code is compiled ahead of time, so the first page after
+  starting MangaLens is quicker too.
+- With **diagnostics** on, the pill says how long each stop took from the
+  moment you stopped: to the first line, how many lines came back straight
+  away, and the upload apart.
+
 ## 1.0.3
 
 No more grey ghost, and nothing extra to allow for it.
