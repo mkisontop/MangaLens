@@ -396,8 +396,10 @@ class PageReaderTest {
         }
         reader(transport, race = 2, staggerMs = 200).read(page(), SourceLang.JA)
         assertEquals(2, transport.calls.size)
+        // The stagger is timed from the race's start, a moment before the
+        // first request reaches the transport.
         val lag = (transport.startedAt[1] - transport.startedAt[0]) / 1_000_000
-        assertTrue("duplicate after $lag ms", lag in 200..1_500)
+        assertTrue("duplicate after $lag ms", lag in 190..1_500)
     }
 
     @Test
@@ -465,11 +467,13 @@ class PageReaderTest {
             reader(transport, race = 2, staggerMs = 0, retryMs = 5_000).start(this, page(), SourceLang.JA)
         }
         assertEquals(listOf("Hello."), read.collect().map { it.en })
-        // The stand-in joins as soon as one racer is turned away, so it can
-        // reach the transport before the second racer does.
+        // The stand-in joins as soon as one racer is turned away: it can
+        // reach the transport before the second racer does, or answer before
+        // the second racer is sent at all.
         val models = transport.calls.map { it.first }
-        assertEquals(listOf(settings.model, settings.model, "gemini-3.6-flash").sorted(), models.sorted())
         assertEquals(settings.model, models.first())
+        assertEquals(1, models.count { it == "gemini-3.6-flash" })
+        assertTrue(models.toString(), models.all { it == settings.model || it == "gemini-3.6-flash" } && models.size in 2..3)
         val standIn = models.indexOf("gemini-3.6-flash")
         val lag = (transport.startedAt[standIn] - transport.startedAt[0]) / 1_000_000
         assertTrue("the stand-in went $lag ms after the overload, without the retry's pause", lag < 2_000)
@@ -864,6 +868,14 @@ class PageReaderTest {
         fun system(n: Int) = transport.calls[n].second.getJSONObject("systemInstruction").getJSONArray("parts").getJSONObject(0).getString("text")
         assertFalse(system(1).contains("unread"))
         assertEquals(system(0), system(1))
+    }
+
+    @Test
+    fun `the read says when its page went up, apart from when Google answered`() = runBlocking {
+        val transport = FakeTransport { _, _, onDelta -> streamOut(reply(hello), onDelta) }
+        val read = reader(transport, race = 1).start(this, page(), SourceLang.JA)
+        read.collect()
+        assertTrue(read.summary, Regex("enc \\d+ ms · sent \\d+ ms · 1st \\d+ ms").containsMatchIn(read.summary))
     }
 
     private fun sentSize(transport: FakeTransport): Pair<Int, Int> {

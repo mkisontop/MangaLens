@@ -194,7 +194,7 @@ class PageReader internal constructor(
                 val stream = BubbleStream("items")
                 var finish = ""
                 try {
-                    val text = transport.stream(m, body, { events.trySend(Event.Sent(id)) }, { finish = it }) { delta ->
+                    val text = transport.stream(m, body, { read.sent(); events.trySend(Event.Sent(id)) }, { finish = it }) { delta ->
                         for (o in stream.feed(delta)) page.item(o)?.let { events.trySend(Event.Item(id, it)) }
                     }
                     events.trySend(Event.Done(id, Reply(text, finish, m)))
@@ -428,6 +428,14 @@ class PageReader internal constructor(
         @Volatile
         private var firstMs: Long? = null
 
+        /** When the first request's page had been uploaded: the rest of the wait is Google's. */
+        @Volatile
+        private var sentMs: Long? = null
+
+        fun sent() {
+            if (sentMs == null) sentMs = elapsedMs(started)
+        }
+
         override val firstItemMs: Long? get() = firstMs
 
         override val doneMs: Long? get() = state.value.endMs
@@ -441,6 +449,7 @@ class PageReader internal constructor(
         override val summary: String
             get() = buildString {
                 append("enc ").append(encodeMs).append(" ms")
+                sentMs?.let { append(" · sent ").append(it).append(" ms") }
                 firstItemMs?.let { append(" · 1st ").append(it).append(" ms") }
                 doneMs?.let { append(" · done ").append(it).append(" ms") }
                 append(" · ").append(requests).append(if (requests == 1) " request" else " requests")

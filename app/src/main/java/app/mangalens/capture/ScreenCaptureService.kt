@@ -1093,6 +1093,11 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
             var prep: Prepared? = null
             var bmp: Bitmap? = null
             var read: PendingRead? = null
+            // The stop this pass answers (a tap, when asked for by hand), and
+            // when its first English landed: what the reader waits for,
+            // shown with diagnostics on.
+            val stopAt = if (auto) lastMotionAt else SystemClock.uptimeMillis()
+            var firstLineAt = -1L
             // The lines on screen so far, as they streamed in.
             var streamed: List<RenderBubble> = emptyList()
             try {
@@ -1180,6 +1185,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                         // rest follows.
                         withContext(Dispatchers.Main.immediate) {
                             if (isActive && state == State.TRANSLATING) {
+                                if (firstLineAt < 0 && partial.bubbles.isNotEmpty()) firstLineAt = SystemClock.uptimeMillis()
                                 streamed = partial.bubbles
                                 lastShown = partial.bubbles
                                 suppressUntil = SystemClock.uptimeMillis() + 600
@@ -1229,7 +1235,10 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                 if (alert != null) {
                     showAlert(alert)
                 } else if (result.diag != null) {
-                    setPill("${result.engineLabel.ifBlank { "—" }} · ${result.diag} · ${works.describe()}")
+                    val now = SystemClock.uptimeMillis()
+                    val waited = (if (firstLineAt >= 0) "stop→1st line ${firstLineAt - stopAt} ms · " else "") +
+                        "stop→done ${now - stopAt} ms"
+                    setPill("${result.engineLabel.ifBlank { "—" }} · $waited · ${result.diag} · ${works.describe()}")
                 } else if (failure != null) {
                     setPill(failurePill(failure, partly = shown.isNotEmpty()), FAILURE_MS)
                 } else if (shown.isEmpty() && !auto) {
