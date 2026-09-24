@@ -1,9 +1,11 @@
 # Changelog
 
-## 0.11.0
+## 1.0.0
 
-Gemini reads the page itself, the moment you stop — and every line is
-cleaned and re-lettered the way a scanlation team does it.
+MangaLens 1.0: translation is AI-only and straight — no machine draft, no
+"upgrading" — the app has a new face, Fuki, and Gemini reads the page
+itself the moment you stop, with every line cleaned and re-lettered the
+way a scanlation team does it.
 
 **Download:** `MangaLens.apk` below updates 0.9.2 and newer in place. Still on
 0.9.1? Use `MangaLens-legacy-update.apk` once (Android 9+), as described in

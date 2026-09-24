@@ -272,7 +272,7 @@ class UiScreenshotTest {
         home(
             HomeUiState(
                 AppSettings(provider = LlmProvider.CUSTOM), overlayGranted = true, browserName = "Brave",
-                versionName = "0.11.0",
+                versionName = "1.0.0",
             )
         )
         compose.onNodeWithContentDescription("Tweaks:", substring = true).performScrollTo().performClick()
@@ -280,7 +280,7 @@ class UiScreenshotTest {
         compose.onNodeWithText("Say hi (test translation)").performScrollTo().performClick()
         compose.onNodeWithText("Add your endpoint URL above first, then say hi.").assertExists()
         // Down to the footer, which the tall renders cannot reach.
-        compose.onNodeWithText("MangaLens 0.11.0", substring = true).performScrollTo()
+        compose.onNodeWithText("MangaLens 1.0.0", substring = true).performScrollTo()
         both("14c-tweaks-say-hi-blocked")
     }
 
@@ -370,7 +370,7 @@ class TweaksScreenshotTest {
                     val hi = remember { SayHi(scope) { UiScreenshotTest.LETTERED }.also { it.phase = phase } }
                     val drafts = rememberAiDrafts(settings, NoSink)
                     HomeContent(
-                        HomeUiState(settings, overlayGranted = true, browserName = "Brave", versionName = "0.11.0"),
+                        HomeUiState(settings, overlayGranted = true, browserName = "Brave", versionName = "1.0.0"),
                         drafts, hi, NoSink, HomeActions(),
                     )
                 }
