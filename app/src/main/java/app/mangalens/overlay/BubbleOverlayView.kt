@@ -368,6 +368,20 @@ class BubbleOverlayView(context: Context) : View(context) {
     internal var clock: () -> Long = { AnimationUtils.currentAnimationTimeMillis() }
 
     /**
+     * Screen areas left bare: MangaLens's own floating controls, while this
+     * layer is drawn over them. An accessibility overlay sits above every
+     * app overlay, so solid lettering would otherwise cover the button, a
+     * status the reader has to read, or the menu they just opened. Kept up
+     * to date by [OverlayController].
+     */
+    var keepClear: List<Rect> = emptyList()
+        set(value) {
+            if (field == value) return
+            field = value
+            invalidate()
+        }
+
+    /**
      * Comic Neue is the lettering hand; the platform faces stand in when a
      * resource fails to inflate, so a broken font asset costs the page its
      * look but never its text. Loaded once — font inflation parses the file
@@ -1634,6 +1648,19 @@ class BubbleOverlayView(context: Context) : View(context) {
         if (ix <= 0f || iy <= 0f) return 0f
         val area = self.width() * self.height()
         return if (area <= 0f) 0f else (ix * iy) / area
+    }
+
+    /** Everything, cleaning and debug outlines included, stays off [keepClear]. */
+    override fun draw(canvas: Canvas) {
+        val bare = keepClear
+        if (bare.isEmpty()) {
+            super.draw(canvas)
+            return
+        }
+        val saved = canvas.save()
+        for (r in bare) canvas.clipOutRect(r)
+        super.draw(canvas)
+        canvas.restoreToCount(saved)
     }
 
     /**

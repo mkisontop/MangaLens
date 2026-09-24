@@ -18,6 +18,8 @@ import kotlin.math.abs
 /**
  * Owns the three overlay windows: the untouchable full-screen result layer, the
  * draggable floating button with its status pill, and the long-press quick menu.
+ * The result layer goes through [LetteringHost] when it is connected, so it is
+ * drawn at full strength; see [placeLettering].
  * All methods must be called from the main thread.
  */
 class OverlayController(private val context: Context, private val listener: Listener) {
@@ -46,13 +48,26 @@ class OverlayController(private val context: Context, private val listener: List
     private var attached = false
     private val hidePill = Runnable { pill?.visibility = View.GONE }
 
+    /** The window manager [bubbleView] is in, [LetteringHost]'s or [wm]; null while it is in neither. */
+    private var letteringWm: WindowManager? = null
+
+    /**
+     * Whether the lettering is drawn over the controls: always from the
+     * accessibility layer, which sits above every app overlay, and from ours
+     * once it has been added again after them. It then keeps their
+     * footprint bare (see [BubbleOverlayView.keepClear]).
+     */
+    private var letteringOverControls = false
+
+    private val hostChanged: () -> Unit = { if (attached) placeLettering() }
+
     /**
      * Called on the main thread whenever the screen area the controls
      * occupy changes: the pill comes or goes or is re-measured, the button
-     * is dragged, the menu opens or closes. The capture loop masks that
-     * area out of its comparisons and must learn of every change before
-     * the frame that shows it is drawn — which is why the row's own layout
-     * pass reports it, ahead of that frame's draw.
+     * is dragged, the menu opens, is laid out or closes. The capture loop
+     * masks that area out of its comparisons and must learn of every change
+     * before the frame that shows it is drawn — which is why the row's and
+     * the menu's own layout passes report it, ahead of that frame's draw.
      */
     var onFootprintChanged: (() -> Unit)? = null
 
@@ -60,34 +75,90 @@ class OverlayController(private val context: Context, private val listener: List
 
     fun attach() {
         if (attached) return
-        val bubbleLp = WindowManager.LayoutParams(
+        placeLettering()
+        buildControls()
+        LetteringHost.addListener(hostChanged)
+        attached = true
+    }
+
+    fun detach() {
+        if (!attached) return
+        LetteringHost.removeListener(hostChanged)
+        dismissMenu()
+        letteringWm?.let { w -> runCatching { w.removeView(bubbleView) } }
+        letteringWm = null
+        controls?.let { runCatching { wm.removeView(it) } }
+        controls = null
+        onFootprintChanged = null
+        attached = false
+    }
+
+    /**
+     * Puts the lettering in the best window there is, and moves it there
+     * whenever [LetteringHost] comes or goes. Since Android 12 an ordinary
+     * overlay that lets touches through is drawn at no more than 80%
+     * opacity, which leaves a grey ghost of the original in every cleaned
+     * balloon and turns black ink dark grey. An accessibility overlay is a
+     * trusted window, drawn exactly as painted, so while the host is
+     * connected the lettering goes there; otherwise, or if the host turns
+     * the window down, it is an ordinary overlay as before.
+     *
+     * On a move the view leaves its window at once, so it is gone from the
+     * old window before it joins the new one; the system may already have
+     * taken that window down along with an unbound service. Added after the
+     * controls, or from the host's layer, the lettering is drawn over them.
+     */
+    private fun placeLettering() {
+        val host = LetteringHost.windowManager
+        val current = letteringWm
+        if (current != null && current === (host ?: wm)) return
+        current?.let { old -> runCatching { old.removeViewImmediate(bubbleView) } }
+        val placed = when {
+            host != null && runCatching {
+                host.addView(bubbleView, letteringParams(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY))
+            }.isSuccess -> host
+            runCatching {
+                wm.addView(bubbleView, letteringParams(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY))
+            }.isSuccess -> wm
+            else -> null
+        }
+        letteringWm = placed
+        letteringOverControls = (host != null && placed === host) || controls != null
+        footprintChanged()
+    }
+
+    /**
+     * The lettering's window: full screen in screen coordinates, never
+     * focused or touched. New each time, since adding a window writes the
+     * token of the window manager it goes through into its parameters.
+     */
+    private fun letteringParams(type: Int): WindowManager.LayoutParams {
+        val lp = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.MATCH_PARENT,
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            type,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
         )
-        bubbleLp.gravity = Gravity.TOP or Gravity.START
+        lp.gravity = Gravity.TOP or Gravity.START
         if (Build.VERSION.SDK_INT >= 28) {
-            bubbleLp.layoutInDisplayCutoutMode =
+            lp.layoutInDisplayCutoutMode =
                 WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
         }
-        wm.addView(bubbleView, bubbleLp)
-        buildControls()
-        attached = true
+        return lp
     }
 
-    fun detach() {
-        if (!attached) return
-        dismissMenu()
-        runCatching { wm.removeView(bubbleView) }
-        controls?.let { runCatching { wm.removeView(it) } }
-        controls = null
-        onFootprintChanged = null
-        attached = false
+    /**
+     * The controls moved, grew, shrank, or opened or closed the menu. The
+     * lettering keeps off them if it is drawn over them, and the capture
+     * loop hears of it (see [onFootprintChanged]).
+     */
+    private fun footprintChanged() {
+        bubbleView.keepClear = if (letteringOverControls) overlayExclusions() else emptyList()
+        onFootprintChanged?.invoke()
     }
 
     /**
@@ -175,7 +246,7 @@ class OverlayController(private val context: Context, private val listener: List
         row.addView(btn)
         row.addView(status)
         row.addOnLayoutChangeListener { _, l, t, r, b, oldL, oldT, oldR, oldB ->
-            if (l != oldL || t != oldT || r != oldR || b != oldB) onFootprintChanged?.invoke()
+            if (l != oldL || t != oldT || r != oldR || b != oldB) footprintChanged()
         }
 
         val lp = WindowManager.LayoutParams(
@@ -221,7 +292,7 @@ class OverlayController(private val context: Context, private val listener: List
                         lp.x = startX + dx.toInt()
                         lp.y = startY + dy.toInt()
                         controls?.let { c -> runCatching { wm.updateViewLayout(c, lp) } }
-                        onFootprintChanged?.invoke()
+                        footprintChanged()
                     }
                 }
                 MotionEvent.ACTION_UP -> {
@@ -264,10 +335,14 @@ class OverlayController(private val context: Context, private val listener: List
                 true
             } else false
         }
+        // Until its first layout the menu's footprint is an estimate; report the real one.
+        col.addOnLayoutChangeListener { _, l, t, r, b, oldL, oldT, oldR, oldB ->
+            if (menu === col && (l != oldL || t != oldT || r != oldR || b != oldB)) footprintChanged()
+        }
 
         wm.addView(col, lp)
         menu = col
-        onFootprintChanged?.invoke()
+        footprintChanged()
     }
 
     companion object {
@@ -310,6 +385,6 @@ class OverlayController(private val context: Context, private val listener: List
         val open = menu ?: return
         runCatching { wm.removeView(open) }
         menu = null
-        onFootprintChanged?.invoke()
+        footprintChanged()
     }
 }

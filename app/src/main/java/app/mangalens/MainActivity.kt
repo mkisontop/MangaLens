@@ -2,6 +2,7 @@ package app.mangalens
 
 import android.Manifest
 import android.app.Activity
+import android.content.ComponentName
 import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.projection.MediaProjectionManager
@@ -20,6 +21,7 @@ import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import app.mangalens.capture.ScreenCaptureService
+import app.mangalens.overlay.LetteringHostService
 import app.mangalens.settings.SettingsRepository
 import app.mangalens.ui.HomeScreen
 import app.mangalens.ui.MangaLensTheme
@@ -31,6 +33,13 @@ class MainActivity : ComponentActivity() {
         const val EXTRA_OPEN_TWEAKS = "open_tweaks"
 
         private const val BRAVE = "com.brave.browser"
+
+        /** Settings.ACTION_ACCESSIBILITY_DETAILS_SETTINGS, which the public SDK leaves out. */
+        private const val ACCESSIBILITY_DETAILS = "android.settings.ACCESSIBILITY_DETAILS_SETTINGS"
+
+        /** Settings' extras for the preference to scroll to and highlight; other builds ignore them. */
+        private const val FRAGMENT_ARG_KEY = ":settings:fragment_args_key"
+        private const val SHOW_FRAGMENT_ARGS = ":settings:show_fragment_args"
     }
 
     private lateinit var repo: SettingsRepository
@@ -84,6 +93,8 @@ class MainActivity : ComponentActivity() {
                     onGrantOverlay = { openOverlaySettings() },
                     onTogglePause = { togglePause() },
                     onOpenBrowser = { openBrowser() },
+                    onTurnOnSolid = { openSolidLetteringSettings() },
+                    onOpenAppInfo = { openAppInfo() },
                 )
             }
         }
@@ -119,7 +130,7 @@ class MainActivity : ComponentActivity() {
         projectionLauncher.launch(mpm.createScreenCaptureIntent())
     }
 
-    /** The system settings page covers the app, so this is the one hint that stays a toast. */
+    /** The system settings page covers the app, so its hint is a toast. */
     private fun openOverlaySettings() {
         Toast.makeText(
             this,
@@ -129,6 +140,35 @@ class MainActivity : ComponentActivity() {
         startActivity(
             Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
         )
+    }
+
+    /**
+     * Where solid lettering is switched on. On Android 13 and later that is
+     * MangaLens's own page in Accessibility, where Settings will open it;
+     * it is tried rather than looked up first, since package visibility can
+     * hide Settings from a lookup and the page may turn an app away.
+     * Otherwise it is the Accessibility list, with MangaLens picked out
+     * where Settings knows how. Settings covers the app, so the hint is a
+     * toast, as for the overlay switch.
+     */
+    private fun openSolidLetteringSettings() {
+        Toast.makeText(this, "Find MangaLens, switch it on and tap Allow, then come back.", Toast.LENGTH_LONG).show()
+        val service = ComponentName(this, LetteringHostService::class.java).flattenToString()
+        if (Build.VERSION.SDK_INT >= 33) {
+            val page = Intent(ACCESSIBILITY_DETAILS).putExtra(Intent.EXTRA_COMPONENT_NAME, service)
+            if (runCatching { startActivity(page) }.isSuccess) return
+        }
+        val list = Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+            .putExtra(FRAGMENT_ARG_KEY, service)
+            .putExtra(SHOW_FRAGMENT_ARGS, Bundle().apply { putString(FRAGMENT_ARG_KEY, service) })
+        runCatching { startActivity(list) }
+    }
+
+    /** App info, whose ⋮ menu holds "Allow restricted settings" on Android 13 and later. */
+    private fun openAppInfo() {
+        runCatching {
+            startActivity(Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:$packageName")))
+        }
     }
 
     /** Brave when it is installed, else whatever the reader's default browser is. */

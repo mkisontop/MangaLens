@@ -1,4 +1,8 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <string name="app_name">MangaLens</string>
+
+    <!-- The lettering host's line and page in Accessibility settings (see LetteringHostService). -->
+    <string name="lettering_host_summary">Draws MangaLens\'s English at full strength</string>
+    <string name="lettering_host_description">Draws MangaLens\'s English over the page at full strength. Without it, Android keeps the lettering slightly see-through and the original text shows faintly underneath. This service only draws: it can\'t read your screen, see what you type, or act for you.</string>
 </resources>

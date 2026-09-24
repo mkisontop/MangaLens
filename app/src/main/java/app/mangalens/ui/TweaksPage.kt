@@ -1,5 +1,6 @@
 package app.mangalens.ui
 
+import android.os.Build
 import androidx.compose.animation.animateContentSize
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.snap
@@ -84,11 +85,12 @@ internal enum class TweaksTarget { TOP, AI, OTHER_AI }
 
 /**
  * Tweaks, kept to what a reader actually changes: the language, hands-free
- * or tap, the size of the lettering, and whether the AI's key works. That
- * is all the page shows. Everything else — timing, data, the thinking
- * setting, the model, other AI providers, diagnostics — has defaults that
- * are right for nearly everyone, and waits folded under More options,
- * where it can be found without being in the way.
+ * or tap, the size of the lettering and whether it is solid, and whether
+ * the AI's key works. That is all the page shows. Everything else —
+ * timing, data, the thinking setting, the model, other AI providers,
+ * diagnostics — has defaults that are right for nearly everyone, and waits
+ * folded under More options, where it can be found without being in the
+ * way.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -99,6 +101,10 @@ internal fun TweaksPage(
     sayHi: SayHi,
     target: TweaksTarget,
     versionName: String,
+    solidOffered: Boolean,
+    solidLettering: Boolean,
+    onTurnOnSolid: () -> Unit,
+    onOpenAppInfo: () -> Unit,
     onClose: () -> Unit,
 ) {
     val pop = LocalPop.current
@@ -150,6 +156,7 @@ internal fun TweaksPage(
 
                 ReadingSection(settings, sink, columns = if (narrow) 2 else 4)
                 TextSizeSection(settings, sink)
+                if (solidOffered) SolidLetteringRow(solidLettering, onTurnOnSolid, onOpenAppInfo, stacked = narrow)
                 YourAiSection(drafts, sayHi, Modifier.bringIntoViewRequester(aiRequester))
 
                 Spacer(Modifier.height(28.dp))
@@ -267,6 +274,58 @@ private fun TextSizeSection(settings: AppSettings, sink: SettingsSink) {
     )
     Spacer(Modifier.height(6.dp))
     Helper("How big I letter the English on the page.")
+}
+
+/**
+ * Under Look: whether the lettering is solid, and when it is not, the way
+ * to switch it on — the same trip to Accessibility as the optional setup
+ * step, with App info a tap away for a switch Android has greyed out.
+ * [stacked] puts the button under the words, for a narrow screen or large
+ * text.
+ */
+@Composable
+private fun SolidLetteringRow(on: Boolean, onTurnOn: () -> Unit, onOpenAppInfo: () -> Unit, stacked: Boolean) {
+    val pop = LocalPop.current
+    Spacer(Modifier.height(16.dp))
+    PopSurface(Modifier.fillMaxWidth(), RoundedCornerShape(20.dp), color = pop.surface) {
+        val words: @Composable (Modifier) -> Unit = { m ->
+            Column(m) {
+                Text(
+                    if (on) "Solid lettering · on ✓" else "Solid lettering · off",
+                    style = MaterialTheme.typography.titleMedium,
+                    color = pop.ink,
+                )
+                Spacer(Modifier.height(2.dp))
+                Helper(
+                    if (on) "Nothing of the original shows through my English."
+                    else "The original shows faintly under my English. Switch MangaLens on in Accessibility."
+                )
+            }
+        }
+        val button: @Composable (Modifier) -> Unit = { m ->
+            StickerButton(
+                "Turn on ↗", onTurnOn, modifier = m, style = StickerStyle.Surface, height = 48.dp,
+                fillWidth = stacked, contentDescription = "Turn on solid lettering in Accessibility",
+            )
+        }
+        when {
+            on -> words(Modifier.fillMaxWidth().padding(16.dp))
+            stacked -> Column(Modifier.fillMaxWidth().padding(16.dp)) {
+                words(Modifier)
+                Spacer(Modifier.height(12.dp))
+                button(Modifier)
+            }
+            else -> Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                words(Modifier.weight(1f))
+                Spacer(Modifier.width(12.dp))
+                button(Modifier)
+            }
+        }
+    }
+    if (!on && Build.VERSION.SDK_INT >= 33) {
+        Spacer(Modifier.height(4.dp))
+        TextLink("Greyed out? Allow it in App info ↗", onOpenAppInfo)
+    }
 }
 
 /**
