@@ -141,7 +141,7 @@ class SettingsTest {
     }
 
     @Test
-    fun `invalid legacy provider safely migrates to the default provider`() {
+    fun `invalid legacy provider safely migrates to the provider old builds defaulted to`() {
         val old = preferencesOf(
             providerKey to "REMOVED_PROVIDER",
             legacyApiKey to "old-key",
@@ -178,6 +178,55 @@ class SettingsTest {
         assertEquals("", settings.apiKey)
         assertEquals("custom-model", settings.model)
         assertFalse(legacyApiKey in migrated.settings)
+    }
+
+    @Test
+    fun `a new install reads with gemini`() {
+        assertEquals(LlmProvider.GEMINI, AppSettings().provider)
+        assertEquals(LlmProvider.GEMINI, settingsFromPreferences(preferencesOf()).provider)
+    }
+
+    @Test
+    fun `an install set up under the old default keeps its anthropic key`() {
+        // Old builds defaulted to Anthropic without saving it: the key sits
+        // in the Anthropic slot with no provider beside it.
+        val credentials = preferencesOf(apiKey(LlmProvider.ANTHROPIC) to "anthropic-key")
+        val settings = settingsFromPreferences(preferencesOf(), credentials)
+        assertEquals(LlmProvider.ANTHROPIC, settings.provider)
+        assertEquals("anthropic-key", settings.apiKey)
+
+        val modelOnly = settingsFromPreferences(preferencesOf(modelKey(LlmProvider.ANTHROPIC) to "claude-model"))
+        assertEquals(LlmProvider.ANTHROPIC, modelOnly.provider)
+        assertEquals("claude-model", modelOnly.model)
+    }
+
+    @Test
+    fun `a saved provider wins, and a cleared anthropic key does not hold on to the old default`() {
+        val credentials = preferencesOf(
+            apiKey(LlmProvider.ANTHROPIC) to "anthropic-key",
+            apiKey(LlmProvider.GEMINI) to "gemini-key",
+        )
+        val chosen = settingsFromPreferences(preferencesOf(providerKey to LlmProvider.GEMINI.name), credentials)
+        assertEquals(LlmProvider.GEMINI, chosen.provider)
+        assertEquals("gemini-key", chosen.apiKey)
+
+        val cleared = settingsFromPreferences(preferencesOf(), preferencesOf(apiKey(LlmProvider.ANTHROPIC) to ""))
+        assertEquals(LlmProvider.GEMINI, cleared.provider)
+    }
+
+    @Test
+    fun `the retired engine choice is ignored whatever it says`() {
+        for (old in listOf("GOOGLE", "MLKIT", "LLM", "SOMETHING_NEWER")) {
+            val stored = preferencesOf(
+                stringPreferencesKey("engine") to old,
+                providerKey to LlmProvider.OPENAI.name,
+            )
+            val credentials = preferencesOf(apiKey(LlmProvider.OPENAI) to "openai-key")
+            val settings = settingsFromPreferences(stored, credentials)
+            assertEquals(LlmProvider.OPENAI, settings.provider)
+            assertEquals("openai-key", settings.apiKey)
+        }
+        assertEquals(AppSettings(), settingsFromPreferences(preferencesOf(stringPreferencesKey("engine") to "GOOGLE")))
     }
 
     @Test

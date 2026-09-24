@@ -115,7 +115,7 @@ data class RenderBubble(
  *   the original's own colours and outline, at the original's size. The
  *   rounded card this replaces was the loudest "this is an AI overlay"
  *   signal left on a translated page.
- * - Without a patch (drafts, providers that do not erase) dialogue keeps
+ * - Without a patch (providers that do not erase) dialogue keeps
  *   the card — the original is still there, and a card is better than two
  *   languages interleaved — while a sound effect is lettered as one, big
  *   and outlined over its own spot, since a caption box on the art reads

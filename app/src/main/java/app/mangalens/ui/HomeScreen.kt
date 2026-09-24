@@ -1,521 +1,323 @@
 package app.mangalens.ui
 
+import android.content.Context
 import android.os.Build
-
+import android.view.ViewGroup
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.EnterTransition
+import androidx.compose.animation.ExitTransition
+import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInVertically
+import androidx.compose.animation.slideOutVertically
+import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
-import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.gestures.detectTapGestures
+import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ColumnScope
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.heightIn
+import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.rememberScrollState
-import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
-import androidx.compose.foundation.text.KeyboardOptions
 import androidx.compose.foundation.verticalScroll
-import androidx.compose.material3.Button
-import androidx.compose.material3.Card
-import androidx.compose.material3.CardDefaults
-import androidx.compose.material3.DropdownMenu
-import androidx.compose.material3.DropdownMenuItem
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.BasicAlertDialog
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
 import androidx.compose.material3.MaterialTheme
-import androidx.compose.material3.OutlinedButton
-import androidx.compose.material3.OutlinedTextField
-import androidx.compose.material3.Slider
-import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
-import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.LocalView
+import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.semantics.clearAndSetSemantics
+import androidx.compose.ui.semantics.contentDescription
+import androidx.compose.ui.semantics.heading
+import androidx.compose.ui.semantics.liveRegion
+import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontWeight
-import androidx.compose.ui.text.input.KeyboardType
-import androidx.compose.ui.text.input.PasswordVisualTransformation
-import androidx.compose.ui.text.input.VisualTransformation
+import androidx.compose.ui.text.style.LineBreak
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.DialogWindowProvider
 import app.mangalens.capture.ScreenCaptureService
-import app.mangalens.settings.AiReasoning
-import app.mangalens.settings.AiVisionMode
 import app.mangalens.settings.AppSettings
 import app.mangalens.settings.CaptureMode
-import app.mangalens.settings.EngineKind
-import app.mangalens.settings.LlmProvider
 import app.mangalens.settings.SettingsRepository
-import app.mangalens.settings.SourceLang
-import app.mangalens.translate.GoogleFreeEngine
-import app.mangalens.translate.LlmEngine
-import app.mangalens.translate.MlKitEngine
-import app.mangalens.translate.ModelCatalog
+import app.mangalens.translate.LlmHttp
 import app.mangalens.update.UpdateChecker
+import kotlin.math.PI
+import kotlin.math.cos
+import kotlin.math.sin
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 
+/** Everything the home screen shows, as plain values; see [HomeContent]. */
+@Immutable
+internal data class HomeUiState(
+    /** Null until the settings store has answered; nothing but paper shows until then. */
+    val settings: AppSettings?,
+    val running: Boolean = false,
+    val paused: Boolean = false,
+    val overlayGranted: Boolean = false,
+    /** "Brave" when it is installed, else null and the copy says "your browser". */
+    val browserName: String? = null,
+    /** The last GO ended at the screen-capture dialog's Cancel. */
+    val startRefused: Boolean = false,
+    val update: UpdateChecker.Update? = null,
+    val versionName: String = "",
+)
+
+/** What the home screen asks the activity to do. */
+@Immutable
+internal class HomeActions(
+    val onStart: () -> Unit = {},
+    val onStop: () -> Unit = {},
+    val onGrantOverlay: () -> Unit = {},
+    val onTogglePause: () -> Unit = {},
+    val onOpenBrowser: () -> Unit = {},
+)
+
+private enum class Page { HOME, TWEAKS }
+
+/**
+ * The home screen: reads the settings store, the capture service and the
+ * system, and hands plain state to [HomeContent]. It holds no UI of its
+ * own, so every face of the screen can be rendered from a fixed state.
+ */
 @Composable
 fun HomeScreen(
     repo: SettingsRepository,
+    browserName: String?,
+    tweaksRequests: Int,
+    startRefused: Boolean,
     onStart: () -> Unit,
     onStop: () -> Unit,
     onGrantOverlay: () -> Unit,
+    onTogglePause: () -> Unit,
+    onOpenBrowser: () -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
-    val settings by repo.flow.collectAsState(initial = AppSettings())
+    val settings: AppSettings? by repo.flow.collectAsState(initial = null)
     val running by ScreenCaptureService.running.collectAsState()
+    val paused by ScreenCaptureService.pausedState.collectAsState()
 
-    var overlayGranted by remember {
-        mutableStateOf(android.provider.Settings.canDrawOverlays(context))
-    }
+    // Android 8.x reports a fresh overlay grant late, so this polls rather
+    // than trusting one check on resume. The same tick notices "Remove
+    // animations" being switched while the app is open.
+    var overlayGranted by remember { mutableStateOf(android.provider.Settings.canDrawOverlays(context)) }
+    var reducedMotion by remember { mutableStateOf(animationsOff(context)) }
     LaunchedEffect(Unit) {
         while (true) {
             overlayGranted = android.provider.Settings.canDrawOverlays(context)
+            reducedMotion = animationsOff(context)
             delay(1000)
         }
     }
 
+    // One anonymous check per app open; a sticker only when a newer release exists.
     var update by remember { mutableStateOf<UpdateChecker.Update?>(null) }
+    val versionName = remember {
+        runCatching { context.packageManager.getPackageInfo(context.packageName, 0).versionName }
+            .getOrNull().orEmpty()
+    }
     LaunchedEffect(Unit) {
-        val installed = runCatching {
-            context.packageManager.getPackageInfo(context.packageName, 0).versionName
-        }.getOrNull()
-        if (installed != null) {
+        if (versionName.isNotEmpty()) {
             update = UpdateChecker.check(
-                currentVersion = installed,
+                currentVersion = versionName,
                 sdkInt = Build.VERSION.SDK_INT,
                 signingTrack = UpdateChecker.installedSigningTrack(context),
             )
         }
     }
 
-    Surface(modifier = Modifier.fillMaxSize(), color = MaterialTheme.colorScheme.background) {
-        Column(
-            modifier = Modifier
-                .safeDrawingPadding()
-                .verticalScroll(rememberScrollState())
-                .padding(20.dp)
-        ) {
-            Header()
-            Spacer(Modifier.height(18.dp))
-            StatusCard(running, overlayGranted, onStart, onStop, onGrantOverlay)
-            Spacer(Modifier.height(14.dp))
-            update?.let {
-                UpdateCard(it)
-                Spacer(Modifier.height(14.dp))
-            }
-            EngineCard(settings, repo)
-            Spacer(Modifier.height(14.dp))
-            ReadingCard(settings, repo)
-            Spacer(Modifier.height(14.dp))
-            TipsCard()
-            Spacer(Modifier.height(24.dp))
-        }
+    val sink = remember(repo, scope) { RepoSink(scope, repo) }
+    val drafts = rememberAiDrafts(settings ?: AppSettings(), sink)
+    val sayHi = remember(scope) { SayHi(scope) }
+    val actions = remember(onStart, onStop, onGrantOverlay, onTogglePause, onOpenBrowser) {
+        HomeActions(onStart, onStop, onGrantOverlay, onTogglePause, onOpenBrowser)
+    }
+    CompositionLocalProvider(LocalReducedMotion provides reducedMotion) {
+        HomeContent(
+            state = HomeUiState(
+                settings = settings,
+                running = running,
+                paused = paused,
+                overlayGranted = overlayGranted,
+                browserName = browserName,
+                startRefused = startRefused,
+                update = update,
+                versionName = versionName,
+            ),
+            drafts = drafts,
+            sayHi = sayHi,
+            sink = sink,
+            actions = actions,
+            tweaksRequests = tweaksRequests,
+        )
     }
 }
 
-@Composable
-private fun Header() {
-    Row(verticalAlignment = Alignment.CenterVertically) {
-        Box(
-            modifier = Modifier
-                .size(46.dp)
-                .background(MaterialTheme.colorScheme.primary, CircleShape),
-            contentAlignment = Alignment.Center
-        ) {
-            Text("文A", color = MaterialTheme.colorScheme.onPrimary, fontWeight = FontWeight.Bold)
-        }
-        Spacer(Modifier.width(12.dp))
-        Column {
-            Text("MangaLens", style = MaterialTheme.typography.headlineSmall, fontWeight = FontWeight.Bold)
-            Text(
-                "Live manhwa · manga · manhua translation over any app",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-        }
-    }
-}
+private fun animationsOff(context: Context): Boolean = runCatching {
+    android.provider.Settings.Global.getFloat(
+        context.contentResolver, android.provider.Settings.Global.ANIMATOR_DURATION_SCALE, 1f,
+    ) == 0f
+}.getOrDefault(false)
 
+/**
+ * The whole home screen, from plain state. Owns only what the reader does
+ * on it: which page is up, the setup latch, the tip on show and the sound
+ * effect to play.
+ */
 @Composable
-private fun StatusCard(
-    running: Boolean,
-    overlayGranted: Boolean,
-    onStart: () -> Unit,
-    onStop: () -> Unit,
-    onGrantOverlay: () -> Unit,
+internal fun HomeContent(
+    state: HomeUiState,
+    drafts: AiDrafts,
+    sayHi: SayHi,
+    sink: SettingsSink,
+    actions: HomeActions,
+    tweaksRequests: Int = 0,
 ) {
-    Card(elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)) {
-        Column(Modifier.padding(16.dp)) {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Box(
-                    Modifier
-                        .size(10.dp)
-                        .background(
-                            if (running) MaterialTheme.colorScheme.secondary
-                            else MaterialTheme.colorScheme.outline,
-                            CircleShape
-                        )
-                )
-                Spacer(Modifier.width(8.dp))
-                Text(
-                    if (running) "Translating your screen" else "Not running",
-                    style = MaterialTheme.typography.titleMedium
-                )
-            }
-            Spacer(Modifier.height(10.dp))
-            if (!overlayGranted) {
-                Text(
-                    "Step 1 · Allow MangaLens to draw over other apps",
-                    style = MaterialTheme.typography.bodyMedium
-                )
-                Spacer(Modifier.height(8.dp))
-                OutlinedButton(onClick = onGrantOverlay) { Text("Grant overlay permission") }
-                Spacer(Modifier.height(10.dp))
-            }
-            if (running) {
-                Button(onClick = onStop, modifier = Modifier.fillMaxWidth()) { Text("Stop") }
-            } else {
-                Button(
-                    onClick = onStart,
-                    enabled = overlayGranted,
-                    modifier = Modifier.fillMaxWidth()
-                ) { Text(if (overlayGranted) "Start translating" else "Grant permission first") }
-            }
-            Spacer(Modifier.height(8.dp))
-            Text(
-                "Then open Brave and read. When you stop scrolling, bubbles are translated in place. " +
-                    "Tap the floating 文A button to switch translation on or off; long-press it for the quick menu (translate now, peek, settings).",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
+    val pop = LocalPop.current
+    val reduced = LocalReducedMotion.current
+    var page by rememberSaveable { mutableStateOf(Page.HOME) }
+    var target by rememberSaveable { mutableStateOf(TweaksTarget.TOP) }
+    var seenRequests by rememberSaveable { mutableIntStateOf(0) }
+    LaunchedEffect(tweaksRequests) {
+        if (tweaksRequests > 0 && tweaksRequests != seenRequests) {
+            seenRequests = tweaksRequests
+            target = TweaksTarget.TOP
+            page = Page.TWEAKS
         }
     }
-}
+    BackHandler(page == Page.TWEAKS) { page = Page.HOME }
+    val openTweaks: (TweaksTarget) -> Unit = {
+        target = it
+        page = Page.TWEAKS
+    }
 
-@Composable
-private fun SectionTitle(text: String) {
-    Text(text, style = MaterialTheme.typography.titleMedium, fontWeight = FontWeight.SemiBold)
-}
+    val settings = state.settings
+    val loaded = settings != null
+    val aiReady = settings != null && LlmHttp.setupNeeded(settings) == null && !sayHi.rejects(settings)
 
-@Composable
-private fun Chip(label: String, selected: Boolean, onClick: () -> Unit) {
-    Surface(
-        shape = RoundedCornerShape(50),
-        color = if (selected) MaterialTheme.colorScheme.primary
-        else MaterialTheme.colorScheme.surfaceVariant,
-        modifier = Modifier.clickable { onClick() }
+    // The latch: up whenever something is missing, down only on "All set" or a start.
+    var setupOpen by rememberSaveable { mutableStateOf(false) }
+    val needsSetup = loaded && !state.running && (!state.overlayGranted || !aiReady)
+    LaunchedEffect(needsSetup) { if (needsSetup) setupOpen = true }
+    LaunchedEffect(state.running) { if (state.running) setupOpen = false }
+    val stage = homeStage(loaded, state.running, state.paused, state.overlayGranted, aiReady, setupOpen)
+
+    // BOOP! on the edge into running — never when the screen opens on a running session.
+    var sfx by remember { mutableStateOf<SfxShot?>(null) }
+    var lastRunning by remember { mutableStateOf<Boolean?>(null) }
+    LaunchedEffect(state.running, loaded) {
+        if (!loaded) return@LaunchedEffect
+        if (lastRunning == false && state.running) sfx = SfxShot(SfxKind.BOOP)
+        lastRunning = state.running
+    }
+    // One tip index for every stage, so a stage change never snaps back
+    // to the first tip; a new mode starts its own list from the top.
+    var tipIndex by rememberSaveable(settings?.mode) { mutableIntStateOf(0) }
+
+    // The sticker already buzzed CONFIRM for the tap.
+    val onAllSet = {
+        sfx = SfxShot(SfxKind.KAPOW)
+        setupOpen = false
+    }
+
+    Box(
+        Modifier
+            .fillMaxSize()
+            .background(pop.paper)
+            .halftone(pop.dots, DotCorner.TopEnd, maxDot = pop.dotMax)
+            .halftone(pop.dots, DotCorner.BottomStart, maxDot = pop.dotMax)
     ) {
-        Text(
-            label,
-            modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp),
-            color = if (selected) MaterialTheme.colorScheme.onPrimary
-            else MaterialTheme.colorScheme.onSurfaceVariant,
-            fontSize = 13.sp
-        )
-    }
-}
-
-@Composable
-private fun EngineCard(settings: AppSettings, repo: SettingsRepository) {
-    val scope = rememberCoroutineScope()
-    var testResult by remember { mutableStateOf<String?>(null) }
-    var testing by remember { mutableStateOf(false) }
-    var keyDraft by remember(settings.provider) { mutableStateOf(settings.apiKey) }
-    var keyEdited by remember(settings.provider) { mutableStateOf(false) }
-    var modelDraft by remember(settings.provider) { mutableStateOf(settings.model) }
-    var modelEdited by remember(settings.provider) { mutableStateOf(false) }
-    var customUrlDraft by remember { mutableStateOf(settings.customUrl) }
-    var customUrlEdited by remember { mutableStateOf(false) }
-
-    LaunchedEffect(settings.provider, settings.apiKey) {
-        // collectAsState starts with defaults. Accept the first real DataStore
-        // value, but never echo an older write over text being typed.
-        if (!keyEdited) keyDraft = settings.apiKey
-    }
-    LaunchedEffect(settings.provider, settings.model) {
-        if (!modelEdited) modelDraft = settings.model
-    }
-    LaunchedEffect(settings.customUrl) {
-        if (!customUrlEdited) customUrlDraft = settings.customUrl
-    }
-    val draftSettings = settings.copy(
-        apiKey = keyDraft.trim(),
-        model = modelDraft.trim(),
-        customUrl = customUrlDraft.trim(),
-    )
-
-    Card(elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)) {
-        Column(Modifier.padding(16.dp)) {
-            SectionTitle("Translation engine")
-            Spacer(Modifier.height(10.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Chip("Free · Google", settings.engine == EngineKind.GOOGLE) {
-                    scope.launch { repo.setEngine(EngineKind.GOOGLE) }
-                }
-                Chip("AI Pro ✨", settings.engine == EngineKind.LLM) {
-                    scope.launch { repo.setEngine(EngineKind.LLM) }
-                }
-                Chip("Offline", settings.engine == EngineKind.MLKIT) {
-                    scope.launch { repo.setEngine(EngineKind.MLKIT) }
-                }
-            }
-            Spacer(Modifier.height(8.dp))
-            Text(
-                when (settings.engine) {
-                    EngineKind.GOOGLE -> "Works instantly, no setup. Solid everyday quality."
-                    EngineKind.LLM -> "Feels like an official release: the AI reads whole pages (even the raw image) with story memory, a name glossary, natural tone and honorifics. A fast draft appears instantly; the AI polish replaces it seconds later. Needs an API key — Gemini, the fastest, has a free one."
-                    EngineKind.MLKIT -> "100% offline after a one-time ~30 MB model download per language. Roughest quality of the three."
-                },
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant
-            )
-
-            if (settings.engine == EngineKind.LLM) {
-                Spacer(Modifier.height(12.dp))
-                ProviderPicker(settings, repo)
-                Spacer(Modifier.height(10.dp))
-                var showKey by remember(settings.provider) { mutableStateOf(false) }
-                OutlinedTextField(
-                    value = keyDraft,
-                    onValueChange = {
-                        keyDraft = it
-                        keyEdited = true
-                        val provider = settings.provider
-                        scope.launch { repo.setApiKey(provider, it.trim()) }
-                    },
-                    label = { Text(apiKeyLabel(settings.provider)) },
-                    singleLine = true,
-                    visualTransformation = if (showKey) VisualTransformation.None else PasswordVisualTransformation(),
-                    keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Password),
-                    trailingIcon = {
-                        Text(
-                            if (showKey) "hide" else "show",
-                            modifier = Modifier
-                                .clickable { showKey = !showKey }
-                                .padding(end = 10.dp),
-                            fontSize = 12.sp,
-                            color = MaterialTheme.colorScheme.primary
-                        )
-                    },
-                    modifier = Modifier.fillMaxWidth()
-                )
-                Spacer(Modifier.height(8.dp))
-                OutlinedTextField(
-                    value = modelDraft,
-                    onValueChange = {
-                        modelDraft = it
-                        modelEdited = true
-                        val provider = settings.provider
-                        scope.launch { repo.setModel(provider, it.trim()) }
-                    },
-                    label = { Text("Model (blank = ${draftSettings.copy(model = "").effectiveModel()})") },
-                    singleLine = true,
-                    modifier = Modifier.fillMaxWidth()
-                )
-                if (settings.provider == LlmProvider.GEMINI) {
-                    Spacer(Modifier.height(6.dp))
-                    GeminiModelRow(apiKey = keyDraft.trim()) { picked ->
-                        modelDraft = picked
-                        modelEdited = true
-                        val provider = settings.provider
-                        scope.launch { repo.setModel(provider, picked) }
-                    }
-                }
-                if (settings.provider == LlmProvider.CUSTOM) {
-                    Spacer(Modifier.height(8.dp))
-                    OutlinedTextField(
-                        value = customUrlDraft,
-                        onValueChange = {
-                            customUrlDraft = it
-                            customUrlEdited = true
-                            scope.launch { repo.setCustomUrl(it.trim()) }
-                        },
-                        label = { Text("Chat-completions endpoint URL") },
-                        singleLine = true,
-                        modifier = Modifier.fillMaxWidth()
+        if (settings == null) return@Box
+        AnimatedContent(
+            targetState = page,
+            transitionSpec = {
+                when {
+                    reduced -> EnterTransition.None togetherWith ExitTransition.None
+                    targetState == Page.TWEAKS ->
+                        (slideInVertically(tween(260)) { it } + fadeIn(tween(220))) togetherWith fadeOut(tween(180))
+                    else -> fadeIn(tween(220)) togetherWith (slideOutVertically(tween(260)) { it } + fadeOut(tween(180)))
+                }.apply { targetContentZIndex = if (targetState == Page.TWEAKS) 1f else 0f }
+            },
+            label = "page",
+        ) { p ->
+            when (p) {
+                // Dots only at the bottom here: behind the header they sat
+                // under the title and subtitle and made the small text noisy.
+                Page.TWEAKS -> Box(
+                    Modifier
+                        .fillMaxSize()
+                        .background(pop.paper)
+                        .halftone(pop.dots, DotCorner.BottomStart, maxDot = pop.dotMax)
+                ) {
+                    TweaksPage(
+                        settings = settings,
+                        sink = sink,
+                        drafts = drafts,
+                        sayHi = sayHi,
+                        target = target,
+                        versionName = state.versionName,
+                        onClose = { page = Page.HOME },
                     )
                 }
-                Spacer(Modifier.height(12.dp))
-                Text("AI Vision — let the AI read the raw page image", style = MaterialTheme.typography.bodyMedium)
-                Spacer(Modifier.height(6.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Chip("AI Vision (recommended)", settings.aiVision != AiVisionMode.OFF) {
-                        scope.launch { repo.setAiVision(AiVisionMode.AUTO) }
-                    }
-                    Chip("Text only", settings.aiVision == AiVisionMode.OFF) {
-                        scope.launch { repo.setAiVision(AiVisionMode.OFF) }
-                    }
-                }
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    if (settings.aiVision != AiVisionMode.OFF)
-                        "The AI reads the page image itself — catches handwriting, stylized lettering and anything OCR misses, in manhwa and manga alike (~150–300 KB per page, less with Data saver). Falls back to text-only, then Google, automatically."
-                    else
-                        "Only OCR'd text is sent (a few KB). Best for very slow internet; stylized lettering depends on on-device OCR.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(Modifier.height(10.dp))
-                Text("AI reasoning — how long the model may think per page", style = MaterialTheme.typography.bodyMedium)
-                Spacer(Modifier.height(6.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Chip("Fast", settings.aiReasoning == AiReasoning.FAST) {
-                        scope.launch { repo.setAiReasoning(AiReasoning.FAST) }
-                    }
-                    Chip("Balanced", settings.aiReasoning == AiReasoning.BALANCED) {
-                        scope.launch { repo.setAiReasoning(AiReasoning.BALANCED) }
-                    }
-                    Chip("Thorough", settings.aiReasoning == AiReasoning.THOROUGH) {
-                        scope.launch { repo.setAiReasoning(AiReasoning.THOROUGH) }
-                    }
-                }
-                Spacer(Modifier.height(6.dp))
-                Text(
-                    when (settings.aiReasoning) {
-                        AiReasoning.FAST -> "Least thinking the model allows: the polish lands soonest. Fine for clean, horizontal lettering."
-                        AiReasoning.BALANCED -> "A little thinking on the page image, the least on text. Balloons stream in one by one either way."
-                        AiReasoning.THOROUGH -> "The model's full reasoning depth: best speaker attribution and hard lettering, at a longer wait for the first balloon."
-                    },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(Modifier.height(8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Chip("Data saver — smaller page uploads", settings.dataSaver) {
-                        scope.launch { repo.setDataSaver(!settings.dataSaver) }
-                    }
-                }
-                if (settings.provider == LlmProvider.GEMINI) {
-                    Spacer(Modifier.height(8.dp))
-                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Chip("AI redraw of art under text (optional)", settings.aiCleanup) {
-                            scope.launch { repo.setAiCleanup(!settings.aiCleanup) }
-                        }
-                    }
-                    Text(
-                        "Cleaning always happens on your device. This extra step asks an image model to redraw detailed art under text drawn on it — an image request per page that needs one, and often refused on explicit art (the local cleaning then stays).",
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.onSurfaceVariant
-                    )
-                }
-                Spacer(Modifier.height(8.dp))
-                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Chip("Diagnostics — show what was detected", settings.diagnostics) {
-                        scope.launch { repo.setDiagnostics(!settings.diagnostics) }
-                    }
-                }
-                Text(
-                    "Outlines every balloon found and keeps a status line up: " +
-                        "ocr (text lines read) · balloons (found in the page) · " +
-                        "regions (sent to translate) · cards (painted). " +
-                        "If a balloon is untranslated, this says which step lost it.",
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                Spacer(Modifier.height(10.dp))
-                val uriHandler = LocalUriHandler.current
-                val keyHelp = providerKeyHelp(settings.provider)
-                Text(
-                    keyHelp.message,
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
-                )
-                keyHelp.url?.let { url ->
-                    Text(
-                        keyHelp.linkLabel,
-                        modifier = Modifier
-                            .clickable { uriHandler.openUri(url) }
-                            .padding(vertical = 4.dp),
-                        style = MaterialTheme.typography.bodySmall,
-                        color = MaterialTheme.colorScheme.primary,
-                        fontWeight = FontWeight.SemiBold
-                    )
-                }
-            }
-
-            Spacer(Modifier.height(12.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                OutlinedButton(
-                    enabled = !testing,
-                    onClick = {
-                        testing = true
-                        testResult = null
-                        scope.launch {
-                            testResult = try {
-                                val sample = listOf("괜찮아. 내가 지켜줄게.")
-                                val out = when (settings.engine) {
-                                    EngineKind.LLM -> LlmEngine(draftSettings).translate(sample, SourceLang.KO)
-                                    EngineKind.MLKIT -> MlKitEngine().translate(sample, SourceLang.KO)
-                                    EngineKind.GOOGLE -> GoogleFreeEngine().translate(sample, SourceLang.KO)
-                                }
-                                "“괜찮아. 내가 지켜줄게.” → “" + out.first() + "”"
-                            } catch (e: Exception) {
-                                "⚠ " + (e.message ?: "failed")
-                            } finally {
-                                testing = false
-                            }
-                        }
-                    }
-                ) { Text(if (testing) "Testing…" else "Test translation") }
-            }
-            testResult?.let {
-                Spacer(Modifier.height(6.dp))
-                Text(it, style = MaterialTheme.typography.bodySmall)
-            }
-        }
-    }
-}
-
-@Composable
-private fun ProviderPicker(settings: AppSettings, repo: SettingsRepository) {
-    val scope = rememberCoroutineScope()
-    var open by remember { mutableStateOf(false) }
-    Box {
-        OutlinedButton(onClick = { open = true }) {
-            Text(
-                "Provider: " + when (settings.provider) {
-                    LlmProvider.ANTHROPIC -> "Anthropic Claude"
-                    LlmProvider.OPENAI -> "OpenAI"
-                    LlmProvider.GEMINI -> "Google Gemini (recommended)"
-                    LlmProvider.OPENROUTER -> "OpenRouter"
-                    LlmProvider.CUSTOM -> "Custom endpoint"
-                }
-            )
-        }
-        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-            LlmProvider.entries.forEach { p ->
-                DropdownMenuItem(
-                    text = {
-                        Text(
-                            when (p) {
-                                LlmProvider.ANTHROPIC -> "Anthropic Claude"
-                                LlmProvider.OPENAI -> "OpenAI"
-                                LlmProvider.GEMINI -> "Google Gemini (recommended — fastest, free tier)"
-                                LlmProvider.OPENROUTER -> "OpenRouter"
-                                LlmProvider.CUSTOM -> "Custom OpenAI-compatible endpoint"
-                            }
-                        )
-                    },
-                    onClick = {
-                        open = false
-                        scope.launch { repo.setProvider(p) }
-                    }
+                Page.HOME -> HomePage(
+                    state, settings, stage, aiReady, drafts, sayHi, actions, sfx,
+                    tip = tipIndex,
+                    onNextTip = { tipIndex++ },
+                    onAllSet = onAllSet,
+                    openTweaks = openTweaks,
                 )
             }
         }
@@ -523,246 +325,494 @@ private fun ProviderPicker(settings: AppSettings, repo: SettingsRepository) {
 }
 
 @Composable
-private fun LabeledSlider(
-    label: String,
-    value: Float,
-    range: ClosedFloatingPointRange<Float>,
-    display: (Float) -> String,
-    onCommit: (Float) -> Unit,
+private fun HomePage(
+    state: HomeUiState,
+    settings: AppSettings,
+    stage: Stage,
+    aiReady: Boolean,
+    drafts: AiDrafts,
+    sayHi: SayHi,
+    actions: HomeActions,
+    sfx: SfxShot?,
+    tip: Int,
+    onNextTip: () -> Unit,
+    onAllSet: () -> Unit,
+    openTweaks: (TweaksTarget) -> Unit,
 ) {
-    var v by remember(value) { mutableFloatStateOf(value) }
-    Column {
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
-            Text(label, style = MaterialTheme.typography.bodyMedium)
-            Text(
-                display(v),
-                style = MaterialTheme.typography.bodyMedium,
-                color = MaterialTheme.colorScheme.primary
-            )
+    val reduced = LocalReducedMotion.current
+    val uri = LocalUriHandler.current
+    var dialog by remember { mutableStateOf(false) }
+    val browser = state.browserName ?: "your browser"
+    val summary = tweaksSummary(settings)
+
+    val tips = tipsFor(settings.mode)
+    val tipBalloon: @Composable () -> Unit = {
+        TipBalloon(tips, tip, onNextTip, fukiLook(stage))
+    }
+    BoxWithConstraints(Modifier.fillMaxSize()) {
+        val content = minOf(maxWidth, 520.dp) - 40.dp
+        val landscape = maxWidth > maxHeight * 1.2f && maxHeight < 600.dp
+        // The stage is 1.7 Fuki wide, room for the burst's longest spikes.
+        val diameter = if (landscape) minOf(maxHeight * 0.5f, 190.dp)
+        else minOf(content / 1.7f, maxHeight * 0.28f).coerceIn(150.dp, 230.dp)
+
+        val setup = stage == Stage.SETUP
+        AnimatedContent(
+            targetState = setup,
+            transitionSpec = {
+                if (reduced) EnterTransition.None togetherWith ExitTransition.None
+                else fadeIn(tween(220)) togetherWith fadeOut(tween(150))
+            },
+            label = "setup",
+        ) { isSetup ->
+            if (isSetup) {
+                ScrollColumn {
+                    TopRow(state.update) { dialog = true }
+                    Spacer(Modifier.height(8.dp))
+                    SetupChecklist(
+                        settings = settings,
+                        drafts = drafts,
+                        sayHi = sayHi,
+                        overlayGranted = state.overlayGranted,
+                        aiReady = aiReady,
+                        browser = browser,
+                        onGrantOverlay = actions.onGrantOverlay,
+                        onOpenAiTweaks = { openTweaks(TweaksTarget.AI) },
+                        onAllSet = onAllSet,
+                    )
+                    Spacer(Modifier.height(20.dp))
+                    TweaksSticker(summary) { openTweaks(TweaksTarget.TOP) }
+                    Spacer(Modifier.height(24.dp))
+                }
+            } else if (landscape) {
+                Row(Modifier.fillMaxSize().safeDrawingPadding()) {
+                    Box(Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.Center) {
+                        PlayFuki(stage, diameter, sfx, actions, state.startRefused)
+                    }
+                    Column(
+                        Modifier
+                            .weight(1.2f)
+                            .fillMaxHeight()
+                            .imePadding()
+                            .verticalScroll(rememberScrollState())
+                            .padding(horizontal = 20.dp)
+                    ) {
+                        TopRow(state.update) { dialog = true }
+                        PlayHeadline(stage, state.startRefused)
+                        Spacer(Modifier.height(8.dp))
+                        PlayBody(stage, state, settings, aiReady, browser, actions, openTweaks, tipBalloon)
+                        Spacer(Modifier.height(20.dp))
+                        TweaksSticker(summary) { openTweaks(TweaksTarget.TOP) }
+                        Spacer(Modifier.height(24.dp))
+                    }
+                }
+            } else {
+                FillingColumn {
+                    TopRow(state.update) { dialog = true }
+                    // The spare height goes a third above the headline and
+                    // the rest above Tweaks, so the stage sits mid-screen and
+                    // Tweaks sits low, where a thumb reaches it.
+                    Spacer(Modifier.weight(0.35f))
+                    PlayHeadline(stage, state.startRefused)
+                    Spacer(Modifier.height(8.dp))
+                    PlayFuki(stage, diameter, sfx, actions, state.startRefused, Modifier.align(Alignment.CenterHorizontally))
+                    Spacer(Modifier.height(8.dp))
+                    PlayBody(stage, state, settings, aiReady, browser, actions, openTweaks, tipBalloon)
+                    Spacer(Modifier.weight(0.65f))
+                    Spacer(Modifier.height(20.dp))
+                    TweaksSticker(summary) { openTweaks(TweaksTarget.TOP) }
+                    Spacer(Modifier.height(24.dp))
+                }
+            }
         }
-        Slider(
-            value = v,
-            onValueChange = { v = it },
-            valueRange = range,
-            onValueChangeFinished = { onCommit(v) }
-        )
+    }
+
+    val update = state.update
+    if (dialog && update != null) {
+        UpdateDialog(update, onDownload = {
+            dialog = false
+            uri.openUri(update.url)
+        }, onDismiss = { dialog = false })
     }
 }
 
 @Composable
-private fun ReadingCard(settings: AppSettings, repo: SettingsRepository) {
-    val scope = rememberCoroutineScope()
-    Card(elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)) {
-        Column(Modifier.padding(16.dp)) {
-            SectionTitle("Reading")
-            Spacer(Modifier.height(10.dp))
-            Text("Source language", style = MaterialTheme.typography.bodyMedium)
-            Spacer(Modifier.height(6.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Chip("Auto", settings.sourceLang == SourceLang.AUTO) {
-                    scope.launch { repo.setSourceLang(SourceLang.AUTO) }
-                }
-                Chip("한국어", settings.sourceLang == SourceLang.KO) {
-                    scope.launch { repo.setSourceLang(SourceLang.KO) }
-                }
-                Chip("日本語", settings.sourceLang == SourceLang.JA) {
-                    scope.launch { repo.setSourceLang(SourceLang.JA) }
-                }
-                Chip("中文", settings.sourceLang == SourceLang.ZH) {
-                    scope.launch { repo.setSourceLang(SourceLang.ZH) }
-                }
-            }
-            Spacer(Modifier.height(12.dp))
-            Text("Mode", style = MaterialTheme.typography.bodyMedium)
-            Spacer(Modifier.height(6.dp))
-            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                Chip("Auto-live (hands-free)", settings.mode == CaptureMode.AUTO) {
-                    scope.launch { repo.setMode(CaptureMode.AUTO) }
-                }
-                Chip("Tap to translate", settings.mode == CaptureMode.MANUAL) {
-                    scope.launch { repo.setMode(CaptureMode.MANUAL) }
-                }
-            }
-            Spacer(Modifier.height(14.dp))
-            LabeledSlider(
-                "Reaction time",
-                settings.stabilityMs.toFloat(),
-                200f..900f,
-                { "${it.toInt()} ms" },
-            ) { scope.launch { repo.setStabilityMs(it.toInt()) } }
-            LabeledSlider(
-                "Text size",
-                settings.textScale,
-                0.8f..1.5f,
-                { "${(it * 100).toInt()}%" },
-            ) { scope.launch { repo.setTextScale(it) } }
-            LabeledSlider(
-                "Ignore top of screen (browser bar)",
-                settings.ignoreTopPct,
-                0f..0.15f,
-                { "${(it * 100).toInt()}%" },
-            ) { scope.launch { repo.setIgnoreTopPct(it) } }
+private fun ScrollColumn(content: @Composable ColumnScope.() -> Unit) {
+    Column(
+        Modifier
+            .fillMaxSize()
+            .safeDrawingPadding()
+            .imePadding()
+            .verticalScroll(rememberScrollState())
+            .padding(horizontal = 20.dp),
+        horizontalAlignment = Alignment.CenterHorizontally,
+    ) {
+        Column(Modifier.widthIn(max = 520.dp).fillMaxWidth(), content = content)
+    }
+}
+
+/**
+ * A scrolling column at least as tall as the screen, so weighted spacers
+ * inside it share out the spare height on a tall phone and shrink to
+ * nothing when the content (or a large font) needs every pixel.
+ */
+@Composable
+private fun FillingColumn(content: @Composable ColumnScope.() -> Unit) {
+    BoxWithConstraints(Modifier.fillMaxSize().safeDrawingPadding()) {
+        val viewport = maxHeight
+        Column(
+            Modifier
+                .fillMaxSize()
+                .imePadding()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Column(Modifier.widthIn(max = 520.dp).fillMaxWidth().heightIn(min = viewport), content = content)
+        }
+    }
+}
+
+@Composable
+private fun TopRow(update: UpdateChecker.Update?, onUpdate: () -> Unit) {
+    val pop = LocalPop.current
+    Row(Modifier.fillMaxWidth().heightIn(min = 56.dp), verticalAlignment = Alignment.CenterVertically) {
+        MiniMark()
+        Spacer(Modifier.width(8.dp))
+        Text(
+            "MangaLens",
+            style = MaterialTheme.typography.titleLarge,
+            color = pop.ink,
+            modifier = Modifier.semantics { heading() },
+        )
+        Spacer(Modifier.weight(1f))
+        if (update != null) UpdateSticker(update, onUpdate)
+    }
+}
+
+@Composable
+private fun PlayHeadline(stage: Stage, startRefused: Boolean) {
+    val pop = LocalPop.current
+    val reduced = LocalReducedMotion.current
+    val text = when (stage) {
+        Stage.RUNNING -> "Reading along!"
+        Stage.PAUSED -> "Taking a nap."
+        else -> if (startRefused) "I can't read what I can't see!" else "Ready when you are!"
+    }
+    BoxWithConstraints(Modifier.fillMaxWidth()) {
+        val small = maxWidth < 360.dp
+        AnimatedContent(
+            targetState = text,
+            transitionSpec = {
+                if (reduced) EnterTransition.None togetherWith ExitTransition.None
+                else fadeIn(tween(220)) togetherWith fadeOut(tween(150))
+            },
+            modifier = Modifier.fillMaxWidth(),
+            label = "headline",
+        ) { t ->
+            val base = MaterialTheme.typography.headlineLarge.copy(lineBreak = LineBreak.Heading)
+            Text(
+                t,
+                style = if (small) base.copy(fontSize = 34.sp, lineHeight = 38.sp) else base,
+                color = pop.ink,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth().semantics { heading() },
+            )
         }
     }
 }
 
 /**
- * Quiet update banner for a sideloaded app: one anonymous check per app open,
- * a card only when a newer release exists, and a button that opens the exact
- * APK asset for this install's signing history. The browser still owns the
- * download and Android still asks the user before installing it.
+ * The one big button. Paused, a tap wakes Fuki up rather than stopping: a
+ * napping face invites a poke, and a poke that ended the session would
+ * also throw away the screen-share grant. Stop has its own sticker below.
  */
 @Composable
-private fun UpdateCard(update: UpdateChecker.Update) {
-    val uriHandler = LocalUriHandler.current
-    Card(colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.primaryContainer)) {
+private fun PlayFuki(
+    stage: Stage,
+    diameter: Dp,
+    sfx: SfxShot?,
+    actions: HomeActions,
+    refused: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    FukiStage(
+        stage = stage,
+        diameter = diameter,
+        sfx = sfx,
+        onClick = {
+            when (stage) {
+                Stage.READY -> actions.onStart()
+                Stage.RUNNING -> actions.onStop()
+                Stage.PAUSED -> actions.onTogglePause()
+                else -> Unit
+            }
+        },
+        modifier = modifier,
+        worried = stage == Stage.READY && refused,
+    )
+}
+
+/** The caption, the stage's buttons and the tip: everything under Fuki that changes with the stage. */
+@Composable
+private fun PlayBody(
+    stage: Stage,
+    state: HomeUiState,
+    settings: AppSettings,
+    aiReady: Boolean,
+    browser: String,
+    actions: HomeActions,
+    openTweaks: (TweaksTarget) -> Unit,
+    tipBalloon: @Composable () -> Unit,
+) {
+    val pop = LocalPop.current
+    val reduced = LocalReducedMotion.current
+    val handsFree = settings.mode == CaptureMode.AUTO
+    AnimatedContent(
+        targetState = stage,
+        transitionSpec = {
+            if (reduced) EnterTransition.None togetherWith ExitTransition.None
+            else fadeIn(tween(220)) togetherWith fadeOut(tween(150))
+        },
+        label = "body",
+    ) { s ->
+        Column(Modifier.fillMaxWidth()) {
+            val caption = when (s) {
+                Stage.RUNNING ->
+                    if (handsFree) "Scroll in $browser. When you stop, I translate. Tap the $MARK bubble to pause; hold it for more."
+                    else "Open a page in $browser, then tap the $MARK bubble to translate it. Hold it for more."
+                Stage.PAUSED -> "I'm napping. Tap me to wake up, or tap the $MARK bubble in $browser."
+                else ->
+                    if (state.startRefused) "⚠ Tap GO again and allow screen sharing. If Android offers a choice, pick “Entire screen”."
+                    else "Tap GO and allow screen sharing, then hop into $browser. When you stop scrolling, I letter the English right over the bubbles."
+            }
+            val refused = s == Stage.READY && state.startRefused
+            Text(
+                caption,
+                style = MaterialTheme.typography.bodyLarge,
+                color = if (refused) pop.punchText else pop.inkSoft,
+                textAlign = TextAlign.Center,
+                modifier = Modifier.fillMaxWidth(),
+            )
+            val openLabel = if (state.browserName != null) "Open ${state.browserName} ↗" else "Open my browser ↗"
+            when (s) {
+                Stage.RUNNING -> {
+                    if (!aiReady) {
+                        Spacer(Modifier.height(16.dp))
+                        StickerButton(
+                            "⚠ No AI key, so I can't translate. Add one →",
+                            { openTweaks(TweaksTarget.AI) },
+                            style = StickerStyle.Warn,
+                        )
+                    }
+                    Spacer(Modifier.height(16.dp))
+                    StickerButton(openLabel, actions.onOpenBrowser, height = 64.dp)
+                }
+                // Napping Fuki is the wake button, so nothing here is zap.
+                Stage.PAUSED -> {
+                    Spacer(Modifier.height(16.dp))
+                    StickerButton(openLabel, actions.onOpenBrowser, style = StickerStyle.Surface)
+                    Spacer(Modifier.height(12.dp))
+                    StickerButton("Stop translating", actions.onStop, style = StickerStyle.Surface)
+                }
+                else -> Unit
+            }
+            Spacer(Modifier.height(16.dp))
+            tipBalloon()
+        }
+    }
+}
+
+/**
+ * Fuki's tips, one at a time; a tap shows the next. A small Fuki sits at
+ * the balloon's tail so the tip is plainly Fuki talking, and the balloon
+ * sinks into its shadow when tapped, like any other sticker.
+ */
+@Composable
+private fun TipBalloon(tips: List<String>, index: Int, onNext: () -> Unit, look: FukiLook) {
+    val pop = LocalPop.current
+    val reduced = LocalReducedMotion.current
+    val view = LocalView.current
+    val interaction = remember { MutableInteractionSource() }
+    val sink = rememberSink(interaction)
+    Row(
+        Modifier
+            .fillMaxWidth()
+            .clickable(interaction, indication = null, role = Role.Button, onClickLabel = "Next tip") {
+                view.buzz(Buzz.TICK)
+                onNext()
+            }
+            .semantics { liveRegion = LiveRegionMode.Polite },
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        FukiAvatar(look)
+        Spacer(Modifier.width(2.dp))
+        SpeechBalloon(
+            pop.zapSoft,
+            Modifier.weight(1f),
+            tail = Tail.Start,
+            tailAt = 0.5f,
+            strokeColor = pop.zapSoftStroke,
+            sunk = { sink.value },
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                AnimatedContent(
+                    targetState = index,
+                    transitionSpec = {
+                        if (reduced) EnterTransition.None togetherWith ExitTransition.None
+                        else (fadeIn(tween(200)) + slideInVertically(tween(200)) { it / 4 }) togetherWith fadeOut(tween(120))
+                    },
+                    modifier = Modifier.weight(1f),
+                    label = "tip",
+                ) { i ->
+                    Text(tips[i % tips.size], style = MaterialTheme.typography.bodyLarge, color = pop.ink)
+                }
+                Spacer(Modifier.width(8.dp))
+                Text("›", style = MaterialTheme.typography.titleLarge, color = pop.punchText, modifier = Modifier.clearAndSetSemantics { })
+            }
+        }
+    }
+}
+
+/** The door to every setting, with the three that matter most summed up on it. */
+@Composable
+internal fun TweaksSticker(summary: String, onClick: () -> Unit) {
+    val pop = LocalPop.current
+    val interaction = remember { MutableInteractionSource() }
+    val sink = rememberSink(interaction)
+    PopSurface(Modifier.fillMaxWidth(), RoundedCornerShape(20.dp), color = pop.surface, sunk = { sink.value }) {
         Row(
             Modifier
-                .fillMaxWidth()
-                .padding(horizontal = 16.dp, vertical = 12.dp),
-            verticalAlignment = Alignment.CenterVertically
+                .clickable(interaction, indication = null, role = Role.Button, onClick = onClick)
+                .clearAndSetSemantics { contentDescription = "Tweaks: $summary" }
+                .heightIn(min = 64.dp)
+                .padding(horizontal = 16.dp, vertical = 10.dp),
+            verticalAlignment = Alignment.CenterVertically,
         ) {
+            Icon(Icons.Filled.Settings, contentDescription = null, tint = pop.ink, modifier = Modifier.size(24.dp))
+            Spacer(Modifier.width(12.dp))
             Column(Modifier.weight(1f)) {
-                Text("Update available", fontWeight = FontWeight.SemiBold)
+                Text("Tweaks", style = MaterialTheme.typography.titleMedium, color = pop.ink)
+                Text(summary, style = MaterialTheme.typography.bodyMedium, color = pop.inkSoft)
+            }
+            Spacer(Modifier.width(8.dp))
+            Text("›", style = MaterialTheme.typography.titleLarge, color = pop.ink)
+        }
+    }
+}
+
+/** The body of the update dialog, a sticker card like everything else, with a NEW! burst slapped on its corner. */
+@Composable
+internal fun UpdateDialogCard(update: UpdateChecker.Update, onDownload: () -> Unit, onLater: () -> Unit) {
+    val pop = LocalPop.current
+    Box {
+        PopSurface(Modifier.fillMaxWidth(), RoundedCornerShape(20.dp), color = pop.surface) {
+            Column(Modifier.padding(start = 24.dp, end = 24.dp, top = 24.dp, bottom = 8.dp)) {
+                Text(
+                    "MangaLens ${update.version} is out!",
+                    style = MaterialTheme.typography.titleLarge.copy(lineBreak = LineBreak.Heading),
+                    color = pop.ink,
+                    modifier = Modifier.padding(end = 40.dp).semantics { heading() },
+                )
+                Spacer(Modifier.height(8.dp))
                 Text(
                     when {
                         update.requiresReinstall ->
-                            "MangaLens ${update.version} is out, but this installation cannot join the official signing key in place. Record any API keys, download the APK, uninstall MangaLens, then install it. API keys will be cleared."
+                            "This install can't update in place. Write down your API key, download the APK, uninstall MangaLens, then install the new one. Your API key will be cleared."
                         update.legacyBridge ->
-                            "MangaLens ${update.version} is out. This one-time compatible APK keeps your data while moving 0.9.1 to the private release key."
-                        else -> "MangaLens ${update.version} is out."
+                            "This one-time bridge APK keeps your data while moving 0.9.1 to the private release key."
+                        else -> "A fresh version is ready. Tap Download; Android asks before installing anything."
                     },
-                    style = MaterialTheme.typography.bodySmall,
-                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = pop.ink,
                 )
-            }
-            Spacer(Modifier.width(10.dp))
-            Button(onClick = { uriHandler.openUri(update.url) }) {
-                Text(if (update.requiresReinstall) "Download" else "Download APK")
+                Spacer(Modifier.height(20.dp))
+                StickerButton("Download", onDownload)
+                TextLink("Later", onLater, Modifier.align(Alignment.CenterHorizontally))
             }
         }
+        NewBurst(Modifier.align(Alignment.TopEnd).offset(x = 12.dp, y = (-26).dp))
     }
 }
 
-private data class ProviderKeyHelp(val message: String, val linkLabel: String = "", val url: String? = null)
-
-private fun apiKeyLabel(provider: LlmProvider): String = when (provider) {
-    LlmProvider.ANTHROPIC -> "Anthropic API key"
-    LlmProvider.OPENAI -> "OpenAI API key"
-    LlmProvider.GEMINI -> "Gemini API key"
-    LlmProvider.OPENROUTER -> "OpenRouter API key"
-    LlmProvider.CUSTOM -> "Bearer token (optional)"
-}
-
-private fun providerKeyHelp(provider: LlmProvider): ProviderKeyHelp = when (provider) {
-    LlmProvider.ANTHROPIC -> ProviderKeyHelp(
-        "This key is saved only for Anthropic.",
-        "Create an Anthropic key →",
-        "https://console.anthropic.com/settings/keys",
-    )
-    LlmProvider.OPENAI -> ProviderKeyHelp(
-        "This key is saved only for OpenAI.",
-        "Create an OpenAI key →",
-        "https://platform.openai.com/api-keys",
-    )
-    LlmProvider.GEMINI -> ProviderKeyHelp(
-        "Recommended: Gemini is the fastest here — it finds and translates every line on the page itself. Free tier, no card needed. This key is saved only for Gemini.",
-        "Create a Gemini key →",
-        "https://aistudio.google.com/apikey",
-    )
-    LlmProvider.OPENROUTER -> ProviderKeyHelp(
-        "Paste your OpenRouter key here. It stays separate from your Anthropic, OpenAI and Gemini keys.",
-        "Create or choose an OpenRouter key →",
-        "https://openrouter.ai/settings/keys",
-    )
-    LlmProvider.CUSTOM -> ProviderKeyHelp(
-        "Optional bearer token for this custom endpoint. For safety, old shared keys are not migrated here; enter the token intended for this URL.",
-    )
+/** A small yellow starburst with "NEW!" on it, slapped on the dialog's corner like a price sticker. */
+@Composable
+private fun NewBurst(modifier: Modifier = Modifier) {
+    val pop = LocalPop.current
+    val glyph = with(LocalDensity.current) { 15.dp.toSp() }
+    Box(
+        modifier
+            .size(72.dp)
+            .graphicsLayer { rotationZ = 8f }
+            .clearAndSetSemantics { }
+            .drawWithCache {
+                val c = Offset(size.width / 2f, size.height / 2f)
+                val rp = size.minDimension / 2f
+                // Even spikes here: at badge size the big burst's wobble
+                // reads as a crumpled scrap rather than a POW.
+                val path = Path().apply {
+                    for (k in 0 until 24) {
+                        val a = (k * 15f - 90f) * PI.toFloat() / 180f
+                        val r = if (k % 2 == 0) 0.96f * rp else 0.72f * rp
+                        val x = c.x + cos(a) * r
+                        val y = c.y + sin(a) * r
+                        if (k == 0) moveTo(x, y) else lineTo(x, y)
+                    }
+                    close()
+                }
+                val drop = Offset(2.dp.toPx(), 3.dp.toPx())
+                val stroke = Stroke(2.5.dp.toPx(), join = StrokeJoin.Round)
+                onDrawBehind {
+                    translate(drop.x, drop.y) { drawPath(path, pop.shadow) }
+                    drawPath(path, pop.zap)
+                    drawPath(path, pop.faceInk, style = stroke)
+                }
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            "NEW!",
+            fontFamily = ComicNeue,
+            fontWeight = FontWeight.Bold,
+            fontSize = glyph,
+            lineHeight = glyph,
+            color = pop.onZap,
+        )
+    }
 }
 
 /**
- * Fetches Google's live model list on demand and offers it as a menu — the
- * newest Flash first — so the picker shows models released long after this
- * build shipped. Manual typing in the field above always stays available.
+ * The update dialog. It draws its own scrim: the platform's black dim
+ * turned yellow Fuki and the red burst a muddy brown behind the card, so in
+ * the light the page washes out to paper instead.
  */
+@OptIn(ExperimentalMaterial3Api::class)
 @Composable
-private fun GeminiModelRow(apiKey: String, onPick: (String) -> Unit) {
-    val scope = rememberCoroutineScope()
-    var open by remember { mutableStateOf(false) }
-    var loading by remember { mutableStateOf(false) }
-    var error by remember { mutableStateOf<String?>(null) }
-    var models by remember { mutableStateOf<List<ModelCatalog.LiveModel>>(emptyList()) }
-    Box {
-        OutlinedButton(
-            enabled = !loading,
-            onClick = {
-                if (apiKey.isBlank()) {
-                    error = "Paste your API key first — the list comes from your account."
-                    return@OutlinedButton
-                }
-                error = null
-                if (models.isNotEmpty()) {
-                    open = true
-                    return@OutlinedButton
-                }
-                loading = true
-                scope.launch {
-                    try {
-                        models = ModelCatalog.gemini(apiKey)
-                        open = models.isNotEmpty()
-                        if (models.isEmpty()) error = "Google returned no usable models."
-                    } catch (e: Exception) {
-                        error = "Couldn't fetch models: " + (e.message ?: "network error")
-                    } finally {
-                        loading = false
-                    }
-                }
-            }
-        ) { Text(if (loading) "Fetching live model list…" else "Choose from Google's live model list ▾") }
-        DropdownMenu(expanded = open, onDismissRequest = { open = false }) {
-            models.forEach { m ->
-                DropdownMenuItem(
-                    text = {
-                        Column {
-                            Text(m.label)
-                            Text(
-                                m.id,
-                                style = MaterialTheme.typography.bodySmall,
-                                color = MaterialTheme.colorScheme.onSurfaceVariant
-                            )
-                        }
-                    },
-                    onClick = {
-                        open = false
-                        onPick(m.id)
-                    }
-                )
-            }
+private fun UpdateDialog(update: UpdateChecker.Update, onDownload: () -> Unit, onDismiss: () -> Unit) {
+    val pop = LocalPop.current
+    BasicAlertDialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+    ) {
+        val window = (LocalView.current.parent as? DialogWindowProvider)?.window
+        SideEffect {
+            window?.setDimAmount(0f)
+            window?.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
         }
-    }
-    error?.let {
-        Text(it, style = MaterialTheme.typography.bodySmall, color = MaterialTheme.colorScheme.error)
-    }
-}
-
-@Composable
-private fun TipsCard() {
-    Card(elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)) {
-        Column(Modifier.padding(16.dp)) {
-            SectionTitle("Good to know")
-            Spacer(Modifier.height(8.dp))
-            Text(
-                "• Brave private tabs block screen capture (they render black). Use a normal tab.\n" +
-                    "• Overlays never block touches — scroll right through them.\n" +
-                    "• Scrolling instantly hides overlays; stopping re-translates. That's the live loop.\n" +
-                    "• AI Pro shows a fast draft instantly, then the AI polish replaces it — slow internet never blocks reading.\n" +
-                    "• Text mode sends only bubble text; AI Vision sends the page image — only ever to the provider you chose.\n" +
-                    "• Names stay consistent: the AI keeps a glossary of characters and terms as you read.\n" +
-                    "• Reading raws you love? Support the official release when it exists.",
-                style = MaterialTheme.typography.bodySmall,
-                color = MaterialTheme.colorScheme.onSurfaceVariant,
-                lineHeight = 20.sp
-            )
+        val scrim = if (pop.dark) Color.Black.copy(alpha = 0.55f) else pop.paper.copy(alpha = 0.8f)
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(scrim)
+                .clickable(remember { MutableInteractionSource() }, indication = null, onClickLabel = "Close", onClick = onDismiss)
+                .safeDrawingPadding()
+                .padding(horizontal = 24.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            // Taps on the card itself must not fall through to the scrim.
+            Box(Modifier.widthIn(max = 480.dp).pointerInput(Unit) { detectTapGestures { } }) {
+                UpdateDialogCard(update, onDownload, onDismiss)
+            }
         }
     }
 }

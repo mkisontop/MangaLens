@@ -25,7 +25,9 @@ the normal APK.
 
 ## How it feels
 
-1. Tap **Start translating** → allow screen capture.
+1. Tap Fuki, the big yellow **GO!** balloon on the home screen → allow
+   screen capture. While translation is paused Fuki naps; tap it to wake
+   it up.
 2. Switch to Brave and read your manhwa like normal.
 3. Every time you stop scrolling, English appears **in** the page, line by
    line as it is translated — each balloon wiped clean and re-lettered in a
@@ -37,9 +39,12 @@ the normal APK.
    page you scroll back to re-paints from cache: no re-translation, no extra
    cost.
 
-A floating **文A** toggle is always available: **tap** = translation on/off
-(with a busy ring while a pass runs), **long-press** = quick menu (translate
-now, pause, peek at the original art, tap-to-translate mode, settings, stop).
+A floating **文A** button is always available, with a busy ring while a pass
+runs. **Tap** pauses and resumes in hands-free mode, and translates the page
+in tap-to-translate mode; **long-press** opens the quick menu (translate this
+page, pause, peek at the original art, tap-to-translate mode, Tweaks, stop).
+Every setting lives on one **Tweaks** page, which the quick menu opens
+directly.
 
 ## Install
 
@@ -48,11 +53,13 @@ now, pause, peek at the original art, tap-to-translate mode, settings, stop).
    `checksums.txt` if you want to verify the download.
 2. Open it on your phone or tablet → allow installing from unknown sources
    (Android's standard prompt for apps outside the Play Store).
-3. Open MangaLens → grant "Display over other apps" → Start.
+3. Open MangaLens and follow Fuki's two steps: allow "Display over other
+   apps", then get a free Gemini key and tap **Paste my key**. Fuki proves the
+   key by lettering a Korean line, and you're ready to tap **GO!**.
 
 Updating is automatic-ish: the app makes one anonymous check against this
-repository's latest release when you open it, and shows a small banner when a
-newer version exists. Nothing downloads without your tap.
+repository's latest release when you open it, and shows a small **NEW!**
+sticker when a newer version exists. Nothing downloads without your tap.
 
 ### One-time update from 0.9.1
 
@@ -75,21 +82,29 @@ signature.
   signature, but cannot move the installation onto the private key. This one
   reinstall is required to join the private-key update line.
 
-## Translation engines
+## Translation
 
-| Engine | Quality | Speed | Setup | Notes |
-|---|---|---|---|---|
-| **Free · Google** *(default)* | ★★★☆ | fast | none | Whole page in one batched request for cross-line context; junk-gated so OCR noise is never rendered. |
-| **AI Pro ✨** | ★★★★★ | first line ~1.5–2 s after you stop | API key | The scanlation-grade mode. **Gemini is recommended**: it reads the page image itself the moment you stop scrolling, finds every piece of lettering (balloons, captions, text on the art, sound effects), and streams each line as it is translated — see *AI-first reading* below. **Gemini has a free tier** (aistudio.google.com/apikey — the app links you there), and a one-tap picker fetches Google's **live model list**; the default, `gemini-flash-latest`, was chosen by measurement on hard pages. Claude, OpenAI, OpenRouter and any OpenAI-compatible endpoint also work, through the classic path: a free draft first, then the AI polish (**AI Vision** sends the page where on-device OCR struggles). Rolling story context, a **persistent glossary** and a cast list keep names, honorifics and running jokes consistent. Falls back to Google automatically. |
-| **Offline** | ★★☆☆ | fast | one-time ~30 MB model per language | ML Kit on-device translation. Works with zero network. |
+MangaLens translates with AI, and only with AI: there is no free machine
+engine or offline engine, and no machine draft painted before the AI answers.
+Each line appears once, in the AI's words.
+
+| Provider | Speed | Setup | Notes |
+|---|---|---|---|
+| **Gemini** *(default, recommended)* | first line ~1.5–2 s after you stop | API key — **free tier** | Reads the page image itself the moment you stop scrolling, finds every piece of lettering (balloons, captions, text on the art, sound effects), and streams each line as it is translated — see *AI-first reading* below. Get a key at aistudio.google.com/apikey (the app links you there); a one-tap picker fetches Google's **live model list**, and the default, `gemini-flash-latest`, was chosen by measurement on hard pages. |
+| **Claude, OpenAI, OpenRouter, any OpenAI-compatible endpoint** | depends on provider and model | API key (a custom endpoint may need only its URL) | The classic path: on-device OCR finds the regions and the AI translates them, streamed balloon by balloon (**AI Vision** sends the page where on-device OCR struggles). |
+
+With every provider, rolling story context, a **persistent glossary** and a
+cast list keep names, honorifics and running jokes consistent. Without a key
+nothing is translated, and the status pill says what to add. When the AI
+fails — no network, a rate limit, a rejected key — the page stays as it is and
+the pill says why; nothing else translates it in the AI's place.
 
 Privacy: in AI **text** mode only bubble text leaves the device; in AI
 **Vision** mode the page image goes to the provider you chose — and nowhere
 else. With Gemini, each page you stop on goes to Google as a 1280 px JPEG
 (1024 px with Data saver). The optional **AI redraw** sends only crops around
 lettering drawn on detailed art to Google's image model, and is off unless
-you turn it on. The free and offline engines never send an image anywhere. Screen
-capture and OCR always run on-device. Each AI provider has its own API-key and
+you turn it on. Screen capture and OCR always run on-device. Each AI provider has its own API-key and
 model setting; switching providers never reuses one provider's credential with
 another. OpenRouter has a dedicated key field and an in-app link to
 `openrouter.ai/settings/keys`. API keys live in Android's no-backup storage;
@@ -179,7 +194,7 @@ Frame differ ──"screen went quiet" (~150 ms)──┬──▶ Gemini reads 
   inside each letter's mask and only where it agrees with the art just
   around it; after two refusals it rests for 15 minutes.
 
-### The classic path (Google, offline and other AI providers)
+### The classic path (other AI providers, and Gemini in text-only mode)
 
 ```
 MediaProjection (screen capture)
@@ -204,9 +219,9 @@ Frame differ ──"screen went quiet"──▶ Page analysis, started ~150 ms a
                                        across balloons rejoined)
                                                  │
                      "reader has stopped" ──▶    ▼
-                                    Translation engine (+ LRU cache, fallback chain,
-                                     glossary + cast + story context; AI replies
-                                     stream and paint balloon by balloon)
+                                    AI translation (+ LRU cache, glossary + cast
+                                     + story context; replies stream and paint
+                                     balloon by balloon)
                                                  │ English
                                                  ▼
                                     Overlay renderer (balloons wiped through their
@@ -226,13 +241,14 @@ Key details:
   from the full-resolution frame, enlarged, and read again on its own —
   ML Kit misses small and stylized lettering it reads fine at twice the
   size.
-- **Progressive AI rendering**: in AI Pro the free draft paints in ~1 s and the
-  AI polish swaps in when it lands — the reading loop never waits on a slow
-  connection. The status pill shows ✓ for drafts and ✨ once polished. The AI
-  reply is streamed and parsed as it arrives, so each balloon is painted the
-  moment the model finishes writing it, in reading order, over whatever the
-  draft still covers — the page fills in balloon by balloon instead of all at
-  once when the last one closes. Requests are laid out stable-first (system
+- **Streamed AI rendering, no draft**: the AI reply is streamed and parsed
+  as it arrives, so each balloon is painted the moment the model finishes
+  writing it, in reading order — the page fills in balloon by balloon
+  instead of all at once when the last one closes. Nothing is painted first
+  and re-worded later: each line appears once, in the AI's words. While a
+  pass runs, the floating button's busy ring shows it; the status pill
+  speaks only for errors, a rejected key, your own taps and diagnostics.
+  Requests are laid out stable-first (system
   prompt, then glossary and cast, then the page), so providers that cache a
   request prefix reuse the series memory page after page; on the Anthropic
   API those blocks carry explicit cache breakpoints.
@@ -249,7 +265,7 @@ Key details:
   causes loops), OpenAI reasoning models get the token field they accept,
   and the output cap leaves room for the thinking that current APIs count
   against it — a cap the thinking exhausts cuts the JSON off mid-page, and
-  the page falls back to the draft as though the model had said nothing.
+  the page comes back as though the model had said nothing.
   The regions on-device OCR could not read go up a second time as enlarged
   close-ups cut from the full-resolution frame, each badged with its
   region id: on a tablet capture the page image reduces balloon lettering
@@ -343,14 +359,13 @@ Key details:
   routinely serve Spanish or English uploads under a "raw" label. Those lines
   carry no CJK, and used to be discarded at the OCR layer — leaving nothing
   to anchor to. Latin-script lines are now kept as regions with real
-  geometry, Google is asked to auto-detect the source when a payload has no
-  CJK, and the AI engines are told the language setting is a guess to be
+  geometry, and the AI is told the language setting is a guess to be
   overridden by what the page actually says.
 - **Nothing is silently left untranslated**: a region the vision model skips
   used to render nothing, so a page came back with translated balloons
   interleaved with raw ones and no sign anything was missing. Whatever it
-  passes over now falls through to the text engine — a weaker translation for
-  those balloons, but a finished page.
+  passes over that OCR could read now goes to the AI again as text — a
+  weaker translation for those balloons, but a finished page.
 - **Panel-aware reading order**: the page is split recursively on the
   whitespace gutters between panels — tiers first, then panels within a tier,
   right-to-left on a manga page and left-to-right in a webtoon. Order is not
@@ -426,7 +441,7 @@ Key details:
   taken from the very bitmap that was translated — never from a later
   "settled" frame that a fast fling may already have moved. The comparison
   runs from the moment the page is grabbed until its cards come down —
-  through the streamed polish and the moments after each paint — so a
+  through every streamed line and the moments after each paint — so a
   reader who turns the page mid-stream is noticed at once rather than when
   the stream ends. And the frame a tap produces is never dropped: a capture
   delivers a frame only when the screen changes, a tap changes it exactly
@@ -460,13 +475,13 @@ Key details:
   frame is never read ahead while our own cards are on it, and the app's own
   floating button region is excluded from OCR.
 - **Junk gates**: stray border pipes, furigana, one-character crumbs and
-  romanized-gibberish translations are filtered — a bubble renders correctly or
-  not at all.
+  translations that merely echo the source are filtered — a bubble renders
+  correctly or not at all.
 - **SFX intelligence**: oversized katakana bursts are classified as sound
-  effects and rendered as compact comic captions (WHAM, BA-DUMP) — or left as
-  untouched art — never word-for-word translated. Japanese sound effects name
-  states as often as noises, so シーン becomes "…SILENCE…" and ジー becomes
-  "…STARE…" rather than an invented crash.
+  effects, which the AI renders as compact comic captions (WHAM, BA-DUMP) —
+  or they stay untouched art — never word-for-word translated. Japanese
+  sound effects name states as often as noises, and the model is told so:
+  シーン is a silence and ジー a stare, not an invented crash.
 - **Language auto-detect** races all three CJK recognizers and pins the winner
   after two consecutive wins, so steady-state pages pay for exactly one OCR pass.
 - **Bubble grouping** clusters OCR lines with direction-aware padding
@@ -515,15 +530,17 @@ not the normal download.
 you're not in a Brave *private* tab — private tabs set `FLAG_SECURE`, which
 makes the captured screen black.
 
-**The browser bar gets translated?** Raise the "Ignore top of screen" slider in
-Reading settings.
+**The browser bar gets translated?** Raise **Skip the top of the screen** in
+Tweaks → Look.
 
 **Battery?** Use "Tap to translate" mode — capture idles until you tap.
 
-**Slow internet?** You still read: lettering seen at an earlier stop
-repaints from memory at once, and when the AI is slow to answer a free draft
-fills in while you wait. Turn on **Data saver** to shrink
+**Slow internet?** Lettering seen at an earlier stop repaints from memory at
+once, and new lines appear one by one as the AI writes them — there is no
+machine draft to fill in while you wait. Turn on **Data saver** to shrink
 vision uploads, or set AI Vision to **Text only** for requests a few KB big.
+With no connection at all nothing new is translated, and the status pill
+says the AI couldn't read the page, and why.
 
 **Which languages?** Korean, Japanese (incl. reasonable vertical text), Chinese
 (simplified & traditional) → English. Raws that were already translated once

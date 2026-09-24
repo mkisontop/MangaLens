@@ -33,6 +33,7 @@ import app.mangalens.R
 import app.mangalens.ocr.OcrEngine
 import app.mangalens.overlay.OverlayController
 import app.mangalens.overlay.RenderBubble
+import app.mangalens.pipeline.AiFailure
 import app.mangalens.pipeline.TranslatePipeline
 import app.mangalens.pipeline.UpgradeMerge
 import app.mangalens.settings.AppSettings
@@ -40,6 +41,7 @@ import app.mangalens.settings.CaptureMode
 import app.mangalens.settings.SettingsRepository
 import app.mangalens.translate.CastBook
 import app.mangalens.translate.GlossaryStore
+import app.mangalens.translate.LlmHttp
 import app.mangalens.translate.PendingRead
 import app.mangalens.translate.TranslationCache
 import app.mangalens.translate.TranslationService
@@ -165,13 +167,30 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
          */
         private const val ALERT_MS = 6000L
 
+        /** How long the pill says why the AI could not read a page. */
+        private const val FAILURE_MS = 4500L
+
+        /**
+         * The pill for a page the AI could not read — or, when [partly],
+         * could not finish: some of its lines made it onto the page first.
+         */
+        internal fun failurePill(cause: String, partly: Boolean): String =
+            "⚠ AI couldn't ${if (partly) "finish" else "read"} this page — $cause"
+
         val running = MutableStateFlow(false)
+
+        /**
+         * Whether translation is paused, for the home screen: it shows Fuki
+         * napping and offers "Wake up" instead of treating a paused session
+         * as a running one.
+         */
+        val pausedState = MutableStateFlow(false)
 
         /**
          * Whether the screen moved between two frames. While our own
          * painting is settling — [ownPaintSettling] — the difference is taken
-         * only over the cells [mask] leaves: a card fading in or a draft
-         * giving way to the polish changes nothing outside the mask, while
+         * only over the cells [mask] leaves: a card fading in or a streamed
+         * line joining the page changes nothing outside the mask, while
          * a scroll moves the page around the cards as much as under them.
          * The rest of the time every cell counts, as it always has.
          */
@@ -225,6 +244,14 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
 
     @Volatile private var settings = AppSettings()
 
+    /**
+     * Whether [settings] holds what the reader saved yet, rather than the
+     * defaults it starts as. The store is read off the main thread and the
+     * capture can start first; a pass before then would see no key and
+     * tell a reader who has one to add it. Main thread only.
+     */
+    private var settingsLoaded = false
+
     private var projection: MediaProjection? = null
     private var virtualDisplay: VirtualDisplay? = null
     @Volatile private var imageReader: ImageReader? = null
@@ -268,8 +295,8 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
      * with the page, so these cells show us, not the reader's content, and
      * every comparison excludes them. Maintained by [paintCards],
      * [clearCards] and the controls' own layout changes, so it is always
-     * the truth about what is on screen — including the fast draft that
-     * paints mid-translation and a pill that comes and goes on its own —
+     * the truth about what is on screen — including the lines that stream
+     * in mid-translation and a pill that comes and goes on its own —
      * and it keeps the cells just given up for [MASK_GRACE_MS], see
      * [setOverlayMask].
      */
@@ -382,10 +409,12 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                 // words the old key earned.
                 if (s.apiKey != settings.apiKey || s.provider != settings.provider) alerted = null
                 settings = s
+                settingsLoaded = true
                 controller?.bubbleView?.let { v ->
                     v.textScale = s.textScale
                     v.bgOpacity = s.bgOpacity
                 }
+                controller?.setManual(s.mode == CaptureMode.MANUAL)
             }
         }
     }
@@ -393,6 +422,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         when (intent?.action) {
             ACTION_START -> {
+                pausedState.value = paused
                 val code = intent.getIntExtra(EXTRA_RESULT_CODE, Activity.RESULT_CANCELED)
                 val data = IntentCompat.getParcelableExtra(intent, EXTRA_RESULT_DATA, Intent::class.java)
                 if (code != Activity.RESULT_OK || data == null) {
@@ -446,11 +476,16 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
             v.textScale = settings.textScale
             v.bgOpacity = settings.bgOpacity
         }
+        controller?.setManual(settings.mode == CaptureMode.MANUAL)
         controller?.onFootprintChanged = { refreshOverlayMask() }
         refreshOverlayMask()
         running.value = true
         startTicker()
-        setPill("MangaLens is live — open your manhwa", 2600)
+        setPill(
+            if (settings.mode == CaptureMode.AUTO) "I'm on! Stop scrolling and I'll translate"
+            else "I'm on! Tap 文\u2060A to translate a page",
+            2600,
+        )
     }
 
     private fun displaySize(): Triple<Int, Int, Int> {
@@ -612,7 +647,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
             // so a card fading in cannot pass for a scroll. Every card is in
             // the mask from the moment it is painted and for a while after it
             // is cleared. The check used to sit these moments out altogether,
-            // and the polish repaints each time the model streams an item.
+            // and the page repaints each time the model streams an item.
             // For as long as a stream lasted there was then no motion check
             // at all, and cards stayed painted over a page that had moved.
             val moved = frameMoved(prevThumb, thumb, mask, ownPaintSettling = now < suppressUntil)
@@ -763,9 +798,10 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
     /**
      * Paints cards and records the cells they cover, in one step — the mask
      * must never describe cards other than the ones actually on screen.
-     * That includes the fast draft painted mid-pass: left unrecorded, its
-     * static pixels would count as the page not having changed, and the
-     * balloon that slid in under it would never be noticed. Main thread only.
+     * That includes the lines painted mid-pass as they stream in: left
+     * unrecorded, their static pixels would count as the page not having
+     * changed, and the balloon that slid in under one would never be
+     * noticed. Main thread only.
      */
     private fun paintCards(bubbles: List<RenderBubble>) {
         val view = controller?.bubbleView ?: return
@@ -842,8 +878,10 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
      * in between throws it away.
      */
     private fun startPrepare() {
-        // Never read a frame with our own cards on it.
+        // Never read a frame with our own cards on it, nor one no AI can
+        // translate: the pass will only say what is missing.
         if (controller?.bubbleView?.hasBubbles() == true) return
+        if (!settingsLoaded || LlmHttp.setupNeeded(settings) != null) return
         val bmp = grabFrame() ?: return
         val exclusions = controller?.overlayExclusions() ?: emptyList()
         preparing = true
@@ -893,8 +931,8 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
 
     /**
      * Whether the frame read ahead is still what the screen shows, judged
-     * over the cells our own overlays do not cover — the pill saying
-     * "translating…" is up by now, and must not count. Drift is measured
+     * over the cells our own overlays do not cover — the button's busy ring
+     * and whatever the pill says, which must not count. Drift is measured
      * two ways, as a page change is: by how far the cells moved on average,
      * which a scroll makes obvious, and by how many moved at all, which a
      * tap-to-turn between two mostly-white pages does and the average hides.
@@ -935,7 +973,21 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
     }
 
     private fun startTranslate(auto: Boolean) {
-        if (state == State.TRANSLATING) return
+        if (state == State.TRANSLATING || !settingsLoaded) return
+        // Translation is the AI's alone. Without a key there is nothing to
+        // ask, and a pass would only spin the busy ring to paint nothing,
+        // so the reader is told what to add instead — once per stop: a
+        // bare page counts as shown, with nothing on it, until they move
+        // it. Cards already up from an earlier pass stay, watched as before.
+        LlmHttp.setupNeeded(settings)?.let { missing ->
+            discardPrepared()
+            if (state == State.SCANNING) {
+                lastShown = emptyList()
+                state = State.SHOWING
+            }
+            setPill(missing, 4000)
+            return
+        }
         state = State.TRANSLATING
         translateJob = scope.launch {
             pushBusy()
@@ -950,6 +1002,8 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
             var prep: Prepared? = null
             var bmp: Bitmap? = null
             var read: PendingRead? = null
+            // The lines on screen so far, as they streamed in.
+            var streamed: List<RenderBubble> = emptyList()
             try {
                 // A long enough break since the last translated page means the
                 // next one probably belongs to a different series.
@@ -973,7 +1027,6 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                 val taken = takePrepared()
                 prep = taken
                 if (taken != null) {
-                    setPill("translating…")
                     val done = try {
                         taken.job.await()
                     } catch (e: CancellationException) {
@@ -1002,7 +1055,6 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                         return@launch
                     }
                     bmp = fresh
-                    setPill("translating…")
                     // A read the pass starts itself runs as the pass's child.
                     // A scroll or a pause then stops it the moment the pass is
                     // cancelled, not once analysis next looks up from the
@@ -1019,28 +1071,32 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                 }
                 val passRead = read
 
-                var draftShown: List<RenderBubble> = emptyList()
+                // While the pass works, the button's busy ring says so and
+                // the pill stays out of the way. The one step worth a word
+                // is the art clean-up, which holds the finished page back.
+                var spoke = false
                 val result = withContext(Dispatchers.Default) {
                     pipeline.translate(analysis, settings, read = passRead, onPartial = { partial ->
-                        // A draft or a streamed batch landed — paint it now,
-                        // the rest of the polish follows.
+                        // More of the AI's answer landed — paint it now, the
+                        // rest follows.
                         withContext(Dispatchers.Main.immediate) {
                             if (isActive && state == State.TRANSLATING) {
-                                draftShown = partial.bubbles
+                                streamed = partial.bubbles
                                 lastShown = partial.bubbles
                                 suppressUntil = SystemClock.uptimeMillis() + 600
                                 paintCards(partial.bubbles)
-                                val doing = if (partial.note == "cleaning art…") "✨ cleaning art…" else "✨ upgrading…"
-                                setPill("✓ ${partial.bubbles.size} · ${partial.engineLabel} · $doing")
+                                if (partial.note == "cleaning art…") {
+                                    setPill("✨ cleaning art…")
+                                    spoke = true
+                                }
                             }
                         }
                     })
                 }
                 if (!isActive) return@launch
-                // The polish replaces what it answered and never erases what
-                // it didn't: an empty or partial upgrade keeps the draft cards
-                // the reader is already reading.
-                val shown = UpgradeMerge.merge(draftShown, result.bubbles)
+                // The finished answer replaces the lines it covers and never
+                // erases the ones it doesn't: the reader may be reading them.
+                val shown = UpgradeMerge.merge(streamed, result.bubbles)
                 lastShown = shown
                 suppressUntil = SystemClock.uptimeMillis() + 500
                 paintCards(shown)
@@ -1067,19 +1123,20 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                 // A problem the reader has to act on comes before everything
                 // else, in auto mode too. Diagnostics stay up: they exist to
                 // be read off a page that came back wrong, and a pill that
-                // vanishes is no use for that.
+                // vanishes is no use for that. A page that simply came out
+                // right needs no word at all — the lines are on it.
                 val alert = result.alert?.takeIf { it.isNotBlank() && it != alerted }
+                val failure = result.failure
                 if (alert != null) {
                     showAlert(alert)
                 } else if (result.diag != null) {
                     setPill("${result.engineLabel.ifBlank { "—" }} · ${result.diag} · ${works.describe()}")
-                } else if (shown.isEmpty()) {
-                    setPill(if (auto) null else "no text found", 1800)
-                } else {
-                    val mark = if (result.polished && result.bubbles.isNotEmpty()) "✨" else "✓"
-                    val kept = if (shown.size > result.bubbles.size) " · draft kept" else ""
-                    val extra = result.note?.let { " · $it" } ?: ""
-                    setPill("$mark ${shown.size} · ${result.engineLabel}$extra$kept", 2400)
+                } else if (failure != null) {
+                    setPill(failurePill(failure, partly = shown.isNotEmpty()), FAILURE_MS)
+                } else if (shown.isEmpty() && !auto) {
+                    setPill("no text on this page", 1800)
+                } else if (spoke) {
+                    setPill(null)
                 }
             } catch (e: CancellationException) {
                 throw e
@@ -1087,9 +1144,21 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                 // The page still needs watching or a failed pass would sit
                 // here until something scrolls. The baseline from the grabbed
                 // frame (when the grab got that far) and the mask over
-                // whatever draft cards are up are both already in place.
+                // whatever lines streamed in are both already in place.
                 state = State.SHOWING
-                setPill("⚠ " + (e.message?.take(90) ?: "translation failed"), 4500)
+                // Nothing else translates the page, so the reader is told
+                // why it stays raw. A rejected key fails every page alike
+                // and gets the one-time alert first.
+                val rejected = if (AiFailure.keyRejected(e)) {
+                    LlmHttp.providerLabel(settings) + " rejected the API key — check it in MangaLens"
+                } else {
+                    null
+                }
+                if (rejected != null && rejected != alerted) {
+                    showAlert(rejected)
+                } else {
+                    setPill(failurePill(AiFailure.cause(e), partly = streamed.isNotEmpty()), FAILURE_MS)
+                }
             } finally {
                 // Cancellation is this loop's steady state. Every scroll
                 // that interrupts a pass lands here, so what the pass holds
@@ -1138,8 +1207,8 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
     /**
      * Shows [text] in the status pill, or hides it. While an alert holds
      * the pill (see [showAlert]), the loop's own messages leave it alone. A
-     * scroll, or the next page's "translating…", would otherwise wipe the
-     * one message the reader has to act on before they could read it, and
+     * scroll, or the next page's own word, would otherwise wipe the one
+     * message the reader has to act on before they could read it, and
      * it is not shown twice. Main thread only.
      */
     private fun setPill(text: String?, autoHideMs: Long = 0) {
@@ -1181,7 +1250,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         // straight from one work to the next with neither.
         works.startNewWork()
         pipeline.forgetRecent()
-        answer("new series · names cleared", 2000)
+        answer("new series · old names forgotten", 2000)
     }
 
     override fun onTogglePause() {
@@ -1195,10 +1264,11 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
             state = State.SCANNING
             shownThumb = null
             clearCards()
-            answer("paused", 1600)
+            answer("napping · tap 文\u2060A to wake me", 1600)
         } else {
-            answer("live", 1200)
+            answer("awake!", 1200)
         }
+        pausedState.value = paused
         controller?.setPaused(paused)
         updateNotification()
     }
@@ -1206,7 +1276,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
     override fun onToggleMode() {
         val next = if (settings.mode == CaptureMode.AUTO) CaptureMode.MANUAL else CaptureMode.AUTO
         scope.launch { settingsRepo.setMode(next) }
-        answer(if (next == CaptureMode.AUTO) "auto-live mode" else "tap the button to translate", 2200)
+        answer(if (next == CaptureMode.AUTO) "hands-free · I translate when you stop" else "tap 文\u2060A to translate each page", 2200)
     }
 
     override fun onPeek() {
@@ -1233,6 +1303,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         startActivity(
             Intent(this, MainActivity::class.java)
                 .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+                .putExtra(MainActivity.EXTRA_OPEN_TWEAKS, true)
         )
     }
 
@@ -1260,8 +1331,8 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         )
         return NotificationCompat.Builder(this, MangaLensApp.CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_stat_bubble)
-            .setContentTitle("MangaLens is translating your screen")
-            .setContentText(if (paused) "Paused" else "Live — bubbles translate as you read")
+            .setContentTitle("MangaLens is reading along")
+            .setContentText(if (paused) "Napping. Tap Resume to wake me" else "On. I translate the pages as you read")
             .setOngoing(true)
             .setContentIntent(open)
             .addAction(0, if (paused) "Resume" else "Pause", serviceIntent(ACTION_TOGGLE_PAUSE, 2))
@@ -1275,6 +1346,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
 
     override fun onDestroy() {
         running.value = false
+        pausedState.value = false
         translateJob?.cancel()
         discardPrepared()
         scope.cancel()

@@ -9,6 +9,25 @@ cleaned and re-lettered the way a scanlation team does it.
 0.9.1? Use `MangaLens-legacy-update.apk` once (Android 9+), as described in
 the README.
 
+- **AI only** — the free Google and offline engines are gone, and there is
+  no machine draft before the AI: each line appears once, in the AI's words.
+  Gemini is the default provider (the fastest, with a free tier); a key you
+  saved for another provider keeps working. Without a key the pill says
+  "Add your Gemini key in MangaLens" instead of translating.
+- **A new face: Fuki.** The home screen is one big button — Fuki, a
+  speech balloon that says GO! and turns red to STOP — on cream newsprint
+  with ink outlines and hard shadows. First run is two steps (float over
+  apps, paste a free Gemini key), and Fuki wakes up a step at a time as
+  you go, then proves the key by lettering a line. Paused, Fuki naps: tap
+  it to wake it (Stop has its own button). Every setting moved to one
+  Tweaks page; the overlay's quick menu
+  opens it, its button and pill are restyled to read over white and black
+  pages, and in tap-to-translate mode a tap on 文A translates the page.
+- **A quieter pill.** While a page translates, the button's busy ring says
+  so and the pill stays out of the way — no "translating…", no
+  "upgrading…". It speaks up only for what you need to know: a page the AI
+  couldn't read, and why (network, rate limit, rejected key), your own
+  taps, the optional art clean-up, and diagnostics when they are on.
 - **AI-first reading with Gemini.** The screen goes to the model about
   0.15 s after scrolling stops, alongside on-device analysis instead of after
   it, through Google's native API. The model finds every piece of lettering
@@ -63,8 +82,7 @@ the README.
   down the column rather than spilling across the art beside it.
 - **Lettering styles.** Shouts heavier, thoughts in italic, narration calmer,
   sound effects bold italic and outlined; the English fades in rather than
-  popping, and a machine draft appears only when the AI is slow, so a page is
-  lettered once.
+  popping.
 - **Steadier on a scroll.** A line read again at the next stop keeps the
   words you already saw, but a balloon the model now reads in pieces (or
   whole) is never said twice or halved. A read abandoned by a quick scroll

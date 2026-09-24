@@ -2,9 +2,7 @@ package app.mangalens.overlay
 
 import android.annotation.SuppressLint
 import android.content.Context
-import android.graphics.Color
 import android.graphics.PixelFormat
-import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
@@ -13,6 +11,8 @@ import android.view.View
 import android.view.WindowManager
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.core.view.ViewCompat
+import app.mangalens.R
 import kotlin.math.abs
 
 /**
@@ -104,8 +104,8 @@ class OverlayController(private val context: Context, private val listener: List
             val m = dp(6f)
             out.add(android.graphics.Rect(lp.x - m, lp.y - m, lp.x + w + m, lp.y + h + m))
             menu?.let { mv ->
-                val mw = if (mv.width > 0) mv.width else dp(220f)
-                val mh = if (mv.height > 0) mv.height else dp(280f)
+                val mw = if (mv.width > 0) mv.width else dp(240f)
+                val mh = if (mv.height > 0) mv.height else dp(380f)
                 out.add(android.graphics.Rect(lp.x - m, lp.y + dp(58f) - m, lp.x + mw + m, lp.y + dp(58f) + mh + m))
             }
         }
@@ -119,7 +119,7 @@ class OverlayController(private val context: Context, private val listener: List
             p.visibility = View.GONE
             return
         }
-        p.text = text
+        OverlayStyle.showStatus(p, text)
         p.visibility = View.VISIBLE
         if (autoHideMs > 0) p.postDelayed(hidePill, autoHideMs)
     }
@@ -128,15 +128,28 @@ class OverlayController(private val context: Context, private val listener: List
         button?.setPaused(paused)
     }
 
+    /** Tap-to-translate mode: a tap on the button then translates the page. */
+    fun setManual(manual: Boolean) {
+        button?.setManual(manual)
+    }
+
     /** Sweeps the busy ring on the button while a translation pass runs. */
     fun setBusy(busy: Boolean) {
         button?.setBusy(busy)
     }
 
-    private fun rounded(color: Int, radiusDp: Float) = GradientDrawable().apply {
-        shape = GradientDrawable.RECTANGLE
-        cornerRadius = dp(radiusDp).toFloat()
-        setColor(color)
+    /**
+     * What a tap on the button does. Paused, it wakes translation up. In
+     * hands-free mode it pauses; in tap-to-translate mode it translates the
+     * page, because there a pause would do nothing the reader can see and
+     * the home screen tells them the tap translates.
+     */
+    private fun onTap() {
+        when {
+            listener.isPaused() -> listener.onTogglePause()
+            listener.isAutoMode() -> listener.onTogglePause()
+            else -> listener.onTranslateNow()
+        }
     }
 
     @SuppressLint("ClickableViewAccessibility")
@@ -147,22 +160,18 @@ class OverlayController(private val context: Context, private val listener: List
         }
         val btn = FloatingButtonView(context).apply {
             layoutParams = LinearLayout.LayoutParams(dp(52f), dp(52f))
-            elevation = dp(4f).toFloat()
         }
-        val status = TextView(context).apply {
-            setTextColor(Color.WHITE)
-            textSize = 11f
-            maxLines = 2
-            setPadding(dp(10f), dp(5f), dp(10f), dp(5f))
-            background = rounded(0xD0202233.toInt(), 14f)
-            visibility = View.GONE
-            val lp = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            )
-            lp.marginStart = dp(6f)
-            layoutParams = lp
+        btn.setOnClickListener { v ->
+            v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+            btn.playTapPulse()
+            onTap()
         }
+        // Long-press is a touch gesture only; screen readers get the menu as an action.
+        ViewCompat.addAccessibilityAction(btn, "Open quick menu") { _, _ ->
+            showMenu()
+            true
+        }
+        val status = OverlayStyle.statusPill(context).apply { visibility = View.GONE }
         row.addView(btn)
         row.addView(status)
         row.addOnLayoutChangeListener { _, l, t, r, b, oldL, oldT, oldR, oldB ->
@@ -217,11 +226,7 @@ class OverlayController(private val context: Context, private val listener: List
                 }
                 MotionEvent.ACTION_UP -> {
                     v.removeCallbacks(longPress)
-                    if (!moved && System.currentTimeMillis() - downTime < 450) {
-                        v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                        btn.playTapPulse()
-                        listener.onTogglePause()
-                    }
+                    if (!moved && System.currentTimeMillis() - downTime < 450) v.performClick()
                 }
                 MotionEvent.ACTION_CANCEL -> v.removeCallbacks(longPress)
             }
@@ -238,35 +243,7 @@ class OverlayController(private val context: Context, private val listener: List
     private fun showMenu() {
         if (menu != null) return
         val lpControls = controlsLp ?: return
-        val col = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            background = rounded(0xF01B1C2E.toInt(), 12f)
-            elevation = dp(8f).toFloat()
-            setPadding(0, dp(4f), 0, dp(4f))
-        }
-
-        fun item(label: String, action: () -> Unit) {
-            col.addView(TextView(context).apply {
-                text = label
-                setTextColor(Color.WHITE)
-                textSize = 13f
-                setPadding(dp(16f), dp(10f), dp(16f), dp(10f))
-                setOnClickListener {
-                    dismissMenu()
-                    action()
-                }
-            })
-        }
-
-        item("⚡  Translate now") { listener.onTranslateNow() }
-        item(if (listener.isPaused()) "▶  Resume live mode" else "⏸  Pause") { listener.onTogglePause() }
-        item(if (listener.isAutoMode()) "✋  Switch to tap-to-translate" else "🔄  Switch to auto-live") {
-            listener.onToggleMode()
-        }
-        item("👁  Peek at original (4 s)") { listener.onPeek() }
-        item("📖  New series — forget names so far") { listener.onNewSeries() }
-        item("⚙  Settings") { listener.onOpenSettings() }
-        item("✕  Stop translating") { listener.onStopRequested() }
+        val col = buildQuickMenu(context, listener) { dismissMenu() }
 
         val lp = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -291,6 +268,42 @@ class OverlayController(private val context: Context, private val listener: List
         wm.addView(col, lp)
         menu = col
         onFootprintChanged?.invoke()
+    }
+
+    companion object {
+        /**
+         * The quick menu's panel with every item wired to [listener]; a
+         * picked item first calls [dismiss]. Built apart from the window so
+         * it can be drawn on its own.
+         */
+        internal fun buildQuickMenu(context: Context, listener: Listener, dismiss: () -> Unit): LinearLayout {
+            val col = OverlayStyle.menuPanel(context)
+            fun item(label: String, icon: Int, color: Int = OverlayStyle.MENU_INK, action: () -> Unit) {
+                col.addView(OverlayStyle.menuRow(context, label, icon, color).apply {
+                    setOnClickListener {
+                        dismiss()
+                        action()
+                    }
+                })
+            }
+            item("Translate this page", R.drawable.ic_menu_bolt) { listener.onTranslateNow() }
+            if (listener.isPaused()) {
+                item("Wake up (resume)", R.drawable.ic_menu_play) { listener.onTogglePause() }
+            } else {
+                item("Pause for a nap", R.drawable.ic_menu_pause) { listener.onTogglePause() }
+            }
+            if (listener.isAutoMode()) {
+                item("Switch to tap-to-translate", R.drawable.ic_menu_tap) { listener.onToggleMode() }
+            } else {
+                item("Switch to hands-free", R.drawable.ic_menu_hands_free) { listener.onToggleMode() }
+            }
+            item("Peek at the original (4 s)", R.drawable.ic_menu_peek) { listener.onPeek() }
+            item("New series: forget names", R.drawable.ic_menu_book) { listener.onNewSeries() }
+            item("Tweaks", R.drawable.ic_menu_tweaks) { listener.onOpenSettings() }
+            col.addView(OverlayStyle.menuDivider(context))
+            item("Stop translating", R.drawable.ic_menu_stop, OverlayStyle.MENU_STOP) { listener.onStopRequested() }
+            return col
+        }
     }
 
     fun dismissMenu() {

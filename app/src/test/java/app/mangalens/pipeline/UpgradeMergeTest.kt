@@ -11,9 +11,9 @@ import org.robolectric.RobolectricTestRunner
 import org.robolectric.annotation.Config
 
 /**
- * The rule the reader experiences as "the translation didn't vanish while I
- * was reading it": an upgrade may replace draft cards, but may never leave
- * fewer cards than the draft showed.
+ * The rule the reader experiences as "the line didn't vanish while I was
+ * reading it": the answer a pass ends with may replace the lines that
+ * streamed in, but may never leave fewer cards than the page already showed.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -29,49 +29,49 @@ class UpgradeMergeTest {
     )
 
     @Test
-    fun `an empty polish keeps every draft card`() {
-        val draft = listOf(
-            bubble(Rect(0, 0, 100, 60), "DRAFT ONE"),
-            bubble(Rect(0, 100, 100, 160), "DRAFT TWO"),
+    fun `an empty answer keeps every streamed card`() {
+        val streamed = listOf(
+            bubble(Rect(0, 0, 100, 60), "STREAMED ONE"),
+            bubble(Rect(0, 100, 100, 160), "STREAMED TWO"),
         )
-        val merged = UpgradeMerge.merge(draft, emptyList())
-        assertEquals(listOf("DRAFT ONE", "DRAFT TWO"), merged.map { it.translated })
+        val merged = UpgradeMerge.merge(streamed, emptyList())
+        assertEquals(listOf("STREAMED ONE", "STREAMED TWO"), merged.map { it.translated })
     }
 
     @Test
-    fun `a full polish replaces the draft entirely`() {
-        val draft = listOf(bubble(Rect(0, 0, 100, 60), "draft"))
-        val polished = listOf(bubble(Rect(2, 3, 98, 58), "POLISHED"))
-        val merged = UpgradeMerge.merge(draft, polished)
-        assertEquals(listOf("POLISHED"), merged.map { it.translated })
+    fun `a full answer replaces what streamed entirely`() {
+        val streamed = listOf(bubble(Rect(0, 0, 100, 60), "streamed"))
+        val answer = listOf(bubble(Rect(2, 3, 98, 58), "ANSWER"))
+        val merged = UpgradeMerge.merge(streamed, answer)
+        assertEquals(listOf("ANSWER"), merged.map { it.translated })
     }
 
     @Test
-    fun `a partial polish keeps the drafts it did not answer`() {
-        val draft = listOf(
-            bubble(Rect(0, 0, 100, 60), "ANSWERED DRAFT"),
-            bubble(Rect(0, 200, 100, 260), "ORPHAN DRAFT"),
+    fun `a partial answer keeps the streamed cards it did not cover`() {
+        val streamed = listOf(
+            bubble(Rect(0, 0, 100, 60), "COVERED"),
+            bubble(Rect(0, 200, 100, 260), "UNCOVERED"),
         )
-        val polished = listOf(bubble(Rect(1, 2, 99, 59), "POLISHED"))
-        val merged = UpgradeMerge.merge(draft, polished)
+        val answer = listOf(bubble(Rect(1, 2, 99, 59), "ANSWER"))
+        val merged = UpgradeMerge.merge(streamed, answer)
         assertEquals(2, merged.size)
-        assertTrue(merged.any { it.translated == "POLISHED" })
-        assertTrue(merged.any { it.translated == "ORPHAN DRAFT" })
-        assertTrue(merged.none { it.translated == "ANSWERED DRAFT" })
+        assertTrue(merged.any { it.translated == "ANSWER" })
+        assertTrue(merged.any { it.translated == "UNCOVERED" })
+        assertTrue(merged.none { it.translated == "COVERED" })
     }
 
     @Test
-    fun `a grazing overlap does not count as answered`() {
-        // 100x60 draft; polished box overlaps only a 20x12 corner (4% of it).
-        val draft = listOf(bubble(Rect(0, 0, 100, 60), "DRAFT"))
-        val polished = listOf(bubble(Rect(80, 48, 200, 120), "ELSEWHERE"))
-        val merged = UpgradeMerge.merge(draft, polished)
+    fun `a grazing overlap does not count as covered`() {
+        // 100x60 card; the answer's box overlaps only a 20x12 corner (4% of it).
+        val streamed = listOf(bubble(Rect(0, 0, 100, 60), "STREAMED"))
+        val answer = listOf(bubble(Rect(80, 48, 200, 120), "ELSEWHERE"))
+        val merged = UpgradeMerge.merge(streamed, answer)
         assertEquals(2, merged.size)
     }
 
     @Test
-    fun `no draft passes the polish through untouched`() {
-        val polished = listOf(bubble(Rect(0, 0, 50, 30), "P"))
-        assertEquals(polished, UpgradeMerge.merge(emptyList(), polished))
+    fun `nothing streamed passes the answer through untouched`() {
+        val answer = listOf(bubble(Rect(0, 0, 50, 30), "A"))
+        assertEquals(answer, UpgradeMerge.merge(emptyList(), answer))
     }
 }

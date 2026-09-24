@@ -15,7 +15,6 @@ import app.mangalens.ocr.TextAnchor
 import app.mangalens.overlay.RenderBubble
 import app.mangalens.settings.AiVisionMode
 import app.mangalens.settings.AppSettings
-import app.mangalens.settings.EngineKind
 import app.mangalens.settings.SourceLang
 import app.mangalens.translate.CastBook
 import app.mangalens.translate.GlossaryStore
@@ -24,13 +23,8 @@ import app.mangalens.translate.ItemKind
 import app.mangalens.translate.PageItem
 import app.mangalens.translate.PageKey
 import app.mangalens.translate.PageReader
-import app.mangalens.translate.GeminiBlocked
-import app.mangalens.translate.GeminiHttpException
-import app.mangalens.translate.GeminiModelMissing
-import app.mangalens.translate.GeminiRateLimited
 import app.mangalens.translate.PendingRead
 import app.mangalens.translate.ReplayGeometry
-import app.mangalens.translate.SfxDict
 import app.mangalens.translate.TranslationCache
 import app.mangalens.translate.TranslationService
 import app.mangalens.translate.VisionLlmEngine
@@ -41,30 +35,27 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
-import kotlinx.coroutines.delay
-import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
-import kotlinx.coroutines.sync.Mutex
-import kotlinx.coroutines.sync.withLock
 import org.json.JSONArray
 import org.json.JSONObject
 
 /**
  * One pass over one stable frame.
  *
- * Free/offline engines: OCR -> group -> translate -> gate junk -> render.
- *
- * AI Pro is progressive so slow networks never stall reading: the fast path
- * (cache + free Google) paints overlays in about a second via [onPartial],
- * then the AI result — vision for scripts that break on-device OCR, cheap
- * text-only requests otherwise — replaces them in place when it lands.
+ * Every line on the page is the AI's. There is no machine draft painted
+ * first and re-worded when the AI lands: each line appears once, in the
+ * words it keeps, streamed onto the page via [onPartial] as the model
+ * writes it. When the AI fails, the page says why ([PageResult.failure])
+ * rather than showing some other translation in its place.
  *
  * With Gemini the page is read AI-first ([PageReader]): the screen goes to
  * the model the moment it is still, the model finds and translates every
  * piece of lettering itself, and on-device analysis only decides where each
  * answer is lettered ([ReadResolver]). Lettering already translated on an
  * earlier stop is repainted from [ItemMemory] before any request returns.
+ * Other providers read on-device OCR's regions — with the page image, or as
+ * text only — and answer them by id.
  */
 class TranslatePipeline(
     private val ocr: OcrEngine,
@@ -78,7 +69,6 @@ class TranslatePipeline(
         val bubbles: List<RenderBubble>,
         val engineLabel: String,
         val note: String?,
-        val polished: Boolean = false,
         /** Stage-by-stage counts, when diagnostics are on. */
         val diag: String? = null,
         /** Balloons found in the page, outlined on screen when diagnostics are on. */
@@ -91,6 +81,12 @@ class TranslatePipeline(
          * hidden, since nothing on the page would say why it stays untranslated.
          */
         val alert: String? = null,
+        /**
+         * Why the AI could not read this page — "network", "rate limited" —
+         * when it could not. Nothing else translates the page in its place,
+         * so this is the only thing that tells the reader why it stays raw.
+         */
+        val failure: String? = null,
     )
 
     /**
@@ -138,15 +134,6 @@ class TranslatePipeline(
         /** A strip taller than this share of the screen is read as the whole screen. */
         const val MAX_STRIP = 0.7f
 
-        /**
-         * How long the machine draft waits for the AI before it is shown.
-         * The AI's first lines normally land well inside this, and a draft
-         * that paints only to be re-worded a moment later is churn, not
-         * speed — so the draft is the safety net for a slow connection
-         * rather than a flash on every page.
-         */
-        const val DRAFT_GRACE_MS = 1800L
-
         /** Background busier than this is worth an AI redraw under its lettering. */
         const val BUSY_FOR_AI = 0.3f
 
@@ -166,8 +153,7 @@ class TranslatePipeline(
 
     /** Whether pages are read AI-first under [settings]. */
     fun readsAiFirst(settings: AppSettings): Boolean =
-        settings.engine == EngineKind.LLM && settings.aiVision != AiVisionMode.OFF &&
-            settings.apiKey.isNotBlank() && PageReader.supports(settings)
+        settings.aiVision != AiVisionMode.OFF && settings.apiKey.isNotBlank() && PageReader.supports(settings)
 
     /**
      * Starts the AI read of [bitmap] in [scope] ahead of analysis — the
@@ -253,7 +239,7 @@ class TranslatePipeline(
         // Anchored vision is the quality path for every script — manhwa's
         // stylized/handwritten lettering needs it as much as vertical
         // Japanese does, and it degrades to the text path automatically.
-        val useVision = settings.engine == EngineKind.LLM && settings.aiVision != AiVisionMode.OFF
+        val useVision = settings.aiVision != AiVisionMode.OFF
 
         // Balloons come from the page pixels, so a region exists because the
         // page shows one — not because OCR happened to read something in it.
@@ -457,7 +443,10 @@ class TranslatePipeline(
         )
     }
 
-    /** Routes one page of regions to the configured engine. */
+    /**
+     * Translates one page of on-device regions: the providers that do not
+     * read pages AI-first, and pages read with the image turned off.
+     */
     private suspend fun dispatch(
         bitmap: Bitmap,
         settings: AppSettings,
@@ -471,37 +460,19 @@ class TranslatePipeline(
         ignoreBottom: Int,
         useVision: Boolean,
     ): PageResult {
-        val balloons = detected.map { it.box }
-        if (settings.engine != EngineKind.LLM) {
-            val result = machineTranslate(bitmap, bubbles, ocrResult.lang, settings, detected)
-            // The free and offline engines only ever see text on-device OCR
-            // managed to read, and stylized vertical lettering routinely
-            // defeats it. Balloon detection can still see those balloons, so
-            // say how many were found and left alone — silently skipping them
-            // reads as the app being broken rather than as the engine's limit.
-            val unread = balloons.count { balloon ->
-                bubbles.none { it.text.isNotBlank() && Rect.intersects(it.box, balloon) }
-            }
-            return if (unread > 0) {
-                result.copy(note = "$unread unread · AI Pro reads these")
-            } else {
-                result
-            }
-        }
-
         val vision = VisionLlmEngine(settings, glossary, cast)
 
-        // Straight-to-final when the AI answer is already cached (re-reads,
-        // scroll-backs, peeks): no fast flash, no network. The key is the
-        // page's content — OCR text, or the balloons' own pixels where OCR
-        // read nothing — so a hit can only replay text onto the balloons it
-        // was written for, never onto whatever now sits at the same spot.
+        // Straight to the answer when it is already cached (re-reads,
+        // scroll-backs, peeks): no network. The key is the page's content —
+        // OCR text, or the balloons' own pixels where OCR read nothing — so
+        // a hit can only replay text onto the balloons it was written for,
+        // never onto whatever now sits at the same spot.
         val pageKey = if (useVision) visionKey(vision.cacheNamespace, ocrResult.lang, bubbles, bitmap) else null
         if (pageKey != null) {
             visionCacheGet(pageKey, bubbles, bitmap.width, bitmap.height)?.let { cached ->
                 return PageResult(
                     toRender(bitmap, cached, bubbles, anchorLines, ignoreTop, ignoreBottom, exclusions, detected),
-                    vision.label, null, polished = true,
+                    vision.label, null,
                 )
             }
         } else {
@@ -512,93 +483,70 @@ class TranslatePipeline(
             }
         }
 
-        // Fast draft and AI request race concurrently: the draft paints in
-        // ~1 s, and the AI round-trip starts immediately rather than queuing
-        // behind it. If the AI finishes first the draft is skipped entirely.
-        //
-        // The AI answer streams, and every balloon it finishes is painted
-        // as it lands: each partial paint is the polish so far laid over
-        // the draft, so the page fills in balloon by balloon in reading
-        // order instead of arriving all at once when the last one closes.
-        return coroutineScope {
-            var aiFinished = false
-            val gate = Mutex()
-            var draft: List<RenderBubble> = emptyList()
-            var polish: List<RenderBubble> = emptyList()
-            suspend fun paint(label: String) {
-                val emit = onPartial ?: return
-                val merged = gate.withLock { UpgradeMerge.merge(draft, polish) }
-                if (merged.isNotEmpty()) emit(PageResult(merged, label, "upgrading"))
-            }
-            val fastJob = onPartial?.let {
-                launch {
-                    val fast = runCatching {
-                        machineTranslate(bitmap, bubbles, ocrResult.lang, settings, detected, forceGoogle = true)
-                    }.getOrNull()
-                    if (fast != null && fast.bubbles.isNotEmpty() && !aiFinished) {
-                        gate.withLock { draft = fast.bubbles }
-                        paint(fast.engineLabel)
-                    }
-                }
-            }
+        // The answer streams, and every balloon it finishes is painted as it
+        // lands, so the page fills in balloon by balloon in reading order
+        // instead of arriving all at once when the last one closes.
+        var fromImage: List<RenderBubble> = emptyList()
+        var imageFailure: Exception? = null
+        if (useVision) {
             try {
-                if (useVision) {
-                    try {
-                        val streamed = ArrayList<VisionLlmEngine.VisionBubble>()
-                        val onBubble: (suspend (VisionLlmEngine.VisionBubble) -> Unit)? = onPartial?.let {
-                            { vb ->
-                                streamed.add(vb)
-                                val rendered = toRender(
-                                    bitmap, streamed.toList(), bubbles, anchorLines, ignoreTop, ignoreBottom, exclusions, detected,
-                                )
-                                gate.withLock { polish = rendered }
-                                paint(vision.label)
-                            }
-                        }
-                        val pageBubbles = vision.translatePage(bitmap, ocrResult.lang, bubbles, onBubble)
-                        // The upgrade must never look worse than the draft:
-                        // accept the vision result only if it covered most of
-                        // the dialogue regions we know exist. Otherwise fall
-                        // back to the text path, which renders AI text on
-                        // exact OCR geometry.
-                        val dialogueIds = bubbles.indices.filter { bubbles[it].kind == BubbleKind.DIALOGUE }
-                        val covered = pageBubbles.count { it.id in dialogueIds }
-                        val goodCoverage = dialogueIds.isEmpty() || covered * 2 >= dialogueIds.size
-                        if (pageBubbles.isNotEmpty() && goodCoverage) {
-                            // A region the model skipped used to render
-                            // nothing at all, leaving raw balloons scattered
-                            // through an otherwise translated page. Anything
-                            // it passed over that OCR *could* read is filled
-                            // in from the text engine instead.
-                            val complete = pageBubbles + gapFill(
-                                bubbles, pageBubbles, ocrResult.lang, settings,
-                            )
-                            pageKey?.let {
-                                visionCachePut(it, bubbles, complete, bitmap.width, bitmap.height)
-                            }
-                            return@coroutineScope PageResult(
-                                toRender(bitmap, complete, bubbles, anchorLines, ignoreTop, ignoreBottom, exclusions, detected),
-                                vision.label, null, polished = true,
-                            )
-                        }
-                    } catch (e: CancellationException) {
-                        throw e
-                    } catch (_: Exception) {
-                        // fall through to the text path
+                val streamed = ArrayList<VisionLlmEngine.VisionBubble>()
+                val onBubble: (suspend (VisionLlmEngine.VisionBubble) -> Unit)? = onPartial?.let { emit ->
+                    { vb ->
+                        streamed.add(vb)
+                        fromImage = toRender(
+                            bitmap, streamed.toList(), bubbles, anchorLines, ignoreTop, ignoreBottom, exclusions, detected,
+                        )
+                        emit(PageResult(fromImage, vision.label, null))
                     }
                 }
-                val onProgress: (suspend (List<RenderBubble>) -> Unit)? = onPartial?.let {
-                    { rendered ->
-                        gate.withLock { polish = rendered }
-                        paint(vision.label)
+                val pageBubbles = vision.translatePage(bitmap, ocrResult.lang, bubbles, onBubble)
+                // Accept the vision result only if it covered most of the
+                // dialogue regions we know exist. Otherwise fall back to the
+                // text path, which renders AI text on exact OCR geometry.
+                val dialogueIds = bubbles.indices.filter { bubbles[it].kind == BubbleKind.DIALOGUE }
+                val covered = pageBubbles.count { it.id in dialogueIds }
+                val goodCoverage = dialogueIds.isEmpty() || covered * 2 >= dialogueIds.size
+                if (pageBubbles.isNotEmpty() && goodCoverage) {
+                    // A region the model skipped used to render nothing at
+                    // all, leaving raw balloons scattered through an
+                    // otherwise translated page. Anything it passed over
+                    // that OCR *could* read is filled in from the text
+                    // engine instead.
+                    val complete = pageBubbles + gapFill(
+                        bubbles, pageBubbles, ocrResult.lang, settings,
+                    )
+                    pageKey?.let {
+                        visionCachePut(it, bubbles, complete, bitmap.width, bitmap.height)
                     }
+                    return PageResult(
+                        toRender(bitmap, complete, bubbles, anchorLines, ignoreTop, ignoreBottom, exclusions, detected),
+                        vision.label, null,
+                    )
                 }
-                aiTextTranslate(bitmap, bubbles, ocrResult.lang, settings, detected, onProgress)
-            } finally {
-                aiFinished = true
-                fastJob?.cancel()
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                // The text path still answers what OCR read; the failure is
+                // reported alongside, since the page image's lettering is
+                // left unread.
+                imageFailure = e
             }
         }
+        // Lines the image read already put on the page stay unless the text
+        // path answers the same balloon: a line losing to no line at all is
+        // strictly a downgrade.
+        val onProgress: (suspend (List<RenderBubble>) -> Unit)? = onPartial?.let { emit ->
+            { rendered -> emit(PageResult(UpgradeMerge.merge(fromImage, rendered), vision.label, null)) }
+        }
+        val text = aiTextTranslate(bitmap, bubbles, ocrResult.lang, settings, detected, onProgress)
+        val shown = UpgradeMerge.merge(fromImage, text.bubbles)
+        val failure = imageFailure ?: return text.copy(bubbles = shown)
+        return text.copy(
+            bubbles = shown,
+            failure = AiFailure.cause(failure),
+            alert = failure.takeIf(AiFailure::keyRejected)?.let { vision.label + " rejected the API key — check it in MangaLens" },
+        )
     }
 
     // ---- AI-first reading (Gemini) ----
@@ -608,9 +556,8 @@ class TranslatePipeline(
      *
      * The order things reach the screen is the whole point: lettering
      * remembered from an earlier stop repaints at once; the model's lines
-     * then land one by one in reading order; the machine draft appears only
-     * when the model is slow to say anything, so a normal page is lettered
-     * once rather than twice. Where lettering sits on detailed art, an image
+     * then land one by one in reading order, each lettered once, in the
+     * words it keeps. Where lettering sits on detailed art, an image
      * model's redraw of that art replaces the local reconstruction when it
      * arrives — same English, same place, cleaner ground under it.
      */
@@ -637,23 +584,21 @@ class TranslatePipeline(
             pending?.cancel()
             memory.remember(bitmap, cached)
             seen = Seen(matchOf(bitmap), cached)
-            return@coroutineScope PageResult(resolver.resolve(cached), reader.label, null, polished = true, diag = "cached")
+            return@coroutineScope PageResult(resolver.resolve(cached), reader.label, null, diag = "cached")
         }
         var read = pending ?: reader.start(this, bitmap, lang)
 
-        val gate = Mutex()
         var recalled: List<PageItem> = emptyList()
         val streamed = ArrayList<PageItem>()
-        var draft: List<RenderBubble> = emptyList()
         var firstAt = -1L
 
         // A strip read's answers, less the halves of balloons its edge cut.
         fun fresh(items: List<PageItem>): List<PageItem> = (read as? StripRead)?.trim(items, recalled) ?: items
 
-        suspend fun paint(label: String) {
+        suspend fun paint() {
             val emit = onPartial ?: return
-            val shown = gate.withLock { UpgradeMerge.merge(draft, resolver.resolve(Wording.keep(recalled, fresh(streamed)))) }
-            if (shown.isNotEmpty()) emit(PageResult(shown, label, "upgrading"))
+            val shown = resolver.resolve(Wording.keep(recalled, fresh(streamed)))
+            if (shown.isNotEmpty()) emit(PageResult(shown, reader.label, null))
         }
 
         if (onPartial != null || read is StripRead) {
@@ -667,30 +612,15 @@ class TranslatePipeline(
                 strip.cancel()
                 read = reader.start(this, bitmap, lang)
             }
-            if (recalled.isNotEmpty()) paint(reader.label)
-        }
-
-        val draftJob = onPartial?.let {
-            launch {
-                val fast = runCatching {
-                    machineTranslate(bitmap, bubbles, lang, settings, analysis.detected, forceGoogle = true)
-                }.getOrNull() ?: return@launch
-                val wait = DRAFT_GRACE_MS - elapsed()
-                if (wait > 0) delay(wait)
-                if (fast.bubbles.isEmpty() || firstAt >= 0) return@launch
-                gate.withLock { draft = fast.bubbles }
-                paint(fast.engineLabel)
-            }
+            if (recalled.isNotEmpty()) paint()
         }
 
         var failure: Exception? = null
         val items: List<PageItem>? = try {
             read.collect { item ->
-                gate.withLock {
-                    if (firstAt < 0) firstAt = elapsed()
-                    streamed.add(item)
-                }
-                paint(reader.label)
+                if (firstAt < 0) firstAt = elapsed()
+                streamed.add(item)
+                paint()
             }
         } catch (e: CancellationException) {
             // The reader moved on mid-read, usually having read what was
@@ -706,19 +636,26 @@ class TranslatePipeline(
         }
 
         if (items == null) {
-            // Refused or failed. Whatever streamed stays; the rest goes
-            // through the text path, which falls back to Google on its own.
-            draftJob?.cancel()
-            val partial = gate.withLock { resolver.resolve(Wording.keep(recalled, streamed)) }
-            val text = runCatching {
+            // Refused or failed. Whatever streamed stays, and whatever
+            // on-device OCR read goes to the AI as text. Nothing else
+            // translates the page: the failure is reported, so the reader
+            // knows why lettering stays raw rather than seeing some other
+            // translation in the AI's place.
+            val partial = resolver.resolve(Wording.keep(recalled, streamed))
+            val text = try {
                 aiTextTranslate(bitmap, bubbles, lang, settings, analysis.detected)
-            }.getOrNull()
-            val shown = if (text == null) UpgradeMerge.merge(draft, partial) else UpgradeMerge.merge(text.bubbles, partial)
-            val cause = failure?.let(::readFailure) ?: "failed"
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                null
+            }
+            val shown = if (text == null) partial else UpgradeMerge.merge(text.bubbles, partial)
+            val cause = failure?.let(AiFailure::cause) ?: "unexpected error"
             return@coroutineScope PageResult(
-                shown, text?.engineLabel ?: reader.label, "AI read $cause", polished = partial.isNotEmpty(),
-                diag = "read $cause at ${elapsed()} ms",
-                alert = failure?.takeIf(::keyRejected)?.let { "Gemini rejected the API key — check it in MangaLens" },
+                shown, reader.label, "AI read failed: $cause",
+                diag = "read failed: $cause at ${elapsed()} ms",
+                alert = failure?.takeIf(AiFailure::keyRejected)?.let { "Gemini rejected the API key — check it in MangaLens" },
+                failure = cause,
             )
         }
 
@@ -734,14 +671,14 @@ class TranslatePipeline(
             seen = Seen((read as? StripRead)?.match ?: matchOf(bitmap), finalItems)
         }
         memory.remember(bitmap, finalItems)
-        var rendered = gate.withLock { resolver.resolve(finalItems) }
+        var rendered = resolver.resolve(finalItems)
 
         // Lettering on detailed art has only been smoothed over locally.
         // Its ground is redrawn by the image model once the whole page is
         // known, so every region that needs it goes up in one request —
         // sound effects never: those stay part of the drawing.
         var note: String? = null
-        val targets = if (!AiCleaner.supports(settings)) emptyList() else gate.withLock {
+        val targets = if (!AiCleaner.supports(settings)) emptyList() else {
             resolver.freeItems
                 .filter { it.kind != ItemKind.SFX }
                 .mapNotNull { item ->
@@ -750,31 +687,28 @@ class TranslatePipeline(
                 .sortedByDescending { it.second.busy }
         }
         if (targets.isNotEmpty()) {
-            onPartial?.invoke(PageResult(UpgradeMerge.merge(draft, rendered), reader.label, "cleaning art…", polished = true))
+            onPartial?.invoke(PageResult(rendered, reader.label, "cleaning art…"))
             val cleaned = withTimeoutOrNull(CLEANUP_TIMEOUT_MS) {
                 withContext(Dispatchers.IO) { AiCleaner(settings).cleanRegions(bitmap, targets.map { it.second.rect }) }
             }
             if (cleaned != null) {
                 val redrawn = withContext(Dispatchers.Default) {
-                    gate.withLock {
-                        var any = 0
-                        for ((item, e) in targets) {
-                            AiCleaner.refine(bitmap, cleaned, e)?.let {
-                                resolver.upgrade(item, it)
-                                any++
-                            }
+                    var any = 0
+                    for ((item, e) in targets) {
+                        AiCleaner.refine(bitmap, cleaned, e)?.let {
+                            resolver.upgrade(item, it)
+                            any++
                         }
-                        if (any > 0) rendered = resolver.resolve(finalItems)
-                        any
                     }
+                    if (any > 0) rendered = resolver.resolve(finalItems)
+                    any
                 }
                 if (redrawn > 0) note = "art cleaned"
                 cleaned.recycle()
             }
         }
-        draftJob?.cancel()
         PageResult(
-            rendered, reader.label, note, polished = true,
+            rendered, reader.label, note,
             diag = "first ${if (firstAt >= 0) "$firstAt ms" else "—"} · done ${elapsed()} ms" +
                 read.summary.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty(),
         )
@@ -783,30 +717,6 @@ class TranslatePipeline(
     /** [bitmap]'s scroll signature: the one [startRead] measured when it was this frame's. */
     private fun matchOf(bitmap: Bitmap): ScrollMatch =
         lastMatch?.takeIf { it.first === bitmap }?.second ?: ScrollMatch.of(bitmap)
-
-    /** A few words on why a read failed, for the status line; never the key or the page. */
-    private fun readFailure(e: Exception): String = when {
-        keyRejected(e) -> "failed: key rejected"
-        e is GeminiRateLimited -> "failed: rate limited"
-        e is GeminiBlocked -> "declined"
-        e is GeminiModelMissing -> "failed: model unavailable"
-        e is GeminiHttpException -> "failed: HTTP ${e.code}"
-        e is java.io.IOException -> "failed: network"
-        else -> "failed"
-    }
-
-    /**
-     * The provider turned the key itself away — wrong, revoked or not
-     * allowed this API — as opposed to a busy server or a declined page.
-     * Every page will fail the same way until the reader fixes it.
-     */
-    private fun keyRejected(e: Exception): Boolean {
-        if (e !is GeminiHttpException || e is GeminiModelMissing) return false
-        val m = e.message.orEmpty()
-        return e.code == 401 || (e.code == 403 && "PERMISSION_DENIED" in m) ||
-            (e.code == 400 && ("API_KEY_INVALID" in m || "API key not valid" in m || "API key expired" in m))
-    }
-
 
     /**
      * Dialogue on-device analysis found in a detected balloon that the model
@@ -843,9 +753,8 @@ class TranslatePipeline(
         } catch (e: Exception) {
             return emptyList()
         }
-        val fromAi = outcome.engineLabel != "Google"
         return missing.mapIndexedNotNull { k, b ->
-            val en = JunkFilter.accept(b.text, outcome.texts.getOrElse(k) { "" }, lang, fromAi) ?: return@mapIndexedNotNull null
+            val en = JunkFilter.accept(b.text, outcome.texts.getOrElse(k) { "" }) ?: return@mapIndexedNotNull null
             PageItem(Rect(b.box), ItemKind.SPEECH, b.text, en, vertical = b.vertical)
         }
     }
@@ -909,41 +818,6 @@ class TranslatePipeline(
         cache.put(key, JSONObject().put("v", READ_CACHE_VERSION).put("regions", regs).put("items", arr).toString())
     }
 
-    // ---- machine engines (Google / on-device), also the AI fast path ----
-
-    private suspend fun machineTranslate(
-        bitmap: Bitmap,
-        bubbles: List<Bubble>,
-        lang: SourceLang,
-        settings: AppSettings,
-        detected: List<Balloon>,
-        forceGoogle: Boolean = false,
-    ): PageResult {
-        // Balloons detected in the pixels but unread by OCR carry no text; the
-        // machine engines have nothing to work from and would render blanks.
-        val dialogue = bubbles.filter { it.kind == BubbleKind.DIALOGUE && it.text.isNotBlank() }
-        val outcome = if (dialogue.isEmpty()) {
-            TranslationService.Outcome(emptyList(), "Google")
-        } else {
-            translation.translate(dialogue.map { it.text }, lang, settings, forceGoogle = forceGoogle)
-        }
-        val texts = HashMap<Bubble, String>()
-        dialogue.forEachIndexed { i, b ->
-            val gated = JunkFilter.accept(b.text, outcome.texts.getOrElse(i) { "" }, lang)
-            if (gated != null) texts[b] = gated
-        }
-        // Machine engines never see SFX — the dictionary stylizes known ones,
-        // unknown ones stay untouched art instead of becoming "death".
-        for (b in bubbles) {
-            if (b.kind == BubbleKind.SFX) SfxDict.lookup(b.text)?.let { texts[b] = it }
-        }
-        val rendered = bubbles.mapNotNull { b ->
-            val t = texts[b] ?: return@mapNotNull null
-            renderBubble(bitmap, b.box, t, b.text, b.vertical, b.kind, detected)
-        }
-        return PageResult(rendered, outcome.engineLabel, outcome.note)
-    }
-
     // ---- AI text path (small payloads — slow-internet friendly) ----
 
     private suspend fun aiTextTranslate(
@@ -966,26 +840,23 @@ class TranslatePipeline(
             parts = idx.map { bubbles[it].runPart },
             onProgress = onProgress?.let { emit ->
                 { texts ->
-                    // Streamed answers only ever come from the AI engine.
                     emit(
                         texts.entries.sortedBy { it.key }.mapNotNull { (k, en) ->
                             val b = bubbles[idx[k]]
-                            val gated = JunkFilter.accept(b.text, en, lang, fromAi = true)
-                                ?: return@mapNotNull null
+                            val gated = JunkFilter.accept(b.text, en) ?: return@mapNotNull null
                             renderBubble(bitmap, b.box, gated, b.text, b.vertical, b.kind, detected)
                         }
                     )
                 }
             },
         )
-        val fromAi = outcome.engineLabel != "Google"
         val rendered = idx.mapIndexedNotNull { k, i ->
             val b = bubbles[i]
-            val gated = JunkFilter.accept(b.text, outcome.texts.getOrElse(k) { "" }, lang, fromAi)
+            val gated = JunkFilter.accept(b.text, outcome.texts.getOrElse(k) { "" })
                 ?: return@mapIndexedNotNull null
             renderBubble(bitmap, b.box, gated, b.text, b.vertical, b.kind, detected)
         }
-        return PageResult(rendered, outcome.engineLabel, outcome.note, fromAi)
+        return PageResult(rendered, outcome.engineLabel, null)
     }
 
     /**
@@ -1018,11 +889,9 @@ class TranslatePipeline(
             )
         }.getOrNull() ?: return emptyList()
 
-        val fromAi = outcome.engineLabel != "Google"
         return missing.mapIndexedNotNull { k, i ->
-            val gated = JunkFilter.accept(
-                bubbles[i].text, outcome.texts.getOrElse(k) { "" }, lang, fromAi,
-            ) ?: return@mapIndexedNotNull null
+            val gated = JunkFilter.accept(bubbles[i].text, outcome.texts.getOrElse(k) { "" })
+                ?: return@mapIndexedNotNull null
             VisionLlmEngine.VisionBubble(i, 0, 0, 0, 0, bubbles[i].text, gated, sfx = false)
         }
     }
