@@ -113,15 +113,17 @@ class OverlayController(private val context: Context, private val listener: List
         val current = letteringWm
         if (current != null && current === (host ?: wm)) return
         current?.let { old -> runCatching { old.removeViewImmediate(bubbleView) } }
+        val strength = OverlayStrength.of(context)
         val placed = when {
             host != null && runCatching {
-                host.addView(bubbleView, letteringParams(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY))
+                host.addView(bubbleView, letteringParams(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY, 1f))
             }.isSuccess -> host
             runCatching {
-                wm.addView(bubbleView, letteringParams(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY))
+                wm.addView(bubbleView, letteringParams(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, strength))
             }.isSuccess -> wm
             else -> null
         }
+        bubbleView.windowAlpha = if (placed != null && placed === host) 1f else strength
         letteringWm = placed
         letteringOverControls = (host != null && placed === host) || controls != null
         footprintChanged()
@@ -129,10 +131,14 @@ class OverlayController(private val context: Context, private val listener: List
 
     /**
      * The lettering's window: full screen in screen coordinates, never
-     * focused or touched. New each time, since adding a window writes the
-     * token of the window manager it goes through into its parameters.
+     * focused or touched, drawn at [alpha]. An app overlay is asked for
+     * exactly the strength Android allows one that lets touches through
+     * ([OverlayStrength]) rather than left for the system to cut back, so
+     * the view knows the strength it is drawn at. New each time, since
+     * adding a window writes the token of the window manager it goes
+     * through into its parameters.
      */
-    private fun letteringParams(type: Int): WindowManager.LayoutParams {
+    private fun letteringParams(type: Int, alpha: Float): WindowManager.LayoutParams {
         val lp = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.MATCH_PARENT,
@@ -144,6 +150,7 @@ class OverlayController(private val context: Context, private val listener: List
             PixelFormat.TRANSLUCENT
         )
         lp.gravity = Gravity.TOP or Gravity.START
+        lp.alpha = alpha
         if (Build.VERSION.SDK_INT >= 28) {
             lp.layoutInDisplayCutoutMode =
                 WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES

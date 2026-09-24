@@ -7,6 +7,10 @@ import android.app.Service
 import android.content.Intent
 import android.content.res.Configuration
 import android.graphics.Bitmap
+import android.graphics.Canvas
+import android.graphics.ColorMatrix
+import android.graphics.ColorMatrixColorFilter
+import android.graphics.Paint
 import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.hardware.display.DisplayManager
@@ -305,6 +309,27 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
     /** Bumped on every mask change, so a stale narrowing never lands. Main thread only. */
     private var maskEpoch = 0
 
+    /**
+     * The share of itself the page shows at on screen, wherever the
+     * lettering paints nothing: below 1 while MangaLens's own veil is up
+     * (see BubbleOverlayView.veiled), since the veil is captured along with
+     * the page. Frames are divided by it, so everything downstream reads the
+     * page as it is. Set on the main thread, read on the capture thread.
+     */
+    @Volatile private var screenLevel = 1f
+
+    /** [screenLevel] as it was when the newest frame was read. Guarded by [frameLock]. */
+    private var latestLevel = 1f
+
+    /**
+     * The frame the cards on screen were set for, as the overlay paints
+     * against it under the veil, and the pass frame it was copied from: the
+     * pass frees its own when it ends, and the cards outlive it. Main
+     * thread only.
+     */
+    private var cardsPage: Bitmap? = null
+    private var cardsFrom: Bitmap? = null
+
     // Reference for slow-scroll drift detection (capture thread only).
     private var slowRefThumb: IntArray? = null
     private var slowRefAt = 0L
@@ -419,6 +444,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                     v.bgOpacity = s.bgOpacity
                 }
                 controller?.setManual(s.mode == CaptureMode.MANUAL)
+                updateVeil()
             }
         }
     }
@@ -482,6 +508,8 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         }
         controller?.setManual(settings.mode == CaptureMode.MANUAL)
         controller?.onFootprintChanged = { refreshOverlayMask() }
+        controller?.bubbleView?.let { v -> v.onVeilChanged = { screenLevel = v.screenLevel } }
+        updateVeil()
         refreshOverlayMask()
         running.value = true
         startTicker()
@@ -639,11 +667,14 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
      */
     private fun process(image: Image, now: Long) {
         try {
+            val level = screenLevel
             val bmp = imageToBitmap(image)
             synchronized(frameLock) {
                 latestBitmap = bmp
+                latestLevel = level
             }
             val thumb = FrameStability.grayThumb(bmp, capW, capH)
+            if (level != 1f) FrameStability.lift(thumb, 1f / level)
             val mask = overlayMask
             // Our own painting and clearing is motion too, as far as
             // frame-to-frame differencing can tell. For the moments around
@@ -807,10 +838,31 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
      * changed, and the balloon that slid in under one would never be
      * noticed. Main thread only.
      */
-    private fun paintCards(bubbles: List<RenderBubble>) {
+    private fun paintCards(bubbles: List<RenderBubble>, frame: Bitmap? = null) {
         val view = controller?.bubbleView ?: return
-        view.setBubbles(bubbles)
+        if (frame != null && frame !== cardsFrom && bubbles.isNotEmpty()) {
+            cardsFrom = frame
+            cardsPage = if (view.veil > 0f) frame.copy(Bitmap.Config.ARGB_8888, false) else null
+        }
+        view.setBubbles(bubbles, cardsPage)
         setOverlayMask(currentOverlayMask())
+    }
+
+    /**
+     * Veils the page while MangaLens is awake and the reader wants no
+     * ghosts (see BubbleOverlayView.veiled). Frames are read through the
+     * veil from the next one on; the one or two the screen takes to catch
+     * up change all over like a scroll does, which only restarts the wait
+     * for the page to settle. Main thread only.
+     */
+    private fun updateVeil() {
+        val view = controller?.bubbleView ?: return
+        view.veiled = !paused && settings.noGhosts
+        screenLevel = view.screenLevel
+        if (view.veil <= 0f) {
+            cardsPage = null
+            cardsFrom = null
+        }
     }
 
     /** Clears cards and the mask that described them. Main thread only. */
@@ -1097,7 +1149,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                                 streamed = partial.bubbles
                                 lastShown = partial.bubbles
                                 suppressUntil = SystemClock.uptimeMillis() + 600
-                                paintCards(partial.bubbles)
+                                paintCards(partial.bubbles, bmp)
                                 if (partial.note == "cleaning art…") {
                                     setPill("✨ cleaning art…")
                                     spoke = true
@@ -1112,7 +1164,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                 val shown = UpgradeMerge.merge(streamed, result.bubbles)
                 lastShown = shown
                 suppressUntil = SystemClock.uptimeMillis() + 500
-                paintCards(shown)
+                paintCards(shown, bmp)
                 state = State.SHOWING
                 // A page with dialogue keeps the current work alive and feeds it
                 // the names that identify it; a run of pages without any means
@@ -1215,9 +1267,21 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         latestBitmap?.let { src ->
             val w = capW.coerceAtMost(src.width)
             val h = capH.coerceAtMost(src.height)
+            if (latestLevel != 1f) return@let lifted(src, w, h, 1f / latestLevel)
             val out = Bitmap.createBitmap(src, 0, 0, w, h)
             if (out === src) src.copy(Bitmap.Config.ARGB_8888, false) else out
         }
+    }
+
+    /** The top-left [w]×[h] of [src], brightened by [gain]: the page as it is under MangaLens's veil. */
+    private fun lifted(src: Bitmap, w: Int, h: Int, gain: Float): Bitmap {
+        val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val lift = Paint().apply {
+            colorFilter = ColorMatrixColorFilter(ColorMatrix().apply { setScale(gain, gain, gain, 1f) })
+        }
+        val area = Rect(0, 0, w, h)
+        Canvas(out).drawBitmap(src, area, area, lift)
+        return out
     }
 
     /**
@@ -1271,6 +1335,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
 
     override fun onTogglePause() {
         paused = !paused
+        updateVeil()
         if (paused) {
             // Cancelling the pass stops its AI read too: the pass gives
             // back everything it holds on the way out. A frame read ahead
@@ -1373,6 +1438,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         runCatching { projection?.stop() }
         projection = null
         controller?.onFootprintChanged = null
+        controller?.bubbleView?.onVeilChanged = null
         controller?.detach()
         controller = null
         releaseFrameBuffers()

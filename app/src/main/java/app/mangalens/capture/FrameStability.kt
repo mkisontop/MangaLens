@@ -70,6 +70,14 @@ object FrameStability {
         return px
     }
 
+    /**
+     * Brightens [thumb] in place by [gain], to read a screen dimmed by
+     * MangaLens's own veil as the page it is (see BubbleOverlayView.veiled).
+     */
+    fun lift(thumb: IntArray, gain: Float) {
+        for (i in thumb.indices) thumb[i] = (thumb[i] * gain + 0.5f).toInt().coerceAtMost(255)
+    }
+
     /** Mean absolute difference per cell, over the cells [mask] does not cover. */
     fun meanDiff(a: IntArray?, b: IntArray?, mask: BooleanArray? = null): Double {
         if (a == null || b == null || a.size != b.size) return 255.0

@@ -19,7 +19,7 @@ about 1.5–2 s after you stop.
 · [all releases](https://github.com/mkisontop/mangalens/releases)
 · [changelog](CHANGELOG.md)
 
-Current release: **1.0.2**. Still on 0.9.1? Follow the
+Current release: **1.0.3**. Still on 0.9.1? Follow the
 [one-time update instructions](#one-time-update-from-091) instead of using
 the normal APK.
 
@@ -35,7 +35,10 @@ the normal APK.
 4. Every time you stop scrolling, English appears **in** the page, line by
    line as it is translated — each balloon wiped clean and re-lettered in a
    comic face, narration and text on the art erased and re-lettered in their
-   own colours, the way a scanlation typesets it.
+   own colours, the way a scanlation typesets it. On Android 12 and later the
+   page is a little darker while MangaLens is awake: that is what keeps the
+   original from showing through the English (see
+   [No ghosts](#no-ghosts)).
 5. Scroll on — the overlays clear instantly so the page underneath is never
    obscured mid-motion, and the next stop translates itself. Lettering you
    already read repaints straight away wherever it has scrolled to, and a
@@ -65,6 +68,23 @@ accessibility service, no notification access, no SMS. 1.0.1 had an
 accessibility service, and where Play Protect's enhanced fraud protection is
 on it could not be installed at all ("App blocked to protect your device");
 1.0.2 and later install normally.
+
+### No ghosts
+
+Since Android 12, an overlay that lets your taps and scrolls through to the
+app underneath is drawn at no more than 80% strength, so a fifth of the page
+shows through whatever it paints: a grey ghost of the original lettering
+under the English. MangaLens makes up for it itself. While it is awake it
+dims the whole page by that fifth, and paints every cleaned balloon, card and
+erased patch with the page's share already taken off, so on screen the two
+meet at exactly the same level and nothing of the original shows through. No
+extra permission is involved.
+
+The page is a little darker while MangaLens is awake and back to full
+brightness while it naps. Rather have full brightness and the faint ghost?
+Switch off **Tweaks → No ghosts**. Light lettering on dark art (white text
+with a black outline) can still leave a trace: over white, the darkest the
+overlay can show is a fifth of it.
 
 Updating is automatic-ish: the app makes one anonymous check against this
 repository's latest release when you open it, and shows a small **NEW!**
@@ -539,11 +559,13 @@ not the normal download.
 you're not in a Brave *private* tab — private tabs set `FLAG_SECURE`, which
 makes the captured screen black.
 
-**A faint grey ghost of the original under the English?** That is Android's
-cap on overlays that let your taps through: since Android 12 they are drawn
-at no more than 80% strength, so a trace of what is underneath shows. 1.0.1
-got around it with an accessibility service, which Play Protect refuses to
-install from a download, so 1.0.2 dropped it.
+**A faint grey ghost of the original under the English?** Check that
+**Tweaks → No ghosts** is on (it is by default); see [No ghosts](#no-ghosts)
+for how it works.
+
+**The page looks darker while MangaLens runs?** That is the veil that keeps
+the original from ghosting through on Android 12 and later. It lifts while
+MangaLens naps, and **Tweaks → No ghosts** turns it off.
 
 **"App blocked to protect your device" when installing?** That was 1.0.1 and
 its accessibility service. Download the latest APK again: 1.0.2 and later

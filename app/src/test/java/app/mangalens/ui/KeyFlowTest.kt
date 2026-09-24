@@ -44,6 +44,7 @@ class KeyFlowTest {
         override fun setAiCleanup(v: Boolean) = Unit
         override fun setDiagnostics(v: Boolean) = Unit
         override fun setTextScale(v: Float) = Unit
+        override fun setNoGhosts(v: Boolean) = Unit
         override fun setIgnoreTopPct(v: Float) = Unit
         override fun setStabilityMs(v: Int) = Unit
     }

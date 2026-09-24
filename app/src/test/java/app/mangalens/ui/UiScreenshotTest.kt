@@ -352,6 +352,28 @@ class UiScreenshotTest {
     }
 
     @Test
+    fun `14g tweaks, no ghosts where Android caps the overlay`() {
+        home(HomeUiState(keyed, overlayGranted = true, ghostsOffered = true, browserName = "Brave"))
+        compose.onNodeWithContentDescription("Tweaks:", substring = true).performScrollTo().performClick()
+        compose.onNodeWithText("No ghosts").performScrollTo()
+        compose.onNodeWithText("Nothing of the original shows under my English.", substring = true).assertExists()
+        both("14g-tweaks-no-ghosts")
+        // Switched off, it says what that costs.
+        ui = ui.copy(settings = keyed.copy(noGhosts = false))
+        compose.waitForIdle()
+        compose.onNodeWithText("Full brightness, but the original shows faintly under my English.").performScrollTo()
+        both("14h-tweaks-ghosts-allowed")
+    }
+
+    @Test
+    fun `14i where Android draws the overlay as painted there is no ghost to hide`() {
+        home(HomeUiState(keyed, overlayGranted = true, ghostsOffered = false, browserName = "Brave"))
+        compose.onNodeWithContentDescription("Tweaks:", substring = true).performScrollTo().performClick()
+        compose.onNodeWithText("How big I letter the English on the page.").performScrollTo()
+        compose.onNodeWithText("No ghosts").assertDoesNotExist()
+    }
+
+    @Test
     fun `14f tweaks, solid lettering off at double font size`() {
         // Large text stacks the button under the words instead of squeezing them.
         home(HomeUiState(keyed, overlayGranted = true, solidOffered = true, browserName = "Brave"), fontScale = 2f)
@@ -542,6 +564,7 @@ internal object NoSink : SettingsSink {
     override fun setAiCleanup(v: Boolean) = Unit
     override fun setDiagnostics(v: Boolean) = Unit
     override fun setTextScale(v: Float) = Unit
+    override fun setNoGhosts(v: Boolean) = Unit
     override fun setIgnoreTopPct(v: Float) = Unit
     override fun setStabilityMs(v: Int) = Unit
 }

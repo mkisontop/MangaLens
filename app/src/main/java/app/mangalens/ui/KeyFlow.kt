@@ -65,6 +65,7 @@ internal interface SettingsSink {
     fun setAiCleanup(v: Boolean)
     fun setDiagnostics(v: Boolean)
     fun setTextScale(v: Float)
+    fun setNoGhosts(v: Boolean)
     fun setIgnoreTopPct(v: Float)
     fun setStabilityMs(v: Int)
 }
@@ -90,6 +91,7 @@ internal class RepoSink(private val scope: CoroutineScope, private val repo: Set
     override fun setAiCleanup(v: Boolean) = write { setAiCleanup(v) }
     override fun setDiagnostics(v: Boolean) = write { setDiagnostics(v) }
     override fun setTextScale(v: Float) = write { setTextScale(v) }
+    override fun setNoGhosts(v: Boolean) = write { setNoGhosts(v) }
     override fun setIgnoreTopPct(v: Float) = write { setIgnoreTopPct(v) }
     override fun setStabilityMs(v: Int) = write { setStabilityMs(v) }
 }

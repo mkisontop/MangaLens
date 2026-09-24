@@ -85,8 +85,8 @@ internal enum class TweaksTarget { TOP, AI, OTHER_AI }
 
 /**
  * Tweaks, kept to what a reader actually changes: the language, hands-free
- * or tap, the size of the lettering and whether it is solid, and whether
- * the AI's key works. That is all the page shows. Everything else —
+ * or tap, the size of the lettering and whether the original may show
+ * through it, and whether the AI's key works. That is all the page shows. Everything else —
  * timing, data, the thinking setting, the model, other AI providers,
  * diagnostics — has defaults that are right for nearly everyone, and waits
  * folded under More options, where it can be found without being in the
@@ -103,6 +103,7 @@ internal fun TweaksPage(
     versionName: String,
     solidOffered: Boolean,
     solidLettering: Boolean,
+    ghostsOffered: Boolean,
     onTurnOnSolid: () -> Unit,
     onOpenAppInfo: () -> Unit,
     onClose: () -> Unit,
@@ -157,6 +158,7 @@ internal fun TweaksPage(
                 ReadingSection(settings, sink, columns = if (narrow) 2 else 4)
                 TextSizeSection(settings, sink)
                 if (solidOffered) SolidLetteringRow(solidLettering, onTurnOnSolid, onOpenAppInfo, stacked = narrow)
+                if (ghostsOffered && !solidLettering) NoGhostsRow(settings, sink)
                 YourAiSection(drafts, sayHi, Modifier.bringIntoViewRequester(aiRequester))
 
                 Spacer(Modifier.height(28.dp))
@@ -274,6 +276,23 @@ private fun TextSizeSection(settings: AppSettings, sink: SettingsSink) {
     )
     Spacer(Modifier.height(6.dp))
     Helper("How big I letter the English on the page.")
+}
+
+/**
+ * Under Look: whether the page is veiled so nothing of the original shows
+ * through the English, at the price of a page a fifth darker while
+ * MangaLens is awake. Android draws the lettering at no more than 80%.
+ */
+@Composable
+private fun NoGhostsRow(settings: AppSettings, sink: SettingsSink) {
+    Spacer(Modifier.height(16.dp))
+    PopToggleRow(
+        "No ghosts",
+        if (settings.noGhosts) "Nothing of the original shows under my English. The page is a little darker while I'm awake."
+        else "Full brightness, but the original shows faintly under my English.",
+        settings.noGhosts,
+        sink::setNoGhosts,
+    )
 }
 
 /**

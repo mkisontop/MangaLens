@@ -91,6 +91,7 @@ import androidx.compose.ui.window.DialogWindowProvider
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import app.mangalens.capture.ScreenCaptureService
 import app.mangalens.overlay.LetteringHost
+import app.mangalens.overlay.OverlayStrength
 import app.mangalens.settings.AppSettings
 import app.mangalens.settings.CaptureMode
 import app.mangalens.settings.SettingsRepository
@@ -118,6 +119,12 @@ internal data class HomeUiState(
     val solidOffered: Boolean = false,
     /** MangaLens is on in Accessibility, so the lettering is drawn at full strength. */
     val solidLettering: Boolean = false,
+    /**
+     * Whether "No ghosts" is offered: Android draws the lettering below
+     * full strength (see OverlayStrength), so the original would show
+     * through it unless the page is veiled.
+     */
+    val ghostsOffered: Boolean = false,
     /** "Brave" when it is installed, else null and the copy says "your browser". */
     val browserName: String? = null,
     /** The last GO ended at the screen-capture dialog's Cancel. */
@@ -180,6 +187,7 @@ fun HomeScreen(
         }
     }
     val solidOffered = remember { Build.VERSION.SDK_INT >= 31 && LetteringHost.declared(context) }
+    val ghostsOffered = remember { OverlayStrength.of(context) < 1f }
     // Solid lettering is switched on in Settings, so it is checked again
     // each time the reader comes back.
     var solidLettering by remember { mutableStateOf(LetteringHost.isOn(context)) }
@@ -219,6 +227,7 @@ fun HomeScreen(
                 overlayGranted = overlayGranted,
                 solidOffered = solidOffered,
                 solidLettering = solidLettering,
+                ghostsOffered = ghostsOffered,
                 browserName = browserName,
                 startRefused = startRefused,
                 update = update,
@@ -338,6 +347,7 @@ internal fun HomeContent(
                         versionName = state.versionName,
                         solidOffered = state.solidOffered,
                         solidLettering = state.solidLettering,
+                        ghostsOffered = state.ghostsOffered,
                         onTurnOnSolid = actions.onTurnOnSolid,
                         onOpenAppInfo = actions.onOpenAppInfo,
                         onClose = { page = Page.HOME },

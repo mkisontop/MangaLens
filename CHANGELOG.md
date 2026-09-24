@@ -1,5 +1,24 @@
 # Changelog
 
+## 1.0.3
+
+No more grey ghost, and nothing extra to allow for it.
+
+**Download:** `MangaLens.apk` below updates 0.9.2 and newer in place.
+
+- **Clean balloons on Android 12 and later.** Android draws an overlay that
+  lets your taps through at no more than 80% strength, so a fifth of the page
+  showed through every cleaned balloon: a grey ghost of the original lettering
+  under the English. MangaLens now dims the whole page by that fifth while it
+  is awake, and paints each cleaned balloon, card and erased patch with the
+  page's share already taken off, so the two meet at exactly the same level
+  and nothing of the original shows through. No accessibility service or any
+  other permission is involved.
+- The page is a little darker while MangaLens is awake, and back to full
+  brightness while it naps. **Tweaks → No ghosts** switches the veil off if
+  you would rather have full brightness and the faint ghost.
+- Floating cards hide the art under them completely now, too.
+
 ## 1.0.2
 
 Installs again. Where Play Protect's enhanced fraud protection is on, 1.0.1

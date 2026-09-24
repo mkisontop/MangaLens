@@ -77,6 +77,13 @@ data class AppSettings(
     val diagnostics: Boolean = false,
     val textScale: Float = 1.0f,
     val bgOpacity: Float = 1.0f,
+    /**
+     * Veils the page while MangaLens is awake, so that nothing of the
+     * original shows through the cleaned balloons on Android 12 and later,
+     * which draw a see-through overlay at no more than 80% (see
+     * BubbleOverlayView.veiled). The price is a page a fifth darker.
+     */
+    val noGhosts: Boolean = true,
     val stabilityMs: Int = 350,
     val ignoreTopPct: Float = 0.03f,
     val ignoreBottomPct: Float = 0.02f,
@@ -120,6 +127,7 @@ private object Keys {
     val DIAGNOSTICS = booleanPreferencesKey("diagnostics")
     val TEXT_SCALE = floatPreferencesKey("text_scale")
     val BG_OPACITY = floatPreferencesKey("bg_opacity")
+    val NO_GHOSTS = booleanPreferencesKey("no_ghosts")
     val STABILITY_MS = intPreferencesKey("stability_ms")
     val IGNORE_TOP = floatPreferencesKey("ignore_top")
     val IGNORE_BOTTOM = floatPreferencesKey("ignore_bottom")
@@ -272,6 +280,7 @@ internal fun settingsFromPreferences(p: Preferences, credentials: Preferences = 
         diagnostics = p[Keys.DIAGNOSTICS] ?: d.diagnostics,
         textScale = p[Keys.TEXT_SCALE] ?: d.textScale,
         bgOpacity = p[Keys.BG_OPACITY] ?: d.bgOpacity,
+        noGhosts = p[Keys.NO_GHOSTS] ?: d.noGhosts,
         stabilityMs = p[Keys.STABILITY_MS] ?: d.stabilityMs,
         ignoreTopPct = p[Keys.IGNORE_TOP] ?: d.ignoreTopPct,
         ignoreBottomPct = p[Keys.IGNORE_BOTTOM] ?: d.ignoreBottomPct,
@@ -319,6 +328,7 @@ class SettingsRepository(private val context: Context) {
     suspend fun setDiagnostics(v: Boolean) = context.settingsStore.edit { it[Keys.DIAGNOSTICS] = v }
     suspend fun setTextScale(v: Float) = context.settingsStore.edit { it[Keys.TEXT_SCALE] = v }
     suspend fun setBgOpacity(v: Float) = context.settingsStore.edit { it[Keys.BG_OPACITY] = v }
+    suspend fun setNoGhosts(v: Boolean) = context.settingsStore.edit { it[Keys.NO_GHOSTS] = v }
     suspend fun setStabilityMs(v: Int) = context.settingsStore.edit { it[Keys.STABILITY_MS] = v }
     suspend fun setIgnoreTopPct(v: Float) = context.settingsStore.edit { it[Keys.IGNORE_TOP] = v }
     suspend fun setIgnoreBottomPct(v: Float) = context.settingsStore.edit { it[Keys.IGNORE_BOTTOM] = v }

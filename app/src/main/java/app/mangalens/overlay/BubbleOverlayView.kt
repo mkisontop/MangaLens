@@ -359,6 +359,37 @@ class BubbleOverlayView(context: Context) : View(context) {
         /** Cost per share of growth past the original's measure. */
         const val GROWTH_COST = 0.8f
 
+        /**
+         * Lowest window strength a veil makes up for: below it the veil's
+         * black would have to be more than opaque.
+         */
+        const val MIN_VEILED_ALPHA = 0.5f
+
+        /** [color] less [k] of [under], channel by channel, down to black at most; alpha kept. */
+        fun lessPage(color: Int, under: Int, k: Float): Int {
+            val share = (k * 65536f).toInt()
+            return (color and -0x1000000) or
+                (less(color shr 16 and 0xFF, under shr 16 and 0xFF, share) shl 16) or
+                (less(color shr 8 and 0xFF, under shr 8 and 0xFF, share) shl 8) or
+                less(color and 0xFF, under and 0xFF, share)
+        }
+
+        /** [lessPage] over every painted pixel of [px], against the page pixels in [under]. */
+        fun lessPage(px: IntArray, under: IntArray, k: Float) {
+            val share = (k * 65536f).toInt()
+            for (i in px.indices) {
+                val p = px[i]
+                if (p ushr 24 == 0) continue
+                val u = under[i]
+                px[i] = (p and -0x1000000) or
+                    (less(p shr 16 and 0xFF, u shr 16 and 0xFF, share) shl 16) or
+                    (less(p shr 8 and 0xFF, u shr 8 and 0xFF, share) shl 8) or
+                    less(p and 0xFF, u and 0xFF, share)
+            }
+        }
+
+        private fun less(c: Int, u: Int, share: Int): Int = max(0, c - ((u * share + 32768) shr 16))
+
         /** Patch samples across and down when judging how busy the art under it is. */
         const val BUSY_GRID_X = 12
         const val BUSY_GRID_Y = 8
@@ -375,6 +406,105 @@ class BubbleOverlayView(context: Context) : View(context) {
 
     @Volatile var textScale = 1f
     @Volatile var bgOpacity = 1f
+
+    /**
+     * How strongly the system draws this layer: 1 when as painted, less
+     * where it caps an overlay that lets touches through. Android 12 and
+     * later hold one to 80% (see [OverlayController]), so a fifth of the
+     * page shows through everything painted here: a grey ghost of the
+     * lettering each cleaned balloon replaced, and English a shade off black.
+     */
+    var windowAlpha = 1f
+        set(value) {
+            if (field == value) return
+            field = value
+            invalidate()
+            onVeilChanged?.invoke()
+        }
+
+    /**
+     * Whether the page is veiled so that nothing of the original shows
+     * through: black at [veil] over the whole screen takes everything this
+     * layer does not paint down to [windowAlpha] of itself, and what it does
+     * paint is painted less the page's share ([groundOf]), so the two meet
+     * at that same level. Switched by the capture loop, which then reads the
+     * screen through the veil.
+     */
+    var veiled = false
+        set(value) {
+            if (field == value) return
+            field = value
+            invalidate()
+            onVeilChanged?.invoke()
+        }
+
+    /** Draws the cleanings alone, veiled or not: what erasure leaves of the page, for the page harness to measure. */
+    internal var cleaningsOnly = false
+
+    /** Grounds painted so far ([groundOf]), for tests to see what streaming costs. */
+    internal var groundsPainted = 0
+
+    /** Told whenever [veil] may have changed, [screenLevel] with it. Main thread. */
+    var onVeilChanged: (() -> Unit)? = null
+
+    /** Opacity of the veil's black; 0 when there is none, or when no veil could make up for [windowAlpha]. */
+    val veil: Float
+        get() = if (veiled && windowAlpha >= MIN_VEILED_ALPHA && windowAlpha < 1f) (1f - windowAlpha) / windowAlpha else 0f
+
+    /**
+     * The share of itself the page shows at wherever this layer paints
+     * nothing: under the veil, [windowAlpha] (as near as eight bits of veil
+     * come to it), otherwise all of it. A capture of the screen is divided
+     * by this to read the page as it is.
+     */
+    val screenLevel: Float
+        get() {
+            val k = veil
+            return if (k > 0f) 1f - windowAlpha * veilAlpha(k) / 255f else 1f
+        }
+
+    private fun veilAlpha(k: Float) = (k * 255f + 0.5f).toInt().coerceIn(0, 255)
+
+    /**
+     * The page under this layer as it is with none of MangaLens on it, in
+     * screen pixels: the frame the lettering was set for. Only a veil needs
+     * it, to take the page's share off each pixel painted over it.
+     */
+    private var backdrop: Bitmap? = null
+
+    /**
+     * One piece of painting as it goes on screen under a veil: a bubble's
+     * cleaning, or its card's ground, drawn by itself at [left], [top] and
+     * taken the page's share off ([groundOf]).
+     */
+    private class Ground(val bitmap: Bitmap, val left: Float, val top: Float)
+
+    /**
+     * What a [Ground] is drawn from. The view keeps its letterings, stamps
+     * and patches as the same objects for as long as their bubble stays
+     * unchanged, so a bubble streamed in before keeps its grounds, and a
+     * line streaming in costs its own area and no more.
+     */
+    private data class GroundKey(
+        val card: Boolean,
+        val lettering: Lettering,
+        val stamp: Bitmap?,
+        val stampDst: RectF?,
+        val patch: Bitmap?,
+        val patchDst: Rect?,
+        val dy: Float,
+    )
+
+    private var grounds = HashMap<GroundKey, Ground?>()
+
+    /** The page and veil [grounds] were painted against, and the placements they were last matched to. */
+    private var groundsPage: Bitmap? = null
+    private var groundsVeil = 0f
+    private var groundsList: List<Placed>? = null
+
+    /** [grounds] in [placed]'s order: each bubble's cleaning, then each bubble's card. */
+    private var cleaningGrounds: Array<Ground?> = emptyArray()
+    private var cardGrounds: Array<Ground?> = emptyArray()
 
     /**
      * Whether new lettering fades in. A view with no window has no frames to
@@ -427,6 +557,7 @@ class BubbleOverlayView(context: Context) : View(context) {
     private fun italic(style: LetterStyle) =
         style == LetterStyle.THOUGHT || style == LetterStyle.SFX || style == LetterStyle.SFX_NOTE
 
+    private val veilPaint = Paint().apply { color = Color.BLACK }
     private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val maskPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
     private val patchPaint = Paint(Paint.FILTER_BITMAP_FLAG)
@@ -457,9 +588,16 @@ class BubbleOverlayView(context: Context) : View(context) {
         color = 0xB0008CE6.toInt()
     }
 
-    fun setBubbles(bubbles: List<RenderBubble>) {
+    /**
+     * Lays out [bubbles] and shows them. [page] is the frame they were set
+     * for, as the screen shows it with nothing of MangaLens on it; while the
+     * page is veiled the cleanings are painted against it (see [veiled]).
+     * The view keeps the reference and never alters or frees it.
+     */
+    fun setBubbles(bubbles: List<RenderBubble>, page: Bitmap? = null) {
         source = bubbles
         placed = placeAll(bubbles)
+        backdrop = page
         invalidate()
     }
 
@@ -675,6 +813,12 @@ class BubbleOverlayView(context: Context) : View(context) {
     fun clear() {
         source = emptyList()
         placed = emptyList()
+        backdrop = null
+        grounds = HashMap()
+        groundsPage = null
+        groundsList = null
+        cleaningGrounds = emptyArray()
+        cardGrounds = emptyArray()
         letterings.clear()
         stamps.clear()
         busyPatches.clear()
@@ -1736,14 +1880,95 @@ class BubbleOverlayView(context: Context) : View(context) {
      * still fading does the view ask for another frame.
      */
     override fun onDraw(canvas: Canvas) {
+        val k = veil
+        if (k > 0f) {
+            veilPaint.alpha = veilAlpha(k)
+            canvas.drawPaint(veilPaint)
+        }
         val panels = debugPanels
         for (i in 0 until panels.size) canvas.drawRect(panels[i], debugPanelPaint)
         val debug = debugBalloons
         for (i in 0 until debug.size) canvas.drawRect(debug[i], debugPaint)
         val list = placed
         if (list.isEmpty()) return
-        drawCleanings(canvas, list)
-        drawLettering(canvas, list)
+        val page = backdrop
+        if (k > 0f && page != null && !page.isRecycled) {
+            matchGrounds(list, k, page)
+            for (g in cleaningGrounds) if (g != null) canvas.drawBitmap(g.bitmap, g.left, g.top, null)
+            if (!cleaningsOnly) drawLettering(canvas, list, cards = cardGrounds, veil = k)
+        } else {
+            drawCleanings(canvas, list)
+            if (!cleaningsOnly) drawLettering(canvas, list)
+        }
+    }
+
+    /**
+     * Brings [cleaningGrounds] and [cardGrounds] up to [list], painted
+     * against [page] under a veil of [k]: pieces already painted for the
+     * same bubble, page and veil are kept, the rest painted anew.
+     */
+    private fun matchGrounds(list: List<Placed>, k: Float, page: Bitmap) {
+        if (page !== groundsPage || k != groundsVeil) {
+            grounds = HashMap()
+            groundsPage = page
+            groundsVeil = k
+            groundsList = null
+        }
+        if (list === groundsList) return
+        val next = HashMap<GroundKey, Ground?>()
+        fun ground(p: Placed, card: Boolean): Ground? {
+            val key = GroundKey(card, p.lettering, p.stamp, p.stampDst, p.patch, p.patchDst, if (card) p.dy else 0f)
+            val g = if (grounds.containsKey(key)) grounds[key] else groundOf(p, card, k, page)
+            next[key] = g
+            return g
+        }
+        cleaningGrounds = Array(list.size) { ground(list[it], card = false) }
+        cardGrounds = Array(list.size) { ground(list[it], card = true) }
+        grounds = next
+        groundsList = list
+    }
+
+    /**
+     * One bubble's cleaning, or its card's ground ([card]), as it is painted
+     * under a veil of [k]: each pixel less [k] of [page] under it. On screen
+     * this layer shows at [windowAlpha] and the page at the rest, so a pixel
+     * painted I - k·u shows as windowAlpha·I whatever u was: level with the
+     * veiled page around it, with no trace of the lettering it replaced. A
+     * pixel too dark to take the page's share off goes to black, the darkest
+     * the layer can show. Null when the bubble has nothing of that kind.
+     */
+    private fun groundOf(p: Placed, card: Boolean, k: Float, page: Bitmap): Ground? {
+        val area = RectF()
+        if (card) {
+            val c = p.lettering.card ?: return null
+            area.set(c)
+            area.offset(0f, p.dy)
+        } else {
+            if (p.stamp != null && p.stampDst != null) area.union(p.stampDst)
+            if (p.patch != null && p.patchDst != null) area.union(RectF(p.patchDst))
+            p.lettering.wipe?.let { area.union(it) }
+            if (area.isEmpty) return null
+        }
+        // Anti-aliased edges and the card's hairline reach a pixel past the shape.
+        val r = Rect(
+            kotlin.math.floor(area.left).toInt() - 2, kotlin.math.floor(area.top).toInt() - 2,
+            kotlin.math.ceil(area.right).toInt() + 2, kotlin.math.ceil(area.bottom).toInt() + 2,
+        )
+        if (!r.intersect(0, 0, page.width, page.height)) return null
+        val w = r.width()
+        val h = r.height()
+        groundsPainted++
+        val layer = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
+        val c = Canvas(layer)
+        c.translate(-r.left.toFloat(), -r.top.toFloat())
+        if (card) drawGround(c, p) else drawCleanings(c, listOf(p))
+        val px = IntArray(w * h)
+        layer.getPixels(px, 0, w, 0, 0, w, h)
+        val under = IntArray(w * h)
+        page.getPixels(under, 0, w, r.left, r.top, w, h)
+        lessPage(px, under, k)
+        layer.setPixels(px, 0, w, 0, 0, w, h)
+        return Ground(layer, r.left.toFloat(), r.top.toFloat())
     }
 
     private fun drawCleanings(canvas: Canvas, list: List<Placed>) {
@@ -1771,26 +1996,22 @@ class BubbleOverlayView(context: Context) : View(context) {
     internal fun placements(): List<Pair<RenderBubble, RectF>> =
         placed.map { it.source to RectF(it.lettering.inkRect).apply { offset(0f, it.dy) } }
 
-    private fun drawLettering(canvas: Canvas, list: List<Placed>) {
+    /**
+     * The cards and the English over them, in order. Under a veil of [veil]
+     * each card's ground comes painted already ([cards], in [list]'s
+     * order), and the text is painted less the page's share too, reckoned
+     * against the bubble's own background: the page right under a letter
+     * is that background, or the lettering it replaced, which the letter
+     * covers anyway. The text keeps its fade that way, which a ground
+     * painted again for every frame of it could not afford.
+     */
+    private fun drawLettering(canvas: Canvas, list: List<Placed>, cards: Array<Ground?>? = null, veil: Float = 0f) {
         val now = if (list.any { it.since != 0L }) clock() else 0L
         var fading = false
-        val radius = dp(9f)
         for (i in 0 until list.size) {
             val p = list[i]
             val l = p.lettering
-            l.card?.let { card ->
-                canvas.save()
-                canvas.translate(0f, p.dy)
-                bgPaint.color = l.cardColor
-                canvas.drawRoundRect(card, radius, radius, bgPaint)
-                // The hairline must contrast with the fill it outlines, or a
-                // page-black card on a black panel has no edge at all.
-                val bg = l.cardColor
-                val lum = (Color.red(bg) * 299 + Color.green(bg) * 587 + Color.blue(bg) * 114) / 1000
-                strokePaint.color = if (lum < 140) 0x59FFFFFF else 0x2E000000
-                canvas.drawRoundRect(card, radius, radius, strokePaint)
-                canvas.restore()
-            }
+            if (cards == null) drawGround(canvas, p) else cards.getOrNull(i)?.let { canvas.drawBitmap(it.bitmap, it.left, it.top, null) }
             var alpha = 255
             if (p.since != 0L) {
                 val t = (now - p.since).toFloat() / FADE_MS
@@ -1799,9 +2020,34 @@ class BubbleOverlayView(context: Context) : View(context) {
                     fading = true
                 }
             }
-            if (alpha > 0) drawText(canvas, l, p.dy, alpha)
+            if (alpha > 0) {
+                if (veil > 0f) {
+                    val under = p.source.bgColor
+                    drawText(canvas, l, p.dy, alpha, lessPage(l.ink, under, veil), if (l.edge != 0) lessPage(l.edge, under, veil) else 0)
+                } else {
+                    drawText(canvas, l, p.dy, alpha, l.ink, l.edge)
+                }
+            }
         }
         if (fading) postInvalidateOnAnimation()
+    }
+
+    /** A card's rounded ground and its hairline, if the lettering has a card. */
+    private fun drawGround(canvas: Canvas, p: Placed) {
+        val l = p.lettering
+        val card = l.card ?: return
+        val radius = dp(9f)
+        canvas.save()
+        canvas.translate(0f, p.dy)
+        bgPaint.color = l.cardColor
+        canvas.drawRoundRect(card, radius, radius, bgPaint)
+        // The hairline must contrast with the fill it outlines, or a
+        // page-black card on a black panel has no edge at all.
+        val bg = l.cardColor
+        val lum = (Color.red(bg) * 299 + Color.green(bg) * 587 + Color.blue(bg) * 114) / 1000
+        strokePaint.color = if (lum < 140) 0x59FFFFFF else 0x2E000000
+        canvas.drawRoundRect(card, radius, radius, strokePaint)
+        canvas.restore()
     }
 
     /**
@@ -1810,7 +2056,7 @@ class BubbleOverlayView(context: Context) : View(context) {
      * block is composited in a layer, or the see-through fill would show the
      * stroke beneath it.
      */
-    private fun drawText(canvas: Canvas, l: Lettering, dy: Float, alpha: Int) {
+    private fun drawText(canvas: Canvas, l: Lettering, dy: Float, alpha: Int, ink: Int, edge: Int) {
         val tp = l.layout.paint
         canvas.save()
         canvas.translate(l.x, l.y + dy)
@@ -1821,14 +2067,14 @@ class BubbleOverlayView(context: Context) : View(context) {
         if (l.edge != 0) {
             tp.style = Paint.Style.STROKE
             tp.strokeWidth = l.edgeWidth
-            tp.color = l.edge
-            tp.alpha = Color.alpha(l.edge) * a / 255
+            tp.color = edge
+            tp.alpha = Color.alpha(edge) * a / 255
             l.layout.draw(canvas)
         }
         tp.style = if (l.weight > 0f) Paint.Style.FILL_AND_STROKE else Paint.Style.FILL
         tp.strokeWidth = l.weight
-        tp.color = l.ink
-        tp.alpha = Color.alpha(l.ink) * a / 255
+        tp.color = ink
+        tp.alpha = Color.alpha(ink) * a / 255
         l.layout.draw(canvas)
         if (layered) canvas.restore()
         canvas.restore()

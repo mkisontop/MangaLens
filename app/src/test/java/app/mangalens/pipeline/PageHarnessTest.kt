@@ -193,6 +193,20 @@ class PageHarnessTest {
         view.drawCleanings(Canvas(cleaned))
         save(cleaned, File(out, "$stem-clean.png"))
         File(out, "$stem-letters.json").writeText(placementsJson(view))
+        // The screen of a phone that holds the overlay to 80% (Android 12+),
+        // as it was and under the veil; the cleanings alone, brought back to
+        // the page's own level, for measuring the same way.
+        view.setBubbles(bubbles, page)
+        view.windowAlpha = 0.8f
+        for (veiled in listOf(false, true)) {
+            view.veiled = veiled
+            val tag = if (veiled) "veil" else "80"
+            view.cleaningsOnly = false
+            save(screen(view, page, 0.8f, 1f), File(out, "$stem-screen$tag.png"))
+            view.cleaningsOnly = true
+            save(screen(view, page, 0.8f, view.screenLevel), File(out, "$stem-clean$tag.png"))
+        }
+        view.cleaningsOnly = false
         // Balloons found on-device, for judging what the resolver had to work with.
         val marked = page.copy(Bitmap.Config.ARGB_8888, true).apply { density = Bitmap.DENSITY_NONE }
         val stroke = Paint().apply { style = Paint.Style.STROKE; strokeWidth = 3f; color = Color.MAGENTA }
@@ -337,6 +351,29 @@ class PageHarnessTest {
         val want = widthPx / 400f
         return listOf(1f to "mdpi", 1.5f to "hdpi", 2f to "xhdpi", 3f to "xxhdpi", 4f to "xxxhdpi")
             .minBy { kotlin.math.abs(it.first - want) }.second
+    }
+
+    /**
+     * What the screen shows with [view] drawn at [alpha] over [page], channel
+     * by channel as the compositor blends (a·layer + (1 − a·alpha)·page),
+     * divided by [level] to bring a veiled screen back to the page's own.
+     */
+    private fun screen(view: BubbleOverlayView, page: Bitmap, alpha: Float, level: Float): Bitmap {
+        val w = page.width
+        val h = page.height
+        val layer = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888).apply { density = Bitmap.DENSITY_NONE }
+        view.draw(Canvas(layer))
+        val l = IntArray(w * h).also { layer.getPixels(it, 0, w, 0, 0, w, h) }
+        val u = IntArray(w * h).also { page.getPixels(it, 0, w, 0, 0, w, h) }
+        val out = IntArray(w * h) { i ->
+            val a = (l[i] ushr 24) / 255f
+            fun ch(s: Int): Int {
+                val shown = alpha * (l[i] shr s and 0xFF) * a + (1f - alpha * a) * (u[i] shr s and 0xFF)
+                return (shown / level + 0.5f).toInt().coerceIn(0, 255)
+            }
+            (0xFF shl 24) or (ch(16) shl 16) or (ch(8) shl 8) or ch(0)
+        }
+        return Bitmap.createBitmap(out, w, h, Bitmap.Config.ARGB_8888).apply { density = Bitmap.DENSITY_NONE }
     }
 
     private fun save(bmp: Bitmap, file: File) {
