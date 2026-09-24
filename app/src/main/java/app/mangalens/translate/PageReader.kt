@@ -55,6 +55,7 @@ class PageReader internal constructor(
     private val hedgeMs: Long = HEDGE_MS,
     private val staggerMs: Long = STAGGER_MS,
     private val uploadGraceMs: Long = UPLOAD_GRACE_MS,
+    private val retryMs: Long = RETRY_MS,
 ) {
 
     constructor(
@@ -161,7 +162,10 @@ class PageReader internal constructor(
      * bandwidth. If the upload never reports back, the hedge goes
      * [uploadGraceMs] later than it would have. Either way a spare still
      * held back is sent at once when everything already sent has failed in
-     * a way a second try could survive.
+     * a way a second try could survive, and when none is left one more
+     * request goes out [retryMs] later: a 503 (Google overloaded) or a
+     * dropped connection usually clears in a moment, and a page that fails
+     * outright stays untranslated until the reader scrolls.
      *
      * @return the winning request's full reply and why it ended.
      */
@@ -207,6 +211,7 @@ class PageReader internal constructor(
         launchContender()
 
         var winner = -1
+        var retried = false
         val failures = ArrayList<Throwable>()
         fun crown(id: Int) {
             winner = id
@@ -237,7 +242,16 @@ class PageReader internal constructor(
                         if (winner >= 0) continue
                         failures += ev.error
                         if (failures.size == contenders.size) {
-                            if (spares > 0 && transient(ev.error)) releaseSpares() else throw worst(failures)
+                            when {
+                                !transient(ev.error) -> throw worst(failures)
+                                spares > 0 -> releaseSpares()
+                                !retried -> {
+                                    retried = true
+                                    spares = 1
+                                    sparesIn(retryMs)
+                                }
+                                else -> throw worst(failures)
+                            }
                         }
                     }
                 }
@@ -447,6 +461,9 @@ class PageReader internal constructor(
          */
         const val UPLOAD_GRACE_MS = 8000L
 
+        /** Pause before the one request that follows when every request has failed in a way a second try could survive. */
+        const val RETRY_MS = 800L
+
         /** How long a rate limit stops the racing, process-wide. */
         private const val CALM_MS = 5 * 60_000L
 
@@ -631,7 +648,7 @@ The request carries the series memory ("glossary", "characters"), then the page 
 
 FIND THE LETTERING
 Find EVERY piece of non-English lettering yourself: balloons, captions, text on the art, signs, sound effects.
-- ONE item per balloon or caption box: all its lines or columns are one item. Separate balloons and separate pieces of lettering (a small mutter beside a big SFX) are separate items, even when they touch.
+- ONE item per balloon or caption box: all its lines or columns are one item. Separate balloons and separate pieces of lettering (a small mutter beside a big SFX) are separate items, even when they touch, and even when one speaker runs on from one balloon into the next: an interjection or stammer in its own balloon (なっ, ど…, えっ) and the line in the next, or two sentences in two balloons, are two items, each boxed around its own balloon's lettering.
 - "box_2d": [ymin, xmin, ymax, xmax] normalised 0-1000 to the full image, tight around the lettering.
 - "src": the original lettering, one line per printed line or column.
 - Ignore phone and browser UI, watermarks, page numbers and credits. Omit lettering already in English.

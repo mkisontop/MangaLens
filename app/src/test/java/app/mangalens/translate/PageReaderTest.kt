@@ -139,7 +139,8 @@ class PageReaderTest {
         s: AppSettings = settings,
         staggerMs: Long = 10_000,
         uploadGraceMs: Long = 10_000,
-    ) = PageReader(s, null, null, transport, race, hedgeMs, staggerMs, uploadGraceMs)
+        retryMs: Long = 10_000,
+    ) = PageReader(s, null, null, transport, race, hedgeMs, staggerMs, uploadGraceMs, retryMs)
 
     // ---- streaming and parsing ----
 
@@ -451,6 +452,45 @@ class PageReaderTest {
             streamOut(reply(hello), onDelta)
         }
         assertEquals(listOf("Hello."), reader(transport, race = 2).read(page(), SourceLang.JA).map { it.en })
+    }
+
+    @Test
+    fun `when every request fails with Google overloaded, one more goes out after a pause`() = runBlocking {
+        val transport = FakeTransport { call, _, onDelta ->
+            if (call < 2) throw GeminiHttpException(503, "The model is overloaded.")
+            streamOut(reply(hello), onDelta)
+        }
+        val items = withTimeout(5_000) {
+            reader(transport, race = 2, staggerMs = 0, retryMs = 150).read(page(), SourceLang.JA)
+        }
+        assertEquals(listOf("Hello."), items.map { it.en })
+        assertEquals(3, transport.calls.size)
+        val lag = (transport.startedAt[2] - transport.startedAt[1]) / 1_000_000
+        assertTrue("retried $lag ms after the last failure", lag >= 150)
+    }
+
+    @Test
+    fun `an overload that lasts fails the read after that one retry`() = runBlocking {
+        val transport = FakeTransport { _, _, _ -> throw GeminiHttpException(503, "The model is overloaded.") }
+        try {
+            withTimeout(5_000) { reader(transport, race = 2, staggerMs = 0, retryMs = 50).read(page(), SourceLang.JA) }
+            fail("expected the overload to fail the read")
+        } catch (e: GeminiHttpException) {
+            assertEquals(503, e.code)
+        }
+        assertEquals(3, transport.calls.size)
+    }
+
+    @Test
+    fun `a rate limit is not retried`() = runBlocking {
+        val transport = FakeTransport { _, _, _ -> throw GeminiRateLimited("quota") }
+        try {
+            withTimeout(5_000) { reader(transport, race = 2, staggerMs = 0, retryMs = 50).read(page(), SourceLang.JA) }
+            fail("expected the rate limit to fail the read")
+        } catch (e: GeminiRateLimited) {
+            assertEquals(429, e.code)
+        }
+        assertEquals(2, transport.calls.size)
     }
 
     @Test
