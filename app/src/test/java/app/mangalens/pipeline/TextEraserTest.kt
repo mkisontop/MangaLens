@@ -305,6 +305,59 @@ class TextEraserTest {
     }
 
     @Test
+    fun `a missed balloon's box that also takes in the figure and the burst's rays erases only the text`() {
+        // A white burst balloon over a figure's textured clothes, cut off by
+        // the edge of the screen, so no balloon was found: the model's box is
+        // the whole burst, rays and clothes and all.
+        val page = blank(480, 360, Color.rgb(170, 160, 150))
+        val c = Canvas(page)
+        val rnd = java.util.Random(4)
+        val weave = Paint(Paint.ANTI_ALIAS_FLAG).apply { strokeWidth = 2f }
+        repeat(900) {
+            weave.color = Color.rgb(90 + rnd.nextInt(60), 80 + rnd.nextInt(60), 70 + rnd.nextInt(60))
+            val x = rnd.nextInt(480).toFloat()
+            val y = rnd.nextInt(360).toFloat()
+            c.drawLine(x, y, x + 6f + rnd.nextInt(10), y + rnd.nextInt(6), weave)
+        }
+        val ray = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(25, 25, 30) }
+        for (k in 0 until 56) {
+            val a = k * Math.PI * 2 / 56
+            val path = android.graphics.Path().apply {
+                moveTo(240f + (180 * Math.cos(a)).toFloat(), 200f + (130 * Math.sin(a)).toFloat())
+                lineTo(240f + (125 * Math.cos(a - 0.05)).toFloat(), 200f + (80 * Math.sin(a - 0.05)).toFloat())
+                lineTo(240f + (125 * Math.cos(a + 0.05)).toFloat(), 200f + (80 * Math.sin(a + 0.05)).toFloat())
+                close()
+            }
+            c.drawPath(path, ray)
+        }
+        c.drawOval(105f, 112f, 375f, 288f, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE })
+        val before = page.copyOf()
+        val text = letter(page, "WAIT", 180f, 218f, textPaint(40f, Color.rgb(20, 20, 24)))
+        // The burst reaches the foot of the screen, cut off there.
+        val box = Rect(90, 95, 390, 360)
+        val e = TextEraser.erase(page, box, ItemKind.THOUGHT)
+        assertNotNull(e)
+        val after = applied(page, e!!)
+        preview("missed_burst", page, after, e)
+        assertOutsideMaskUntouched(page, after, e)
+        // On paper the mask is grown generously over the white around the
+        // text; what must never be in it is the art.
+        val w = e.rect.width()
+        var art = 0
+        for (i in e.mask.indices) {
+            if (!e.mask[i]) continue
+            val x = e.rect.left + i % w
+            val y = e.rect.top + i / w
+            if (!Rect(text).apply { inset(-6, -6) }.contains(x, y) && lum(before.getPixel(x, y)) < 230) art++
+        }
+        assertTrue("only the text is taken, not the rays or the clothes ($art px of art masked)", art < 50)
+        val dark = pixels(after, text).count { lum(it) < 120 }
+        assertTrue("and the text is gone ($dark dark px left)", dark < 20)
+        // The art around the balloon is the page's own.
+        assertEquals(before.getPixel(100, 110), after.getPixel(100, 110))
+    }
+
+    @Test
     fun `nothing to erase gives null`() {
         val page = blank()
         assertNull(TextEraser.erase(page, Rect(100, 100, 220, 160), ItemKind.ART_TEXT))

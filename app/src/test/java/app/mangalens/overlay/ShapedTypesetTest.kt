@@ -190,8 +190,11 @@ class ShapedTypesetTest {
             color = Color.BLACK
         })
         val ink = Paint().apply { color = Color.rgb(176, 0, 0) }
+        // Each stroke's anti-aliased rim: pale enough to pass for paper.
+        val rim = Paint().apply { color = Color.rgb(205, 170, 175) }
         for (r in 0 until 3) {
             val top = box.top + 100 + r * 50
+            canvas.drawRect(Rect(box.left + 117, top - 3, box.right - 117, top + 25), rim)
             canvas.drawRect(Rect(box.left + 120, top, box.right - 120, top + 22), ink)
         }
 
@@ -238,6 +241,14 @@ class ShapedTypesetTest {
         val rightPx = page.getPixel(box.right - 70, box.top + 111)
         assertTrue("left of the balloon reads pink, got ${Integer.toHexString(leftPx)}", Color.red(leftPx) > Color.blue(leftPx) + 20)
         assertTrue("right of the balloon reads blue, got ${Integer.toHexString(rightPx)}", Color.blue(rightPx) > Color.red(rightPx) + 20)
+        // No ghost of the lettering: where it stood, the paper is as light
+        // as the paper just above and below it.
+        fun lum(c: Int) = (Color.red(c) * 299 + Color.green(c) * 587 + Color.blue(c) * 114) / 1000
+        for (x in listOf(box.centerX() - 60, box.centerX(), box.centerX() + 60)) {
+            val under = lum(page.getPixel(x, box.top + 161))
+            val paper = (lum(page.getPixel(x, box.top + 136)) + lum(page.getPixel(x, box.top + 186))) / 2
+            assertTrue("no ghost of the lettering at x=$x ($under under it vs $paper beside it)", Math.abs(under - paper) <= 6)
+        }
     }
 
     @Test

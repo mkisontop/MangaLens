@@ -345,7 +345,7 @@ object TextEraser {
          * behind read as a ghost of the text. It never takes a stroke that
          * is not lettering, though — a balloon's edge beside the text stays.
          */
-        fun onPaper(fit: FloatArray, noise: Int, outlineColor: Int?, texture: Float): Strokes? {
+        fun onPaper(fit: FloatArray, noise: Int, outlineColor: Int?, texture: Float, within: BooleanArray? = null): Strokes? {
             val threshold = (noise + 16).coerceIn(28, 80)
             val wt = FloatArray(n)
             for (i in 0 until n) wt[i] = if (fieldDist(px, fit, i) < threshold) 1f else 0f
@@ -362,7 +362,8 @@ object TextEraser {
             val inkCut = max(threshold, percentile(contrast, boxCount, 0.98f) / 2)
             val ink = BooleanArray(n) { dist[it] > inkCut }
             val tone = screentone(ink, reg)
-            val cores = dropHairlines(keepLetters(ink, reg, tone?.dot ?: 0), w, h)
+            var cores = dropHairlines(keepLetters(ink, reg, tone?.dot ?: 0), w, h)
+            if (within != null) cores = enclosed(cores, within, w, h)
             if (count(cores) < minLetters) return null
             val letters = hysteresis(cores, raw, w, h, 2)
             if (countIn(letters, zone, BOX) > MAX_COVER * reg.boxArea) return null
@@ -447,7 +448,10 @@ object TextEraser {
                 sum += d
                 k++
             }
-            return onPaper(fit, percentile(hist2, k, 0.9f), outlineColor, sum.toFloat() / max(1, k))
+            // Lettering in a missed balloon stands in its paper; the art
+            // the box also caught — a figure's clothes, a burst's rays —
+            // stands on the art.
+            return onPaper(fit, percentile(hist2, k, 0.9f), outlineColor, sum.toFloat() / max(1, k), within = near)
         }
 
         /**
@@ -846,6 +850,42 @@ object TextEraser {
             visit(queue, tail)
         }
     }
+
+    /**
+     * The pieces of [cores] standing in [paper]: looking a few pixels out
+     * from a piece, past its anti-aliased rim, most of what is there is
+     * paper. A glyph in a balloon is ringed by the balloon's paper; a bit
+     * of drawing the box also caught is ringed by more drawing.
+     */
+    private fun enclosed(cores: BooleanArray, paper: BooleanArray, w: Int, h: Int): BooleanArray {
+        val keep = BooleanArray(cores.size)
+        forEachPiece(cores, w, h) { piece, size ->
+            var probes = 0
+            var onPaper = 0
+            for (k in 0 until size) {
+                val i = piece[k]
+                val x = i % w
+                val y = i / w
+                for (d in 0 until 4) {
+                    val nx = x + if (d == 0) PROBE else if (d == 1) -PROBE else 0
+                    val ny = y + if (d == 2) PROBE else if (d == 3) -PROBE else 0
+                    if (nx < 0 || nx >= w || ny < 0 || ny >= h) continue
+                    val j = ny * w + nx
+                    if (cores[j]) continue
+                    probes++
+                    if (paper[j]) onPaper++
+                }
+            }
+            if (probes == 0 || onPaper >= probes * ENCLOSED) for (k in 0 until size) keep[piece[k]] = true
+        }
+        return keep
+    }
+
+    /** How far out from a piece [enclosed] looks, past the anti-aliased rim. */
+    private const val PROBE = 4
+
+    /** Share of what surrounds a piece that must be paper for it to stand in the paper. */
+    private const val ENCLOSED = 0.6f
 
     /**
      * The pieces of [raw] that are lettering: mostly inside the box, not

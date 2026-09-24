@@ -187,7 +187,14 @@ class PageHarnessTest {
                 )
                 r
             }
-            for (b in result.bubbles) println("    ${b.original.replace('\n', ' ').take(30)} => ${b.translated}")
+            for (b in result.bubbles) {
+                val where = when {
+                    b.balloon != null -> "balloon"
+                    b.patch != null -> "erased"
+                    else -> "card"
+                }
+                println("    [${b.style} $where ${b.box.toShortString()}] ${b.original.replace('\n', ' ').take(30)} => ${b.translated}")
+            }
             RuntimeEnvironment.setQualifiers("+" + densityFor(page.width))
             val view = BubbleOverlayView(RuntimeEnvironment.getApplication()).apply { layout(0, 0, page.width, page.height) }
             view.setBubbles(result.bubbles)

@@ -129,6 +129,15 @@ class TranslatePipeline(
         /** AI-first read cache entry schema; older shapes are dropped. */
         const val READ_CACHE_VERSION = 4
 
+        /** A scroll revealing less than this share of the screen reveals nothing worth a request. */
+        const val NOTHING_NEW = 0.04f
+
+        /** Margin above a revealed strip, for a balloon the last stop showed only half of. */
+        const val STRIP_MARGIN = 0.25f
+
+        /** A strip taller than this share of the screen is read as the whole screen. */
+        const val MAX_STRIP = 0.7f
+
         /**
          * How long the machine draft waits for the AI before it is shown.
          * The AI's first lines normally land well inside this, and a draft
@@ -147,6 +156,14 @@ class TranslatePipeline(
 
     private val memory = ItemMemory()
 
+    /** The last frame whose lettering was read in full, for telling how far the next one scrolled. */
+    @Volatile
+    private var seen: Seen? = null
+
+    /** The scroll signature measured when [startRead] last ran, and the frame it was measured on. */
+    @Volatile
+    private var lastMatch: Pair<Bitmap, ScrollMatch>? = null
+
     /** Whether pages are read AI-first under [settings]. */
     fun readsAiFirst(settings: AppSettings): Boolean =
         settings.engine == EngineKind.LLM && settings.aiVision != AiVisionMode.OFF &&
@@ -161,12 +178,46 @@ class TranslatePipeline(
     fun startRead(bitmap: Bitmap, settings: AppSettings, scope: CoroutineScope): PendingRead? {
         if (!readsAiFirst(settings)) return null
         return runCatching {
-            PageReader(settings, glossary, cast).start(scope, bitmap, settings.sourceLang)
+            val reader = PageReader(settings, glossary, cast)
+            stripRead(reader, bitmap, settings, scope) ?: reader.start(scope, bitmap, settings.sourceLang)
         }.getOrNull()
     }
 
+    /**
+     * A stop that only nudged the page since the last frame read in full
+     * is read as the strip it revealed ([StripRead]); null when this frame
+     * has to be read whole — a new page, a long scroll, nothing read yet.
+     */
+    private fun stripRead(reader: PageReader, bitmap: Bitmap, settings: AppSettings, scope: CoroutineScope): StripRead? {
+        val match = ScrollMatch.of(bitmap)
+        lastMatch = bitmap to match
+        val last = seen ?: return null
+        val d = match.scrolledFrom(last.match) ?: return null
+        val h = bitmap.height
+        val revealed = kotlin.math.abs(d)
+        if (revealed < h * NOTHING_NEW) return StripRead(null, Rect(), d, last, match)
+        val margin = (h * STRIP_MARGIN).toInt()
+        val strip = if (d > 0) {
+            Rect(0, (h - revealed - margin).coerceAtLeast(0), bitmap.width, h)
+        } else {
+            Rect(0, 0, bitmap.width, (revealed + margin).coerceAtMost(h))
+        }
+        if (strip.height() > h * MAX_STRIP) return null
+        val crop = Bitmap.createBitmap(bitmap, strip.left, strip.top, strip.width(), strip.height())
+        // The reader encodes the strip before it returns; the crop is not needed after.
+        val inner = try {
+            reader.start(scope, crop, settings.sourceLang)
+        } finally {
+            if (crop !== bitmap) crop.recycle()
+        }
+        return StripRead(inner, strip, d, last, match)
+    }
+
     /** Forgets lettering remembered from earlier stops. */
-    fun forgetRecent() = memory.clear()
+    fun forgetRecent() {
+        memory.clear()
+        seen = null
+    }
 
     /**
      * Opens the connection the next page will use, so the TLS handshake is
@@ -580,9 +631,10 @@ class TranslatePipeline(
         key?.let { readCacheGet(it, bubbles, bitmap.width, bitmap.height) }?.let { cached ->
             pending?.cancel()
             memory.remember(bitmap, cached)
+            seen = Seen(matchOf(bitmap), cached)
             return@coroutineScope PageResult(resolver.resolve(cached), reader.label, null, polished = true, diag = "cached")
         }
-        val read = pending ?: reader.start(this, bitmap, lang)
+        var read = pending ?: reader.start(this, bitmap, lang)
 
         val gate = Mutex()
         var recalled: List<PageItem> = emptyList()
@@ -590,16 +642,26 @@ class TranslatePipeline(
         var draft: List<RenderBubble> = emptyList()
         var firstAt = -1L
 
+        // A strip read's answers, less the halves of balloons its edge cut.
+        fun fresh(items: List<PageItem>): List<PageItem> = (read as? StripRead)?.trim(items, recalled) ?: items
+
         suspend fun paint(label: String) {
             val emit = onPartial ?: return
-            val shown = gate.withLock { UpgradeMerge.merge(draft, resolver.resolve(Wording.keep(recalled, streamed))) }
+            val shown = gate.withLock { UpgradeMerge.merge(draft, resolver.resolve(Wording.keep(recalled, fresh(streamed)))) }
             if (shown.isNotEmpty()) emit(PageResult(shown, label, "upgrading"))
         }
 
-        if (onPartial != null) {
+        if (onPartial != null || read is StripRead) {
             recalled = runCatching {
                 withContext(Dispatchers.Default) { memory.recall(bitmap, analysis.ignoreTop, analysis.ignoreBottom) }
             }.getOrDefault(emptyList())
+            // A strip read counts on memory for the rest of the screen;
+            // when memory lost a line there, the whole screen is read.
+            val strip = read as? StripRead
+            if (strip != null && !strip.covered(recalled, bitmap.height, analysis.ignoreTop, analysis.ignoreBottom)) {
+                strip.cancel()
+                read = reader.start(this, bitmap, lang)
+            }
             if (recalled.isNotEmpty()) paint(reader.label)
         }
 
@@ -649,13 +711,17 @@ class TranslatePipeline(
             )
         }
 
-        val complete = items + gapItems(bubbles, analysis.detected, items + recalled, lang, settings)
+        val answered = fresh(items)
+        val complete = answered + gapItems(bubbles, analysis.detected, answered + recalled, lang, settings)
         val finalItems = Wording.keep(recalled, complete)
         // What is stored is what the reader sees, so the next stop and a
         // scroll-back say it in the same words. A reply that broke off is
         // shown, and remembered line by line, but never kept as the page's
         // whole answer.
-        if (!read.cutOff) key?.let { readCachePut(it, bubbles, finalItems, bitmap.width, bitmap.height) }
+        if (!read.cutOff) {
+            key?.let { readCachePut(it, bubbles, finalItems, bitmap.width, bitmap.height) }
+            seen = Seen((read as? StripRead)?.match ?: matchOf(bitmap), finalItems)
+        }
         memory.remember(bitmap, finalItems)
         var rendered = gate.withLock { resolver.resolve(finalItems) }
 
@@ -698,9 +764,14 @@ class TranslatePipeline(
         draftJob?.cancel()
         PageResult(
             rendered, reader.label, note, polished = true,
-            diag = "first ${if (firstAt >= 0) "$firstAt ms" else "—"} · done ${elapsed()} ms",
+            diag = "first ${if (firstAt >= 0) "$firstAt ms" else "—"} · done ${elapsed()} ms" +
+                read.summary.takeIf { it.isNotBlank() }?.let { " · $it" }.orEmpty(),
         )
     }
+
+    /** [bitmap]'s scroll signature: the one [startRead] measured when it was this frame's. */
+    private fun matchOf(bitmap: Bitmap): ScrollMatch =
+        lastMatch?.takeIf { it.first === bitmap }?.second ?: ScrollMatch.of(bitmap)
 
     /** A few words on why a read failed, for the status line; never the key or the page. */
     private fun readFailure(e: Exception): String = when {

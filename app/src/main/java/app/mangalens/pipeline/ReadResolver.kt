@@ -312,7 +312,7 @@ internal class ReadResolver(
         if (item.kind == ItemKind.SFX && (erasure == null || !erasure.flat)) return sfxNote(item)
         if (erasure != null) {
             return RenderBubble(
-                box = Rect(item.box),
+                box = inkBox(erasure) ?: Rect(item.box),
                 translated = item.en.trim(),
                 original = item.src,
                 bgColor = erasure.background,
@@ -344,6 +344,31 @@ internal class ReadResolver(
             kind = kind,
             style = styleOf(item),
         )
+    }
+
+    /**
+     * Where the erased lettering actually was: the model's box around text
+     * in a balloon the detector missed is often the whole balloon, and
+     * English sized and centred on that is set far larger than the line it
+     * replaces. Null when nothing was masked.
+     */
+    private fun inkBox(e: Erasure): Rect? {
+        val w = e.rect.width()
+        var l = Int.MAX_VALUE
+        var t = Int.MAX_VALUE
+        var r = -1
+        var b = -1
+        for (i in e.mask.indices) {
+            if (!e.mask[i]) continue
+            val x = i % w
+            val y = i / w
+            if (x < l) l = x
+            if (x > r) r = x
+            if (y < t) t = y
+            if (y > b) b = y
+        }
+        if (r < 0) return null
+        return Rect(e.rect.left + l, e.rect.top + t, e.rect.left + r + 1, e.rect.top + b + 1)
     }
 
     /** Small enough that erasing it could only ever take a sliver of art with it. */
