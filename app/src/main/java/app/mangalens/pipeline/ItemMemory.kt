@@ -102,6 +102,8 @@ internal class ItemMemory {
         recalledOn = null
         grayOf = null
         grayCache = null
+        phasesOf = null
+        phases = null
     }
 
     private fun grayFor(bitmap: Bitmap): Gray {
@@ -110,6 +112,25 @@ internal class ItemMemory {
             grayCache = it
             grayOf = WeakReference(bitmap)
         }
+    }
+
+    private var phasesOf: WeakReference<Bitmap>? = null
+    private var phases: Array<Gray?>? = null
+
+    /**
+     * [bitmap] reduced with its cells starting [phase] rows down. A page
+     * scrolls by any number of rows, and a fingerprint's cells line up with
+     * the frame's only at one of the [SCALE] phases: off by a row or two, a
+     * cell averages other strokes and the line matches nowhere.
+     */
+    private fun grayAt(bitmap: Bitmap, phase: Int): Gray {
+        if (phase == 0) return grayFor(bitmap)
+        val cache = phases?.takeIf { phasesOf?.get() === bitmap }
+            ?: arrayOfNulls<Gray>(SCALE).also {
+                phases = it
+                phasesOf = WeakReference(bitmap)
+            }
+        return cache[phase] ?: Gray.of(bitmap, phase).also { cache[phase] = it }
     }
 
     /**
@@ -126,15 +147,23 @@ internal class ItemMemory {
     @Synchronized
     fun recall(bitmap: Bitmap, ignoreTop: Int = 0, ignoreBottom: Int = 0): List<PageItem> {
         if (items.isEmpty()) return emptyList()
-        val gray = grayFor(bitmap)
         val found = ArrayList<Pair<Int, PageItem>>()
         val from = ArrayList<Remembered>()
+        // Lines on one screen moved by one scroll share a phase: the one
+        // that placed the last line is tried first.
+        var phase = 0
         for (i in items.indices.reversed()) {
             val r = items[i]
             val hit = r.pageW == bitmap.width && r.pageH == bitmap.height && runCatching { run {
-                val cy = find(gray, r) ?: return@run false
-                val coarse = (cy - r.cy) * SCALE
-                val (dx, dy) = verify(bitmap, r, coarse) ?: return@run false
+                var at: Pair<Int, Int>? = null
+                for (k in 0 until SCALE) {
+                    val ph = (phase + k) % SCALE
+                    val cy = find(grayAt(bitmap, ph), r) ?: continue
+                    at = verify(bitmap, r, (cy - r.cy) * SCALE + ph) ?: continue
+                    phase = ph
+                    break
+                }
+                val (dx, dy) = at ?: return@run false
                 val box = Rect(r.item.box).apply { offset(dx, dy) }
                 if (box.top < ignoreTop || box.bottom > bitmap.height - ignoreBottom) return@run true
                 if (box.top < 0 || box.bottom > bitmap.height) return@run true
@@ -381,16 +410,16 @@ internal class ItemMemory {
         return bestY
     }
 
-    /** Quarter-scale grey image of a frame. */
+    /** Quarter-scale grey image of a frame, its cells starting [phase] rows down. */
     private class Gray(val w: Int, val h: Int, val px: IntArray) {
         companion object {
-            fun of(bitmap: Bitmap): Gray {
+            fun of(bitmap: Bitmap, phase: Int = 0): Gray {
                 val w = bitmap.width / SCALE
-                val h = bitmap.height / SCALE
+                val h = (bitmap.height - phase) / SCALE
                 val px = IntArray(w * h)
                 val row = IntArray(bitmap.width * SCALE)
                 for (y in 0 until h) {
-                    bitmap.getPixels(row, 0, bitmap.width, 0, y * SCALE, bitmap.width, SCALE)
+                    bitmap.getPixels(row, 0, bitmap.width, 0, y * SCALE + phase, bitmap.width, SCALE)
                     for (x in 0 until w) {
                         var s = 0
                         for (dy in 0 until SCALE) {

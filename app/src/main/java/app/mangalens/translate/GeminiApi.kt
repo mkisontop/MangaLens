@@ -1,9 +1,12 @@
 package app.mangalens.translate
 
 import app.mangalens.settings.AiReasoning
+import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
+import java.util.zip.Deflater
+import java.util.zip.GZIPOutputStream
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import okhttp3.Call
@@ -277,7 +280,10 @@ internal object GeminiApi {
     }
 
     private fun post(url: String, apiKey: String, body: JSONObject, onSent: () -> Unit = {}): Request {
-        val payload = body.toString().toRequestBody(JSON)
+        // A page's body is mostly Base64 JPEG, which gzip takes back most
+        // of Base64's third from: a quarter less to push up a phone's slow
+        // uplink, for ~10 ms of compressing. Google accepts it.
+        val payload = gzip(body.toString().toByteArray(Charsets.UTF_8)).toRequestBody(JSON)
         val signalling = object : RequestBody() {
             override fun contentType() = payload.contentType()
             override fun contentLength() = payload.contentLength()
@@ -287,8 +293,20 @@ internal object GeminiApi {
             }
         }
         return LlmHttp.keyHeader(Request.Builder().url(url), "x-goog-api-key", apiKey)
+            .header("Content-Encoding", "gzip")
             .post(signalling)
             .build()
+    }
+
+    /** [bytes] gzipped at the fastest level: the upload, not the ratio, is what is being saved. */
+    private fun gzip(bytes: ByteArray): ByteArray {
+        val out = ByteArrayOutputStream(bytes.size / 2)
+        object : GZIPOutputStream(out, 64 * 1024) {
+            init {
+                def.setLevel(Deflater.BEST_SPEED)
+            }
+        }.use { it.write(bytes) }
+        return out.toByteArray()
     }
 
     /**

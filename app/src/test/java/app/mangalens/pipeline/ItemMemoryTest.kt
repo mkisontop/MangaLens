@@ -106,6 +106,25 @@ class ItemMemoryTest {
     }
 
     @Test
+    fun letteringIsFoundAfterAScrollOfAnyNumberOfRows() {
+        // Scrolls by a multiple of the fingerprint's four-row cells were the
+        // only ones recalled: three stops in four read everything again.
+        val (page, c) = blank()
+        val a = balloon(c, "ABCDEFG", 360f, 700f, "Where were you?")
+        val b = balloon(c, "HIJKL", 300f, 1100f, "Nowhere.")
+        for (dy in listOf(401, 402, 403, 297, 118)) {
+            val memory = ItemMemory()
+            memory.remember(page, listOf(a, b))
+            val found = memory.recall(scrolled(page, dy).first)
+            assertEquals("both lines after a $dy-row scroll", 2, found.size)
+            for (item in listOf(a, b)) {
+                val f = found.single { it.en == item.en }
+                assertTrue("${item.en} moved up by $dy: ${f.box.top}", abs(f.box.top - (item.box.top - dy)) <= 2)
+            }
+        }
+    }
+
+    @Test
     fun aBalloonReadAsTwoPiecesComesBackWholeAndInOrder() {
         val (page, c) = blank()
         // One balloon, its two lines reported as two items whose boxes graze.

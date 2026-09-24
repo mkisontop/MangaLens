@@ -125,6 +125,9 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
          */
         private const val EARLY_ANALYSIS_MS = 150L
 
+        /** The ticker's beat while nothing is due sooner: warming the connection, checking the quiet. */
+        private const val TICK_MS = 60L
+
         /**
          * How far (thumb mean difference) the live frame may have drifted
          * from the frame read ahead before that reading is thrown away.
@@ -913,7 +916,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
     private fun startTicker() {
         scope.launch {
             while (isActive) {
-                delay(60)
+                delay(untilNextTick())
                 if (paused || settings.mode == CaptureMode.MANUAL) continue
                 if (projection == null || state != State.SCANNING) continue
                 val now = SystemClock.uptimeMillis()
@@ -929,6 +932,20 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                 }
             }
         }
+    }
+
+    /**
+     * Time to the ticker's next look: a regular beat, but exactly on the
+     * moment the quiet reaches the read-ahead or the stability window, so
+     * neither starts up to a beat late.
+     */
+    private fun untilNextTick(): Long {
+        val quiet = SystemClock.uptimeMillis() - lastMotionAt
+        var next = TICK_MS
+        for (at in longArrayOf(if (preparing) Long.MAX_VALUE else EARLY_ANALYSIS_MS, settings.stabilityMs.toLong())) {
+            if (at > quiet) next = minOf(next, at - quiet)
+        }
+        return next.coerceAtLeast(1L)
     }
 
     /**

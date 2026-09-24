@@ -99,7 +99,13 @@ internal class FakeHttpServer(private val handler: (Exchange) -> Unit) : Closeab
         val parts = requestLine.split(' ')
         val exchange = Exchange(
             parts.getOrElse(0) { "" }, parts.getOrElse(1) { "" }, headers,
-            String(body, 0, read), input, socket.getOutputStream(),
+            // Decoded as a server would: request bodies may come gzipped.
+            if (headers["content-encoding"] == "gzip") {
+                java.util.zip.GZIPInputStream(body.inputStream(0, read)).readBytes().toString(Charsets.UTF_8)
+            } else {
+                String(body, 0, read)
+            },
+            input, socket.getOutputStream(),
         )
         exchanges += exchange
         try {
