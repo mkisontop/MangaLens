@@ -128,6 +128,48 @@ class BalloonTrustTest {
         assertTrue(BalloonTrust.letteringBlock(face, detection()) == null)
     }
 
+    /** Six columns of seven glyphs, three strokes each way: lettering as dense as a real balloon's. */
+    private fun fullBalloon(): Bitmap = Bitmap.createBitmap(600, 500, Bitmap.Config.ARGB_8888).apply {
+        val c = Canvas(this)
+        c.drawColor(Color.rgb(90, 90, 90))
+        c.drawOval(RectF(region), Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE })
+        val ink = Paint().apply { color = Color.BLACK }
+        for (col in 0 until 6) for (glyph in 0 until 7) {
+            val x = 190f + col * 36
+            val y = 160f + glyph * 26
+            for (stroke in 0 until 3) {
+                c.drawRect(x, y + 2 + stroke * 7, x + 22, y + 6 + stroke * 7, ink)
+                c.drawRect(x + 2 + stroke * 7, y, x + 6 + stroke * 7, y + 22, ink)
+            }
+        }
+    }
+
+    @Test
+    fun aBalloonFullOfLetteringIsStillOneBlockOfIt() {
+        // Every stroke is a step between neighbouring samples: counted as
+        // the paper's texture, they made the lettering of any real balloon
+        // look like screentone, and no balloon held a block of it.
+        val block = BalloonTrust.letteringBlock(fullBalloon(), detection())
+        assertTrue("found ($block)", block != null && block.contains(Rect(200, 170, 380, 320)))
+    }
+
+    @Test
+    fun screentoneHoldsNoBlockOfLettering() {
+        val tone = page(Color.WHITE) { c ->
+            val dot = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.rgb(150, 150, 150) }
+            var y = 110f
+            while (y < 400f) {
+                var x = 110f
+                while (x < 500f) {
+                    c.drawCircle(x, y, 1.6f, dot)
+                    x += 6f
+                }
+                y += 6f
+            }
+        }
+        assertTrue(BalloonTrust.letteringBlock(tone, detection()) == null)
+    }
+
     @Test
     fun screentoneIsNotABalloon() {
         val tone = page(Color.WHITE) { c ->

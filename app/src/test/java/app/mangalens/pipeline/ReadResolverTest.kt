@@ -225,6 +225,35 @@ class ReadResolverTest {
         assertTrue(out.none { it.balloon === balloon })
     }
 
+    /**
+     * The model's box on the last glyphs of the columns it read, the rest
+     * of the columns above it. Counted as stray ink, they made a balloon
+     * holding nothing but that line look like art: it was left uncleaned,
+     * and its line went untranslated or was set over its own lettering.
+     */
+    @Test
+    fun aBoxThatSlidDownItsLinesStillCleansTheBalloon() {
+        val oval = Rect(240, 120, 560, 620)
+        val balloon = detection(oval, oval)
+        val bmp = Bitmap.createBitmap(800, 1000, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+        c.drawColor(Color.WHITE)
+        c.drawOval(
+            android.graphics.RectF(oval),
+            android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply { style = android.graphics.Paint.Style.STROKE; strokeWidth = 5f; color = Color.BLACK },
+        )
+        val ink = android.graphics.Paint().apply { color = Color.BLACK }
+        for (col in 0 until 3) for (glyph in 0 until 12) for (stroke in 0 until 3) {
+            val x = 330f + col * 50
+            val y = 220f + glyph * 28 + stroke * 8
+            c.drawRect(x, y, x + 24, y + 4, ink)
+        }
+        val item = PageItem(Rect(325, 480, 435, 560), ItemKind.SPEECH, "部長の\n園山みずき\nです！", "I'm the club president, Mizuki Sonoyama!", vertical = true)
+
+        val out = ReadResolver(bmp, listOf(balloon), emptyList(), 0, 0, emptyList()).resolve(listOf(item))
+        assertTrue("the whole balloon is cleaned and lettered", out.single().balloon === balloon)
+    }
+
     @Test
     fun aFaceThatPassedForABalloonNeverTakesADriftedLine() {
         val oval = Rect(300, 500, 500, 820)

@@ -115,7 +115,8 @@ internal class ReadResolver(
                     // lettering outward — walled, convex, paper round the text
                     // — it is a balloon, and the wash is cleaned with its tone.
                     (BalloonTrust.holdsOnly(bitmap, balloon, lettering, BalloonTrust.SEEN_THROUGH_TEXTURE) &&
-                        vouched(balloon, group.map { usable[it] }))
+                        vouched(balloon, group.map { usable[it] })) ||
+                    stoppedShort(balloon, group.map { usable[it] })
             }
             trace?.invoke(
                 "${group.joinToString(" + ") { usable[it].src.take(8).replace('\n', ' ') }}: " +
@@ -384,6 +385,20 @@ internal class ReadResolver(
         // The same balloon a detection already holds, found again from inside.
         (claimed + detected).firstOrNull { d -> overlap(d.box, fresh.box) > SAME_BALLOON }?.let { return it }
         return fresh
+    }
+
+    /**
+     * True when all of [balloon]'s ink is one compact block of lettering
+     * and [items]' boxes lie on part of it: the model's box slid along the
+     * lines it read or stopped short of them, and the rest, counted as
+     * stray ink, made a balloon holding nothing but those lines look like
+     * art. The balloon was left uncleaned, with the lettering outside the
+     * box still on the page.
+     */
+    private fun stoppedShort(balloon: Balloon, items: List<PageItem>): Boolean {
+        if (items.any { it.kind == ItemKind.SFX || it.kind == ItemKind.ART_TEXT }) return false
+        val block = BalloonTrust.letteringBlock(bitmap, balloon) ?: return false
+        return items.any { Rect.intersects(it.box, block) }
     }
 
     /**

@@ -108,7 +108,10 @@ internal object BalloonTrust {
     fun letteringBlock(bitmap: Bitmap, balloon: Balloon): Rect? {
         val seen = look(bitmap, balloon, emptyList()) ?: return null
         val block = seen.inkBox ?: return null
-        if (seen.samples < 40 || seen.texture > MAX_TEXTURE) return null
+        // The paper's own texture: every stroke of a balloon full of
+        // lettering is a step of its own, and counted they made any real
+        // balloon's lettering look like screentone.
+        if (seen.samples < 40 || seen.paperTexture > MAX_TEXTURE) return null
         if (seen.ink.toFloat() / seen.samples < MIN_LETTERING) return null
         // Samples fall every second pixel each way: one per four pixels.
         val cells = (block.width().toLong() * block.height() / (SAMPLE_STEP * SAMPLE_STEP)).coerceAtLeast(1L)
@@ -294,7 +297,12 @@ internal object BalloonTrust {
         return inside == 0 || outside > inside * MAX_SPILL
     }
 
-    private class Look(val samples: Int, val ink: Int, val texture: Float, val inkBox: Rect?)
+    /**
+     * [texture] is the mean step between neighbouring samples; [paperTexture]
+     * the same between samples neither of which is ink, which lettering of
+     * any density leaves alone.
+     */
+    private class Look(val samples: Int, val ink: Int, val texture: Float, val paperTexture: Float, val inkBox: Rect?)
 
     /**
      * Samples of [balloon]'s interior away from its outline and outside
@@ -319,6 +327,8 @@ internal object BalloonTrust {
         var inkBox: Rect? = null
         var steps = 0
         var change = 0L
+        var paperSteps = 0
+        var paperChange = 0L
         var y = box.top.coerceAtLeast(0)
         val bottom = box.bottom.coerceAtMost(bitmap.height)
         while (y < bottom) {
@@ -326,21 +336,28 @@ internal object BalloonTrust {
             bitmap.getPixels(row, 0, row.size, left, y, row.size, 1)
             var x = left
             var prev = -1
+            var prevInk = false
             while (x < right) {
                 val cx = ((x - box.left).toLong() * mw / box.width()).toInt().coerceIn(0, mw - 1)
                 if (deep[cy * mw + cx] && grown.none { it.contains(x, y) }) {
                     val p = row[x - left]
                     val lum = ((p shr 16 and 0xFF) * 299 + (p shr 8 and 0xFF) * 587 + (p and 0xFF) * 114) / 1000
                     samples++
-                    if (if (balloon.inverted) lum > 150 else lum < 110) {
+                    val isInk = if (balloon.inverted) lum > 150 else lum < 110
+                    if (isInk) {
                         ink++
                         inkBox?.union(x, y) ?: run { inkBox = Rect(x, y, x + 1, y + 1) }
                     }
                     if (prev >= 0) {
                         change += kotlin.math.abs(lum - prev)
                         steps++
+                        if (!isInk && !prevInk) {
+                            paperChange += kotlin.math.abs(lum - prev)
+                            paperSteps++
+                        }
                     }
                     prev = lum
+                    prevInk = isInk
                 } else {
                     prev = -1
                 }
@@ -348,7 +365,12 @@ internal object BalloonTrust {
             }
             y += SAMPLE_STEP
         }
-        return Look(samples, ink, if (steps > 20) change.toFloat() / steps else 0f, inkBox)
+        return Look(
+            samples, ink,
+            if (steps > 20) change.toFloat() / steps else 0f,
+            if (paperSteps > 20) paperChange.toFloat() / paperSteps else 0f,
+            inkBox,
+        )
     }
 
     /**
