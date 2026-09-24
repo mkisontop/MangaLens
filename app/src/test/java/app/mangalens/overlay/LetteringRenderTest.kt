@@ -640,6 +640,10 @@ class LetteringRenderTest {
         // The same words again stay put; new words fade in afresh.
         v.setBubbles(listOf(bubble("A machine draft")))
         assertTrue("unchanged lettering does not fade again", darkest(render()) < 40)
+        // Nor does the same line re-read a few pixels off, as a model's box
+        // for a line recalled from memory lands.
+        v.setBubbles(listOf(bubble("A machine draft").copy(box = Rect(box).apply { offset(3, 4) })))
+        assertTrue("the same words nudged a little do not fade again", darkest(render()) < 40)
         v.setBubbles(listOf(bubble("The AI's polished line")))
         val swapped = render()
         assertEquals("still no original under the swap", 0, pixels(swapped).count(::isLetteringInk))

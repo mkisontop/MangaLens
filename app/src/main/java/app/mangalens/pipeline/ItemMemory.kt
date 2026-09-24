@@ -3,6 +3,8 @@ package app.mangalens.pipeline
 import android.graphics.Bitmap
 import android.graphics.Rect
 import app.mangalens.translate.PageItem
+import java.lang.ref.WeakReference
+import java.util.IdentityHashMap
 import kotlin.math.abs
 
 /**
@@ -42,7 +44,10 @@ internal class ItemMemory {
         val pageW: Int,
         val pageH: Int,
         val detail: Detail,
-    )
+    ) {
+        /** Recalls in a row that did not find this lettering on screen. */
+        var missed = 0
+    }
 
     /**
      * The lettering's ink at [f]-times reduction — near full resolution —
@@ -55,11 +60,30 @@ internal class ItemMemory {
 
     private val items = ArrayDeque<Remembered>()
 
-    /** Remembers [found], as read off [bitmap], for later frames. */
+    /** The frame recall last looked at, and the memories it found there: the same lettering, now re-read. */
+    private var recalledOn: WeakReference<Bitmap>? = null
+    private var recalledFrom: List<Remembered> = emptyList()
+
+    /** The last frame's reduced greys, shared by recall and remember on the same frame. */
+    private var grayOf: WeakReference<Bitmap>? = null
+    private var grayCache: Gray? = null
+
+    /**
+     * Remembers [found], as read off [bitmap], for later frames. The
+     * memories recall found on this same frame are that lettering seen
+     * again, and give way to the new ones: one memory per piece of
+     * lettering, never one per stop it was read at.
+     */
     @Synchronized
     fun remember(bitmap: Bitmap, found: List<PageItem>) {
         if (found.isEmpty()) return
-        val gray = Gray.of(bitmap)
+        val gray = grayFor(bitmap)
+        if (recalledOn?.get() === bitmap && recalledFrom.isNotEmpty()) {
+            val seen = java.util.Collections.newSetFromMap(IdentityHashMap<Remembered, Boolean>())
+            seen.addAll(recalledFrom)
+            items.removeAll { it in seen }
+            recalledFrom = emptyList()
+        }
         for (item in found) {
             val r = fingerprint(gray, bitmap, item) ?: continue
             items.removeAll { overlaps(it, r) }
@@ -68,8 +92,25 @@ internal class ItemMemory {
         while (items.size > CAPACITY) items.removeFirst()
     }
 
+    /** How many pieces of lettering are remembered. */
+    internal val size: Int @Synchronized get() = items.size
+
     @Synchronized
-    fun clear() = items.clear()
+    fun clear() {
+        items.clear()
+        recalledFrom = emptyList()
+        recalledOn = null
+        grayOf = null
+        grayCache = null
+    }
+
+    private fun grayFor(bitmap: Bitmap): Gray {
+        grayCache?.takeIf { grayOf?.get() === bitmap }?.let { return it }
+        return Gray.of(bitmap).also {
+            grayCache = it
+            grayOf = WeakReference(bitmap)
+        }
+    }
 
     /**
      * The remembered items visible in [bitmap], moved to where they now sit,
@@ -85,20 +126,33 @@ internal class ItemMemory {
     @Synchronized
     fun recall(bitmap: Bitmap, ignoreTop: Int = 0, ignoreBottom: Int = 0): List<PageItem> {
         if (items.isEmpty()) return emptyList()
-        val gray = Gray.of(bitmap)
+        val gray = grayFor(bitmap)
         val found = ArrayList<Pair<Int, PageItem>>()
+        val from = ArrayList<Remembered>()
         for (i in items.indices.reversed()) {
             val r = items[i]
-            if (r.pageW != bitmap.width || r.pageH != bitmap.height) continue
-            val cy = find(gray, r) ?: continue
-            val coarse = (cy - r.cy) * SCALE
-            val (dx, dy) = verify(bitmap, r, coarse) ?: continue
-            val box = Rect(r.item.box).apply { offset(dx, dy) }
-            if (box.top < ignoreTop || box.bottom > bitmap.height - ignoreBottom) continue
-            if (box.top < 0 || box.bottom > bitmap.height) continue
-            if (found.any { (_, it) -> sameSpot(it.box, box) }) continue
-            found.add(i to r.item.copy(box = box))
+            val hit = r.pageW == bitmap.width && r.pageH == bitmap.height && run {
+                val cy = find(gray, r) ?: return@run false
+                val coarse = (cy - r.cy) * SCALE
+                val (dx, dy) = verify(bitmap, r, coarse) ?: return@run false
+                val box = Rect(r.item.box).apply { offset(dx, dy) }
+                if (box.top < ignoreTop || box.bottom > bitmap.height - ignoreBottom) return@run true
+                if (box.top < 0 || box.bottom > bitmap.height) return@run true
+                if (found.none { (_, it) -> sameSpot(it.box, box) }) found.add(i to r.item.copy(box = box))
+                true
+            }
+            if (hit) {
+                r.missed = 0
+                from.add(r)
+            } else {
+                r.missed++
+            }
         }
+        // Lettering not on screen for several stops in a row has scrolled
+        // well away; searching every frame for it only delays the repaint.
+        items.removeAll { it.missed >= FORGET_AFTER }
+        recalledOn = WeakReference(bitmap)
+        recalledFrom = from
         return found.sortedBy { it.first }.map { it.second }
     }
 
@@ -349,6 +403,9 @@ internal class ItemMemory {
     private companion object {
         const val SCALE = 4
         const val CAPACITY = 80
+
+        /** Recalls in a row that may miss a memory before it is forgotten. */
+        const val FORGET_AFTER = 4
         const val MIN_CELLS = 4
 
         /** Mean absolute deviation, in grey levels, below which a patch is blank paper. */

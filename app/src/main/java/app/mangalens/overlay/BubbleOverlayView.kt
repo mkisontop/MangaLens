@@ -500,7 +500,7 @@ class BubbleOverlayView(context: Context) : View(context) {
             patchDst?.let { bounds.union(it.left.toFloat(), it.top.toFloat(), it.right.toFloat(), it.bottom.toFloat()) }
 
             val shown = Shown(key.box, b.translated)
-            val since = if (now == 0L) 0L else shownSince[shown] ?: now
+            val since = if (now == 0L) 0L else shownSince[shown] ?: shownNear(shown) ?: now
             nextShown[shown] = since
 
             out.add(Placed(l, dy, bounds, stamp, stampDst, patch, patchDst, since))
@@ -521,7 +521,7 @@ class BubbleOverlayView(context: Context) : View(context) {
             val l = placeNote(b, text, occupied, sounds) ?: continue
             noted.add(said to b.box)
             val shown = Shown(Rect(b.box), b.translated)
-            val since = if (now == 0L) 0L else shownSince[shown] ?: now
+            val since = if (now == 0L) 0L else shownSince[shown] ?: shownNear(shown) ?: now
             nextShown[shown] = since
             out.add(Placed(l, 0f, RectF(l.inkRect), null, null, null, null, since))
             occupied.add(RectF(l.inkRect))
@@ -531,6 +531,25 @@ class BubbleOverlayView(context: Context) : View(context) {
         busyPatches = nextBusy
         shownSince = nextShown
         return out
+    }
+
+    /**
+     * When a line already on screen started showing, found by its words
+     * and nearly its place: the model's reading of a line recalled from
+     * memory lands a few pixels from the recalled box, and the same words
+     * fading in again from nothing reads as a flicker in the line being read.
+     */
+    private fun shownNear(shown: Shown): Long? {
+        var best: Long? = null
+        for ((old, since) in shownSince) {
+            if (old.translated != shown.translated) continue
+            val r = Rect()
+            if (!r.setIntersect(old.box, shown.box)) continue
+            val inter = r.width().toLong() * r.height()
+            val union = old.box.width().toLong() * old.box.height() + shown.box.width().toLong() * shown.box.height() - inter
+            if (union > 0 && inter * 2 >= union) best = since
+        }
+        return best
     }
 
     private fun screenWidth() = (if (width > 0) width else resources.displayMetrics.widthPixels).toFloat()

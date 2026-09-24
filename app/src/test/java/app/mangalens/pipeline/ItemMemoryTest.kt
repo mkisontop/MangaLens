@@ -125,6 +125,34 @@ class ItemMemoryTest {
     }
 
     @Test
+    fun lineReadAgainAtTheNextStopIsRememberedOnceNotOncePerStop() {
+        val (page, c) = blank()
+        val a = balloon(c, "ABCDEFG", 360f, 900f, "Where were you?")
+        val memory = ItemMemory()
+        memory.remember(page, listOf(a))
+        var frame = page
+        for (stop in 1..5) {
+            val (next, _) = scrolled(frame, 120)
+            val found = memory.recall(next)
+            assertEquals("found at stop $stop", 1, found.size)
+            memory.remember(next, found)
+            frame = next
+        }
+        assertEquals("one memory for one line", 1, memory.size)
+    }
+
+    @Test
+    fun letteringLongScrolledAwayIsForgotten() {
+        val (page, c) = blank()
+        val a = balloon(c, "ABCDEFG", 360f, 300f, "Where were you?")
+        val memory = ItemMemory()
+        memory.remember(page, listOf(a))
+        // Scrolled clean off the screen, stop after stop.
+        repeat(6) { memory.recall(scrolled(page, 1400).first) }
+        assertEquals(0, memory.size)
+    }
+
+    @Test
     fun aNewBalloonInAnOldBalloonsPlaceIsNotTheOldBalloon() {
         val (page, c) = blank()
         val a = balloon(c, "ABCDEFG", 360f, 700f, "Where were you?")
