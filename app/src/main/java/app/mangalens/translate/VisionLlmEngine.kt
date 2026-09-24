@@ -248,6 +248,9 @@ VOICE
 - Keep honorifics that carry nuance (oppa, hyung, noona, unnie, -nim, -ssi, senpai, -san, -sama, -chan, gege, jiejie, shifu).
 - Use "glossary" EXACTLY for known names/terms; romanize new names sensibly.
 - Keep lines as tight as real typeset dialogue. No translator notes, no romanization in "en".
+- Natural, idiomatic English as a skilled native scanlator writes it: carry meaning, intent and tone, not word order; no calques (idioms and sentence particles become what an English speaker would say). Rephrase, never reinterpret: add nothing the source does not say.
+- Faithful and complete: never omit, summarise or soften; match crudeness and heat. Explicit scenes use the plain words of English adult comics, never clinical or anatomical terms.
+- Proofread every line: correct spelling, grammar and punctuation.
 
 SOUND EFFECTS
 Punchy comic onomatopoeia in CAPS (WHAM, BA-DUMP, KRAK) with "kind":"sfx". Japanese SFX cover states as well as sounds — silence (シーン), staring (ジー), nervousness (ドキドキ) — so translate the effect, not a literal noise. Use "kind":"skip" for UI scraps, watermarks, page numbers and decorative or unreadable SFX.

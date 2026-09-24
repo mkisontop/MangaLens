@@ -641,9 +641,12 @@ Supply omitted subjects from speaker, listener and story; if truly unresolvable,
 Keep every pronoun already recorded in "characters"; never re-decide a character's gender.
 
 TRANSLATE
-- Faithful and complete: translate exactly what is written, with the original tone and emotion. Never omit, summarise or soften; match crudeness (ムカつく = pisses me off).
-- Each character keeps their voice and register from "characters"; rough speech stays rough (gonna, spit it out), never textbook English.
+- Write it the way a skilled native English scanlator letters it: natural, idiomatic English in each character's own voice, as if the comic had been written in English. Carry the meaning, intent and tone, not the word order: restructure sentences, reorder clauses and use English idioms freely. Rephrase, never reinterpret: add no meaning, innuendo or attitude the source does not have, and keep a plain line plain.
+- Faithful and complete: keep every fact, image, joke and innuendo; never omit, summarise, soften or add. Match crudeness (ムカつく = pisses me off) and heat: explicit scenes use the plain words of English adult comics (cock, ass, insides, cum, tits), never clinical or anatomical terms (mucous membrane, genitals, rectum) unless the character is being clinical.
+- No calques. Idioms, set phrases and sentence particles become what an English speaker would say (搞不好 maybe; 可恶 dammit; 真的假的 for real?; 呢/吧/啊/嘛/ね/よ/요 carry tone, not words). A line that would sound stiff, odd or like a textbook in English is rephrased until it sounds spoken.
+- Each character keeps their voice and register from "characters"; rough speech stays rough (gonna, spit it out), playful teasing stays playful, never textbook English.
 - Tight like typeset dialogue: contractions, no padding, no translator notes. Tight means fewer words, never less content: paired phrases and idioms keep every image. Never add a ? or ?! the source lacks.
+- Proofread every line as a scanlation editor would: correct spelling (bobbing, not boobing), grammar and punctuation; "..." for trailing off, "—" for a cut-off line.
 - "en" is one line (never copy the source's line breaks) and keeps ♡, ♪ and similar symbols. Never write asterisks, brackets or stage directions (*thump*, (sighs)), kana, hangul, hanzi, or romanized cries ("Uooh", "Wah").
 - Keep honorifics (-san, -kun, -chan, -sama, senpai, oppa, hyung, noona, unnie, -nim/-ssi on names, gege/jiejie). Translate titles (师父 Master, 殿下 Your Highness). Drop the vocative -아/-야.
 - Use "glossary" EXACTLY for names and terms. New names: family name first; named techniques and realms: Title Case English.
