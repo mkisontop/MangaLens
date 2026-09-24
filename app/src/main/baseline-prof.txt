@@ -1,0 +1,13 @@
+# Code on the path from a still screen to lettered English, compiled ahead of
+# time so the first pages after MangaLens starts do not run it interpreted:
+# on a phone that has not compiled the app yet, the first page is otherwise
+# some tenths of a second slower to paint. Installed by ProfileInstaller.
+HSPLapp/mangalens/**->**(**)**
+Lapp/mangalens/**;
+HSPLokhttp3/**->**(**)**
+Lokhttp3/**;
+HSPLokio/**->**(**)**
+Lokio/**;
+HSPLkotlinx/coroutines/**->**(**)**
+Lkotlinx/coroutines/**;
+HSPLorg/json/**->**(**)**
