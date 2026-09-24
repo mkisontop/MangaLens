@@ -4,6 +4,7 @@ import app.mangalens.settings.AiReasoning
 import java.io.ByteArrayOutputStream
 import java.io.IOException
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.TimeUnit
 import java.util.concurrent.atomic.AtomicLong
 import java.util.zip.Deflater
 import java.util.zip.GZIPOutputStream
@@ -92,7 +93,7 @@ internal object GeminiApi {
      * saves the first page a rejected round trip; anything else that rejects
      * it is learned from the 400 and remembered.
      */
-    private val NO_MINIMAL = Regex("pro|^gemini-flash-latest$|^gemini-3\\.[6-9]-flash(?!-lite)")
+    private val NO_MINIMAL = Regex("pro|^gemini-flash-latest$|^gemini-3\\.[7-9]-flash(?!-lite)")
 
     /** Levels (or "budget") a model answered 400 to, per model, for the life of the process. */
     private val rejected = ConcurrentHashMap<String, MutableSet<String>>()
@@ -225,16 +226,45 @@ internal object GeminiApi {
         onSent: () -> Unit,
         onFinish: (String) -> Unit,
         onDelta: (suspend (String) -> Unit)?,
+    ): String = stream(apiKey, model, body, 0L, onSent, onFinish, onDelta)
+
+    /**
+     * [stream], giving up with an IOException once the response has been
+     * silent for [silenceMs] (0: the client's own read timeout).
+     */
+    suspend fun stream(
+        apiKey: String,
+        model: String,
+        body: JSONObject,
+        silenceMs: Long,
+        onSent: () -> Unit,
+        onFinish: (String) -> Unit,
+        onDelta: (suspend (String) -> Unit)?,
     ): String = withContext(Dispatchers.IO) {
         val url = base + model + ":streamGenerateContent?alt=sse"
         withThinkingRetry(model, body) { b ->
-            val call = client.newCall(post(url, apiKey, b, onSent))
+            val call = clientFor(silenceMs).newCall(post(url, apiKey, b, onSent))
             LlmHttp.await(call).use { resp ->
                 if (!resp.isSuccessful) throw httpError(model, resp)
                 val source = resp.body?.source() ?: return@use ""
                 LlmHttp.abortOnCancel(call) { readEvents(source, onDelta, model, onFinish) }
             }
         }
+    }
+
+    @Volatile private var quiet: Triple<OkHttpClient, Long, OkHttpClient>? = null
+
+    /**
+     * [client], or one sharing its connections that gives up on a response
+     * silent for [silenceMs] (0: the client's own read timeout). An HTTP/2
+     * connection a read timed out on is pinged and dropped when it does not
+     * answer, so the retry goes out on a fresh one.
+     */
+    private fun clientFor(silenceMs: Long): OkHttpClient {
+        if (silenceMs <= 0) return client
+        quiet?.takeIf { it.first === client && it.second == silenceMs }?.let { return it.third }
+        return client.newBuilder().readTimeout(silenceMs, TimeUnit.MILLISECONDS).build()
+            .also { quiet = Triple(client, silenceMs, it) }
     }
 
     /** One plain `generateContent` call; returns the response document. */

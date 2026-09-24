@@ -150,6 +150,8 @@ class LlmRequestTest {
         assertEquals("minimal", fast("gemini-3.5-flash"))
         assertEquals("minimal", fast("gemini-3.5-flash-lite"))
         assertEquals("minimal", fast("gemini-3.1-flash-lite"))
+        // 3.6 Flash, the stand-in, takes it (checked live).
+        assertEquals("minimal", fast("gemini-3.6-flash"))
         // 3.7 and 3.8 Flash answer 400 to "minimal"; the default alias points at 3.8.
         assertEquals("low", fast("gemini-3.8-flash"))
         assertEquals("low", fast("gemini-3.7-flash"))

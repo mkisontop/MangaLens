@@ -244,6 +244,24 @@ class GeminiApiTest {
         assertFalse(JSONObject(ex.body).has("safetySettings"))
     }
 
+    @Test
+    fun `a stream silent past its limit is given up on, not waited out`() = runBlocking {
+        // A connection that died without saying so: the request goes out and
+        // nothing ever comes back. Both racers would share it for 90 s.
+        serve { ex ->
+            ex.startEvents()
+            Thread.sleep(4_000)
+        }
+        val started = System.nanoTime()
+        try {
+            GeminiApi.stream("K", "gemini-test-flash", body("low"), 500L, {}, {}, null)
+            fail("expected the silence to end the stream")
+        } catch (e: IOException) {
+            val ms = (System.nanoTime() - started) / 1_000_000
+            assertTrue("gave up after $ms ms", ms < 2_500)
+        }
+    }
+
     /** Every message on [e] and on its causes, since any of them can reach the screen or a log. */
     private fun messages(e: Throwable): String =
         generateSequence(e) { it.cause }.joinToString(" | ") { it.toString() }

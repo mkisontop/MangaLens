@@ -227,6 +227,7 @@ class PageReader internal constructor(
         var winner = -1
         var retried = false
         var failed = 0
+        val failedIds = HashSet<Int>()
         val failures = ArrayList<Throwable>()
         fun crown(id: Int) {
             winner = id
@@ -256,6 +257,7 @@ class PageReader internal constructor(
                         if (ev.id == winner) throw ev.error
                         if (winner >= 0) continue
                         failed++
+                        failedIds += ev.id
                         val m = asked[ev.id]
                         // A stand-in Google has since retired is passed over
                         // like an overloaded one; the model asked for going
@@ -264,7 +266,16 @@ class PageReader internal constructor(
                         if (!gone) failures += ev.error
                         if (overloaded(ev.error)) GeminiApi.strain(m)
                         if ((overloaded(ev.error) || gone) && m == current) GeminiApi.relief(m)?.let { current = it }
-                        if (failed == contenders.size) {
+                        if (failed < contenders.size) {
+                            // The rest of the race is still out, but on a model
+                            // Google has just turned away: it is as likely to be
+                            // turned away, or kept waiting, as this one was. The
+                            // stand-in joins now rather than once they have all
+                            // failed; whichever answers first still wins.
+                            val standIn = (overloaded(ev.error) || gone) && current != m && spares == 0 &&
+                                contenders.indices.none { it !in failedIds && asked[it] == current }
+                            if (standIn) launchContender()
+                        } else {
                             when {
                                 !gone && !transient(ev.error) -> throw worst(failures)
                                 spares > 0 -> releaseSpares()
@@ -470,6 +481,13 @@ class PageReader internal constructor(
         /** Identical requests sent at once; the first to deliver an item wins. */
         const val RACE = 2
 
+        /**
+         * The longest a page read at the default depth waits for a byte.
+         * Across 171 live pages, overload windows included, the longest
+         * silence before the first item was about 8 s.
+         */
+        const val SILENT_MS = 15_000L
+
         /** How long a lone request may show nothing before a duplicate joins it. */
         const val HEDGE_MS = 2500L
 
@@ -514,7 +532,14 @@ class PageReader internal constructor(
 
         private fun geminiTransport(settings: AppSettings) = Transport { model, body, onSent, onFinish, onDelta ->
             LlmHttp.requireConfig(settings)
-            GeminiApi.stream(settings.apiKey, model, body, onSent, onFinish, onDelta)
+            // A page thought over lightly is never silent for long: a stream
+            // quiet for [SILENT_MS] is a connection that died without saying
+            // so (a mobile network's NAT forgot it, the phone changed
+            // networks), and both racers share it. Given up on, the race
+            // retries on a fresh one instead of waiting out the 90 s a
+            // thorough read needs.
+            val silence = if (settings.aiReasoning == AiReasoning.THOROUGH) 0L else SILENT_MS
+            GeminiApi.stream(settings.apiKey, model, body, silence, onSent, onFinish, onDelta)
         }
 
         private fun elapsedMs(since: Long): Long = (System.nanoTime() - since) / 1_000_000

@@ -465,18 +465,63 @@ class PageReaderTest {
             reader(transport, race = 2, staggerMs = 0, retryMs = 5_000).start(this, page(), SourceLang.JA)
         }
         assertEquals(listOf("Hello."), read.collect().map { it.en })
+        // The stand-in joins as soon as one racer is turned away, so it can
+        // reach the transport before the second racer does.
         val models = transport.calls.map { it.first }
-        assertEquals(listOf(settings.model, settings.model, "gemini-3.6-flash"), models)
-        val lag = (transport.startedAt[2] - transport.startedAt[1]) / 1_000_000
+        assertEquals(listOf(settings.model, settings.model, "gemini-3.6-flash").sorted(), models.sorted())
+        assertEquals(settings.model, models.first())
+        val standIn = models.indexOf("gemini-3.6-flash")
+        val lag = (transport.startedAt[standIn] - transport.startedAt[0]) / 1_000_000
         assertTrue("the stand-in went $lag ms after the overload, without the retry's pause", lag < 2_000)
         assertTrue(read.summary, read.summary.contains("gemini-3.6-flash"))
         // Its request is built for the stand-in: no "minimal" level it would refuse.
-        val config = transport.calls[2].second.getJSONObject("generationConfig")
+        val config = transport.calls[standIn].second.getJSONObject("generationConfig")
         assertEquals(GeminiApi.thinkingConfig("gemini-3.6-flash", settings.aiReasoning)?.toString(), config.optJSONObject("thinkingConfig")?.toString())
 
         val next = FakeTransport { _, _, onDelta -> streamOut(reply(bye), onDelta) }
         reader(next, race = 1).read(page(), SourceLang.JA)
         assertEquals("the next page starts on the stand-in", listOf("gemini-3.6-flash"), next.calls.map { it.first })
+    }
+
+    @Test
+    fun `a racer turned away as overloaded brings the stand-in in at once, while the other is still out`() = runBlocking {
+        val transport = FakeTransport { call, model, onDelta ->
+            when {
+                model == settings.model && call == 0 -> {
+                    delay(50)
+                    throw GeminiHttpException(503, "The model is overloaded.")
+                }
+                // The other racer on the overloaded model: kept waiting.
+                model == settings.model -> {
+                    delay(5_000)
+                    streamOut(reply(bye), onDelta)
+                }
+                else -> streamOut(reply(hello), onDelta)
+            }
+        }
+        val started = System.nanoTime()
+        val items = withTimeout(4_000) {
+            reader(transport, race = 2, staggerMs = 0, retryMs = 5_000).read(page(), SourceLang.JA)
+        }
+        val ms = (System.nanoTime() - started) / 1_000_000
+        assertEquals(listOf("Hello."), items.map { it.en })
+        assertEquals(listOf(settings.model, settings.model, "gemini-3.6-flash"), transport.calls.map { it.first })
+        assertTrue("answered in $ms ms, not once the waiting racer gave up", ms < 2_000)
+        assertEquals("the waiting racer is cancelled when the stand-in wins", 1, transport.cancelled.get())
+    }
+
+    @Test
+    fun `a racer refused for another reason brings no stand-in while the rest is out`() = runBlocking {
+        val transport = FakeTransport { call, _, onDelta ->
+            if (call == 0) throw GeminiHttpException(500, "Internal error.")
+            delay(200)
+            streamOut(reply(hello), onDelta)
+        }
+        val items = withTimeout(4_000) {
+            reader(transport, race = 2, staggerMs = 0, retryMs = 5_000).read(page(), SourceLang.JA)
+        }
+        assertEquals(listOf("Hello."), items.map { it.en })
+        assertEquals(listOf(settings.model, settings.model), transport.calls.map { it.first })
     }
 
     @Test
@@ -502,13 +547,18 @@ class PageReaderTest {
         } catch (e: GeminiHttpException) {
             assertEquals(503, e.code)
         }
+        // The stand-in joins while the second racer is still out, so the two
+        // may reach the transport in either order; the walk down is the same.
+        val asked = transport.calls.map { it.first }
         assertEquals(
             listOf(
                 settings.model, settings.model,
                 "gemini-3.6-flash", "gemini-3.5-flash", "gemini-flash-lite-latest", "gemini-flash-lite-latest",
-            ),
-            transport.calls.map { it.first },
+            ).sorted(),
+            asked.sorted(),
         )
+        assertEquals(settings.model, asked.first())
+        assertEquals(listOf("gemini-3.5-flash", "gemini-flash-lite-latest", "gemini-flash-lite-latest"), asked.takeLast(3))
     }
 
     @Test
