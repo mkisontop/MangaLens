@@ -26,7 +26,8 @@ the normal APK.
 ## How it feels
 
 1. Tap Fuki, the big yellow **GO!** balloon on the home screen → allow
-   screen capture.
+   screen capture. While translation is paused Fuki naps; tap it to wake
+   it up.
 2. Switch to Brave and read your manhwa like normal.
 3. Every time you stop scrolling, English appears **in** the page, line by
    line as it is translated — each balloon wiped clean and re-lettered in a

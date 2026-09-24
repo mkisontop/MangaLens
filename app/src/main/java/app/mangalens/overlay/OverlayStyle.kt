@@ -10,6 +10,7 @@ import android.view.Gravity
 import android.view.View
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.core.content.ContextCompat
 import androidx.core.content.res.ResourcesCompat
 import app.mangalens.R
 
@@ -88,8 +89,14 @@ internal object OverlayStyle {
         setPadding(0, dp(context, 6f), d, dp(context, 10f))
     }
 
-    /** One menu row: a full 48dp target, with a pale yellow press state. */
-    fun menuRow(context: Context, label: String, color: Int = MENU_INK): TextView = TextView(context).apply {
+    /**
+     * One menu row: a full 48dp target, with a pale yellow press state. The
+     * [icon] is a 20dp monochrome vector in the label's own colour, set as a
+     * compound drawable so every label starts on one column. Emoji were
+     * tried first: they came in the phone maker's colours and in different
+     * widths, so the labels wandered left and right.
+     */
+    fun menuRow(context: Context, label: String, icon: Int, color: Int = MENU_INK): TextView = TextView(context).apply {
         text = label
         setTextColor(color)
         textSize = 15f
@@ -98,6 +105,17 @@ internal object OverlayStyle {
         minWidth = dp(context, 232f)
         gravity = Gravity.CENTER_VERTICAL
         setPadding(dp(context, 16f), 0, dp(context, 16f), 0)
+        ContextCompat.getDrawable(context, icon)?.mutate()?.let { d ->
+            d.setTint(color)
+            val size = dp(context, 20f)
+            d.setBounds(0, 0, size, size)
+            // Placed by side, not by start: relative drawables resolve only
+            // once a view learns its layout direction, and the menu is built
+            // and drawn before its window exists.
+            val rtl = context.resources.configuration.layoutDirection == View.LAYOUT_DIRECTION_RTL
+            if (rtl) setCompoundDrawables(null, null, d, null) else setCompoundDrawables(d, null, null, null)
+            compoundDrawablePadding = dp(context, 12f)
+        }
         background = StateListDrawable().apply {
             addState(intArrayOf(android.R.attr.state_pressed), ColorDrawable(MENU_PRESSED))
             addState(intArrayOf(), ColorDrawable(0))

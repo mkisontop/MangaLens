@@ -141,7 +141,7 @@ internal const val GEMINI_KEY_URL = "https://aistudio.google.com/apikey"
  */
 internal const val MARK = "文⁠A"
 
-/** Fuki's tips, cycled one at a time on the home screen. */
+/** Fuki's tips, cycled one at a time on the home screen; the first explains hands-free mode. */
 internal val TIPS = listOf(
     "Hands-free: scroll and I hide; stop and I translate. That's the whole trick.",
     "Hold the $MARK bubble for the quick menu: translate now, peek at the original, and more.",
@@ -153,6 +153,14 @@ internal val TIPS = listOf(
     "Pages go only to the AI you picked, nowhere else.",
     "Loving a raw? Support the official release when it comes out.",
 )
+
+/**
+ * The tips for [mode]. In tap-to-translate mode the hands-free tip would
+ * contradict the caption right above it, so that mode opens with its own.
+ */
+internal fun tipsFor(mode: CaptureMode): List<String> =
+    if (mode == CaptureMode.AUTO) TIPS
+    else listOf("Tap mode: open a page, tap $MARK, and I letter it. Hands-free lives in Tweaks.") + TIPS.drop(1)
 
 /** The line Fuki letters to prove a key works: short, warm, and unmistakably Korean. */
 internal const val SAMPLE = "괜찮아. 내가 지켜줄게."

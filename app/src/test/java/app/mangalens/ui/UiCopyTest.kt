@@ -41,6 +41,18 @@ class UiCopyTest {
     }
 
     @Test
+    fun `no visible copy names Google`() {
+        // "Google" on screen reads as the machine translation coming back;
+        // the AI is called Gemini. Key-page URLs are lower case and pass.
+        for (file in sources()) {
+            for (m in literal.findAll(file.readText())) {
+                val text = m.groupValues[1]
+                assertTrue("${file.name}: \"$text\" names Google", !text.contains("Google"))
+            }
+        }
+    }
+
+    @Test
     fun `the ui never names the removed engines`() {
         val ui = File("src/main/java/app/mangalens/ui").listFiles { f -> f.extension == "kt" }.orEmpty()
         for (file in ui) {

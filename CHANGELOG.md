@@ -17,8 +17,10 @@ the README.
 - **A new face: Fuki.** The home screen is one big button — Fuki, a
   speech balloon that says GO! and turns red to STOP — on cream newsprint
   with ink outlines and hard shadows. First run is two steps (float over
-  apps, paste a free Gemini key), and Fuki proves the key by lettering a
-  line. Every setting moved to one Tweaks page; the overlay's quick menu
+  apps, paste a free Gemini key), and Fuki wakes up a step at a time as
+  you go, then proves the key by lettering a line. Paused, Fuki naps: tap
+  it to wake it (Stop has its own button). Every setting moved to one
+  Tweaks page; the overlay's quick menu
   opens it, its button and pill are restyled to read over white and black
   pages, and in tap-to-translate mode a tap on 文A translates the page.
 - **A quieter pill.** While a page translates, the button's busy ring says

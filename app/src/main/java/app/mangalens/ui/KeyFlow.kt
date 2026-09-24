@@ -1,12 +1,14 @@
 package app.mangalens.ui
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -19,7 +21,11 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.LiveRegionMode
+import androidx.compose.ui.semantics.clearAndSetSemantics
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.text.font.FontFamily
@@ -242,7 +248,10 @@ internal class SayHi(
 /**
  * What the test line did, in balloons: the raw Korean on one side and
  * Fuki's English on the other, so the first thing a new key produces
- * looks like the lettering it will do on real pages.
+ * looks like the lettering it will do on real pages. A failure is Fuki
+ * speaking too, in a balloon marked with a red "!", so it never reads as
+ * one more link. "Try again" shows only when trying again could help: a
+ * refused key fails the same way every time.
  */
 @Composable
 internal fun SayHiResult(phase: SayHi.Phase, onRetry: () -> Unit, modifier: Modifier = Modifier) {
@@ -270,7 +279,7 @@ internal fun SayHiResult(phase: SayHi.Phase, onRetry: () -> Unit, modifier: Modi
                     val shown = if (text.length > 80) text.take(79).trimEnd() + "…" else text
                     SpeechBalloon(pop.zap, Modifier.align(Alignment.End), tail = Tail.End, tailAt = 0.65f) {
                         Text(
-                            "“$shown”",
+                            shown,
                             fontFamily = ComicNeue,
                             fontWeight = FontWeight.Bold,
                             fontSize = 18.sp,
@@ -288,13 +297,40 @@ internal fun SayHiResult(phase: SayHi.Phase, onRetry: () -> Unit, modifier: Modi
             }
             is SayHi.Phase.Failed -> {
                 Spacer(Modifier.height(12.dp))
-                Text(phase.message, style = MaterialTheme.typography.bodyLarge, color = pop.punchText)
-                Spacer(Modifier.height(10.dp))
-                StickerButton(
-                    "Try again", onRetry,
-                    style = StickerStyle.Surface, height = 48.dp, fillWidth = false,
-                )
+                SpeechBalloon(pop.surface, tail = Tail.Top, tailAt = 0.2f) {
+                    Row(verticalAlignment = Alignment.Top) {
+                        AlertBadge(Modifier.padding(top = 1.dp))
+                        Spacer(Modifier.width(10.dp))
+                        Text(phase.message, style = MaterialTheme.typography.bodyLarge, color = pop.punchText)
+                    }
+                }
+                if (!phase.rejected) {
+                    Spacer(Modifier.height(12.dp))
+                    StickerButton("Try again", onRetry, style = StickerStyle.Surface, height = 48.dp)
+                }
             }
         }
+    }
+}
+
+/** A small red "!" disc: the mark on anything Fuki could not do. */
+@Composable
+private fun AlertBadge(modifier: Modifier = Modifier) {
+    val pop = LocalPop.current
+    val glyph = with(LocalDensity.current) { 14.dp.toSp() }
+    Box(
+        modifier
+            .size(20.dp)
+            .clearAndSetSemantics { }
+            .drawWithCache {
+                val sw = 2.dp.toPx()
+                onDrawBehind {
+                    drawCircle(pop.punch)
+                    drawCircle(pop.stroke, size.minDimension / 2f - sw / 2f, style = Stroke(sw))
+                }
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Text("!", fontFamily = ComicNeue, fontWeight = FontWeight.Bold, fontSize = glyph, lineHeight = glyph, color = pop.onPunch)
     }
 }

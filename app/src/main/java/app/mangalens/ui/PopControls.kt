@@ -41,6 +41,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
+import androidx.compose.foundation.layout.wrapContentHeight
 import androidx.compose.foundation.selection.selectable
 import androidx.compose.foundation.selection.selectableGroup
 import androidx.compose.foundation.selection.toggleable
@@ -72,6 +73,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.CacheDrawScope
+import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.draw.drawWithCache
 import androidx.compose.ui.draw.rotate
 import androidx.compose.ui.geometry.CornerRadius
@@ -82,6 +84,7 @@ import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Outline
 import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.PathOperation
 import androidx.compose.ui.graphics.Shape
 import androidx.compose.ui.graphics.SolidColor
@@ -100,6 +103,7 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.role
 import androidx.compose.ui.semantics.semantics
 import androidx.compose.ui.semantics.stateDescription
+import androidx.compose.ui.text.TextLayoutResult
 import androidx.compose.ui.text.TextStyle
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
@@ -109,7 +113,6 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.input.PasswordVisualTransformation
 import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.text.style.TextAlign
-import androidx.compose.ui.text.style.TextDecoration
 import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
@@ -201,15 +204,20 @@ internal fun rememberSink(interaction: MutableInteractionSource, held: Boolean =
 private fun CacheDrawScope.insetOutline(shape: Shape, size: Size, sw: Float): Outline =
     shape.createOutline(Size(size.width - sw, size.height - sw), layoutDirection, this)
 
-/** Fill behind the content, ink outline over it, both kept inside the bounds. */
+/**
+ * Fill behind the content, ink outline over it, both kept inside the
+ * bounds. The join is round: a balloon's sharp tail would otherwise grow a
+ * mitred spike well past its own tip.
+ */
 private fun Modifier.popFace(shape: Shape, fill: () -> Color, strokeColor: Color, stroke: Dp): Modifier =
     drawWithCache {
         val sw = stroke.toPx()
         val outline = insetOutline(shape, size, sw)
+        val style = Stroke(sw, join = StrokeJoin.Round)
         onDrawWithContent {
             translate(sw / 2f, sw / 2f) { drawOutline(outline, fill()) }
             drawContent()
-            if (sw > 0f) translate(sw / 2f, sw / 2f) { drawOutline(outline, strokeColor, style = Stroke(sw)) }
+            if (sw > 0f) translate(sw / 2f, sw / 2f) { drawOutline(outline, strokeColor, style = style) }
         }
     }
 
@@ -218,7 +226,8 @@ private fun Modifier.popFace(shape: Shape, fill: () -> Color, strokeColor: Color
  * down and right. The shadow stays put while the face moves by
  * [sunk] × [depth], so a press looks like pushing the sticker into the page.
  * In the dark the shadow gets a faint cream rim, since black on near-black
- * would not read as depth at all.
+ * would not read as depth at all. [shadowShape] lets a balloon cast its
+ * shadow from its body alone: a shadowed tail shows as a ghost second tail.
  */
 @Composable
 internal fun PopSurface(
@@ -230,6 +239,8 @@ internal fun PopSurface(
     depth: Dp = 5.dp,
     stroke: Dp = 3.dp,
     contentColor: Color = LocalPop.current.ink,
+    strokeColor: Color = LocalPop.current.stroke,
+    shadowShape: Shape = shape,
     content: @Composable BoxScope.() -> Unit,
 ) {
     val pop = LocalPop.current
@@ -239,14 +250,14 @@ internal fun PopSurface(
             .drawWithCache {
                 val d = depth.toPx()
                 val sw = stroke.toPx()
-                val outline = insetOutline(shape, Size(size.width - d, size.height - d), sw)
-                val ringW = 2.dp.toPx()
+                val outline = insetOutline(shadowShape, Size(size.width - d, size.height - d), sw)
+                val ringW = 1.5.dp.toPx()
                 val rim = pop.shadowStroke
                 onDrawBehind {
                     if (d > 0f) translate(d + sw / 2f, d + sw / 2f) {
-                        if (rim != null) drawOutline(outline, rim, style = Stroke(sw + 2f * ringW))
+                        if (rim != null) drawOutline(outline, rim, style = Stroke(sw + 2f * ringW, join = StrokeJoin.Round))
                         drawOutline(outline, pop.shadow)
-                        if (sw > 0f) drawOutline(outline, pop.shadow, style = Stroke(sw))
+                        if (sw > 0f) drawOutline(outline, pop.shadow, style = Stroke(sw, join = StrokeJoin.Round))
                     }
                 }
             }
@@ -259,7 +270,7 @@ internal fun PopSurface(
                     val o = (depth.toPx() * sunk()).roundToInt()
                     IntOffset(o, o)
                 }
-                .popFace(shape, faceFill, pop.stroke, stroke),
+                .popFace(shape, faceFill, strokeColor, stroke),
             propagateMinConstraints = true,
         ) {
             CompositionLocalProvider(LocalContentColor provides contentColor) { content() }
@@ -322,6 +333,7 @@ internal fun StickerButton(
         depth = if (enabled) 4.dp else 0.dp,
         stroke = 3.dp,
         contentColor = fg,
+        strokeColor = if (enabled && style == StickerStyle.Warn) pop.zapSoftStroke else pop.stroke,
     ) {
         Row(
             Modifier
@@ -351,10 +363,15 @@ internal fun StickerButton(
     }
 }
 
-/** A plain link for secondary actions: red, underlined, and still a full 48dp to hit. */
+/**
+ * A plain link for secondary actions: ink with a dotted underline, and
+ * still a full 48dp to hit. Red is kept for errors, so a link never reads
+ * as a warning and a warning never reads as a link.
+ */
 @Composable
 internal fun TextLink(text: String, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val pop = LocalPop.current
+    var layout by remember { mutableStateOf<TextLayoutResult?>(null) }
     Box(
         modifier
             .minimumInteractiveComponentSize()
@@ -363,8 +380,21 @@ internal fun TextLink(text: String, onClick: () -> Unit, modifier: Modifier = Mo
     ) {
         Text(
             text,
-            style = MaterialTheme.typography.titleMedium.copy(textDecoration = TextDecoration.Underline),
-            color = pop.punchText,
+            style = MaterialTheme.typography.titleMedium,
+            color = pop.ink,
+            onTextLayout = { layout = it },
+            modifier = Modifier.drawBehind {
+                val l = layout ?: return@drawBehind
+                val w = 1.5.dp.toPx()
+                val dots = PathEffect.dashPathEffect(floatArrayOf(0.01f, w * 2.4f), 0f)
+                for (i in 0 until l.lineCount) {
+                    val y = l.getLineBaseline(i) + 3.dp.toPx()
+                    drawLine(
+                        pop.inkSoft, Offset(l.getLineLeft(i) + w, y), Offset(l.getLineRight(i), y),
+                        strokeWidth = w, cap = StrokeCap.Round, pathEffect = dots,
+                    )
+                }
+            },
         )
     }
 }
@@ -468,7 +498,9 @@ internal data class PopTile<T>(val value: T, val title: String, val caption: Str
 
 /**
  * A radio group of big tiles. The selected tile stays pressed in, turns
- * red and wears a check, so the choice shows three ways at once.
+ * red and wears a check, so the choice shows three ways at once. A short
+ * last row stretches across the width rather than leaving a hole, so five
+ * choices in two columns end on one wide tile, not a lopsided single.
  */
 @Composable
 internal fun <T> PopTiles(
@@ -479,11 +511,11 @@ internal fun <T> PopTiles(
     modifier: Modifier = Modifier,
     minHeight: Dp = 72.dp,
 ) {
-    Column(modifier.fillMaxWidth().selectableGroup(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+    Column(modifier.fillMaxWidth().selectableGroup(), verticalArrangement = Arrangement.spacedBy(12.dp)) {
         options.chunked(columns.coerceAtLeast(1)).forEach { row ->
             Row(
                 Modifier.fillMaxWidth().height(IntrinsicSize.Min),
-                horizontalArrangement = Arrangement.spacedBy(8.dp),
+                horizontalArrangement = Arrangement.spacedBy(12.dp),
             ) {
                 row.forEach { option ->
                     PopTileBox(
@@ -491,7 +523,6 @@ internal fun <T> PopTiles(
                         Modifier.weight(1f).fillMaxHeight(),
                     )
                 }
-                repeat(columns - row.size) { Spacer(Modifier.weight(1f)) }
             }
         }
     }
@@ -534,14 +565,21 @@ private fun <T> PopTileBox(option: PopTile<T>, selected: Boolean, onClick: () ->
                 verticalArrangement = Arrangement.Center,
             ) {
                 if (option.glyph != null) {
-                    Text(
-                        option.glyph,
-                        fontFamily = FontFamily.Default,
-                        fontSize = 28.sp,
-                        lineHeight = 32.sp,
-                        color = fg,
-                        modifier = Modifier.clearAndSetSemantics { },
-                    )
+                    // A fixed box, so ★, 한, 日 and 中 — each from its own
+                    // fallback font — put the captions under them on one line.
+                    val box = with(LocalDensity.current) { 36.sp.toDp() }
+                    Box(Modifier.height(box), contentAlignment = Alignment.Center) {
+                        Text(
+                            option.glyph,
+                            fontFamily = FontFamily.Default,
+                            fontSize = 28.sp,
+                            lineHeight = 32.sp,
+                            color = fg,
+                            modifier = Modifier
+                                .wrapContentHeight(unbounded = true)
+                                .clearAndSetSemantics { },
+                        )
+                    }
                 }
                 Text(
                     option.title,
@@ -558,9 +596,11 @@ private fun <T> PopTileBox(option: PopTile<T>, selected: Boolean, onClick: () ->
                     )
                 }
             }
+            // Half off the corner, like a sticker slapped on a sticker, and
+            // clear of the tile's own words.
             AnimatedVisibility(
                 visible = selected,
-                modifier = Modifier.align(Alignment.TopEnd).padding(top = 6.dp, end = 6.dp),
+                modifier = Modifier.align(Alignment.TopEnd).offset(x = 6.dp, y = (-6).dp),
                 enter = if (reduced) scaleIn(snap()) else scaleIn(spring(dampingRatio = 0.5f, stiffness = 600f)),
                 exit = fadeOut(snap()),
             ) {
@@ -680,10 +720,27 @@ private fun PopTrack(state: SliderState) {
 
 // ---- text fields ----
 
+/** The small caption over a field. It sits above, never in the outline, so nothing notches the box. */
+@Composable
+internal fun FieldLabel(text: String, modifier: Modifier = Modifier) {
+    Text(
+        text,
+        style = MaterialTheme.typography.labelMedium,
+        color = LocalPop.current.inkSoft,
+        modifier = modifier.padding(bottom = 4.dp).clearAndSetSemantics { },
+    )
+}
+
 /**
  * A text field for keys, model ids and URLs: monospace, never
  * autocorrected, and masked unless [secret] is off or the reader taps
  * Show. The key itself is never echoed anywhere else on screen.
+ *
+ * The [label] sits above the box (see [FieldLabel]) rather than floating
+ * in its outline, where the notch it cut showed as a paper-coloured bite
+ * out of the field. [showLabel] is off when the caller places the label
+ * itself, over a row that holds more than the field. [isError] marks a
+ * field that must be filled in.
  */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -695,86 +752,91 @@ internal fun SecretField(
     secret: Boolean = true,
     placeholder: String? = null,
     keyboardType: KeyboardType = if (secret) KeyboardType.Password else KeyboardType.Ascii,
+    showLabel: Boolean = true,
+    isError: Boolean = false,
     onDone: (() -> Unit)? = null,
 ) {
     val pop = LocalPop.current
     var shown by remember { mutableStateOf(false) }
     val interaction = remember { MutableInteractionSource() }
     val shape = RoundedCornerShape(16.dp)
+    val border = if (isError) pop.punchText else pop.stroke
     val colors = OutlinedTextFieldDefaults.colors(
         focusedTextColor = pop.ink,
         unfocusedTextColor = pop.ink,
         focusedContainerColor = pop.surface,
         unfocusedContainerColor = pop.surface,
-        focusedBorderColor = pop.stroke,
-        unfocusedBorderColor = pop.stroke.copy(alpha = 0.6f),
-        focusedLabelColor = pop.ink,
-        unfocusedLabelColor = pop.inkSoft,
+        focusedBorderColor = border,
+        unfocusedBorderColor = if (isError) border else border.copy(alpha = 0.6f),
         focusedPlaceholderColor = pop.inkSoft,
         unfocusedPlaceholderColor = pop.inkSoft,
         cursorColor = pop.ink,
     )
     val transformation = if (secret && !shown) PasswordVisualTransformation() else VisualTransformation.None
-    BasicTextField(
-        value = value,
-        onValueChange = onValueChange,
-        modifier = modifier.fillMaxWidth(),
-        singleLine = true,
-        textStyle = MonoStyle.copy(color = pop.ink),
-        cursorBrush = SolidColor(pop.ink),
-        visualTransformation = transformation,
-        keyboardOptions = KeyboardOptions(
-            keyboardType = keyboardType,
-            autoCorrectEnabled = false,
-            imeAction = ImeAction.Done,
-        ),
-        keyboardActions = KeyboardActions(onDone = { onDone?.invoke() }),
-        interactionSource = interaction,
-        decorationBox = { inner ->
-            OutlinedTextFieldDefaults.DecorationBox(
-                value = value,
-                innerTextField = inner,
-                enabled = true,
-                singleLine = true,
-                visualTransformation = transformation,
-                interactionSource = interaction,
-                label = { Text(label, fontFamily = ComicNeue, fontWeight = FontWeight.Bold) },
-                placeholder = placeholder?.let { p -> { Text(p, style = MonoStyle, color = pop.inkSoft) } },
-                trailingIcon = if (secret) {
-                    {
-                        Box(
-                            Modifier
-                                .minimumInteractiveComponentSize()
-                                .clickable(role = Role.Button) { shown = !shown }
-                                .semantics { contentDescription = if (shown) "Hide key" else "Show key" }
-                                .padding(horizontal = 12.dp),
-                            contentAlignment = Alignment.Center,
-                        ) {
-                            Text(
-                                if (shown) "Hide" else "Show",
-                                style = MaterialTheme.typography.titleMedium,
-                                color = pop.punchText,
-                                modifier = Modifier.clearAndSetSemantics { },
-                            )
+    Column(modifier.fillMaxWidth()) {
+        if (showLabel) FieldLabel(label)
+        BasicTextField(
+            value = value,
+            onValueChange = onValueChange,
+            modifier = Modifier
+                .fillMaxWidth()
+                .semantics { contentDescription = label },
+            singleLine = true,
+            textStyle = MonoStyle.copy(color = pop.ink),
+            cursorBrush = SolidColor(pop.ink),
+            visualTransformation = transformation,
+            keyboardOptions = KeyboardOptions(
+                keyboardType = keyboardType,
+                autoCorrectEnabled = false,
+                imeAction = ImeAction.Done,
+            ),
+            keyboardActions = KeyboardActions(onDone = { onDone?.invoke() }),
+            interactionSource = interaction,
+            decorationBox = { inner ->
+                OutlinedTextFieldDefaults.DecorationBox(
+                    value = value,
+                    innerTextField = inner,
+                    enabled = true,
+                    singleLine = true,
+                    visualTransformation = transformation,
+                    interactionSource = interaction,
+                    placeholder = placeholder?.let { p -> { Text(p, style = MonoStyle, color = pop.inkSoft) } },
+                    trailingIcon = if (secret) {
+                        {
+                            Box(
+                                Modifier
+                                    .minimumInteractiveComponentSize()
+                                    .clickable(role = Role.Button) { shown = !shown }
+                                    .semantics { contentDescription = if (shown) "Hide key" else "Show key" }
+                                    .padding(horizontal = 12.dp),
+                                contentAlignment = Alignment.Center,
+                            ) {
+                                Text(
+                                    if (shown) "Hide" else "Show",
+                                    style = MaterialTheme.typography.titleMedium,
+                                    color = pop.ink,
+                                    modifier = Modifier.clearAndSetSemantics { },
+                                )
+                            }
                         }
-                    }
-                } else null,
-                colors = colors,
-                contentPadding = OutlinedTextFieldDefaults.contentPadding(),
-                container = {
-                    OutlinedTextFieldDefaults.Container(
-                        enabled = true,
-                        isError = false,
-                        interactionSource = interaction,
-                        colors = colors,
-                        shape = shape,
-                        focusedBorderThickness = 2.5.dp,
-                        unfocusedBorderThickness = 2.dp,
-                    )
-                },
-            )
-        },
-    )
+                    } else null,
+                    colors = colors,
+                    contentPadding = OutlinedTextFieldDefaults.contentPadding(),
+                    container = {
+                        OutlinedTextFieldDefaults.Container(
+                            enabled = true,
+                            isError = false,
+                            interactionSource = interaction,
+                            colors = colors,
+                            shape = shape,
+                            focusedBorderThickness = 2.5.dp,
+                            unfocusedBorderThickness = if (isError) 2.5.dp else 2.dp,
+                        )
+                    },
+                )
+            },
+        )
+    }
 }
 
 // ---- speech balloons ----
@@ -790,6 +852,7 @@ private class BalloonShape(
     private val tailAt: Float,
     private val corner: Dp,
     private val tailSize: Dp,
+    private val withTail: Boolean = true,
 ) : Shape {
     override fun createOutline(size: Size, layoutDirection: LayoutDirection, density: Density): Outline {
         val t = with(density) { tailSize.toPx() }
@@ -805,6 +868,7 @@ private class BalloonShape(
             Tail.End -> Rect(0f, 0f, size.width - t, size.height)
         }
         val body = Path().apply { addRoundRect(RoundRect(rect, CornerRadius(minOf(c, rect.height / 2f)))) }
+        if (!withTail) return Outline.Generic(body)
         val half = t * 0.62f
         val overlap = t * 0.5f
         val tri = Path().apply {
@@ -834,24 +898,35 @@ private class BalloonShape(
     }
 }
 
-/** Fuki's voice on the page: a speech balloon with a tail, a hard shadow and room to grow. */
+/**
+ * Fuki's voice on the page: a speech balloon with a tail, a hard shadow and
+ * room to grow. The shadow falls from the body only, so the tail stays a
+ * single clean point. [sunk] presses the balloon into its shadow when the
+ * balloon itself is the button.
+ */
 @Composable
 internal fun SpeechBalloon(
     fill: Color,
     modifier: Modifier = Modifier,
     tail: Tail = Tail.Top,
     tailAt: Float = 0.5f,
+    strokeColor: Color = LocalPop.current.stroke,
+    sunk: () -> Float = { 0f },
     content: @Composable () -> Unit,
 ) {
     val reduced = LocalReducedMotion.current
     val tailSize = 14.dp
     val shape = remember(tail, tailAt) { BalloonShape(tail, tailAt, 20.dp, tailSize) }
+    val shadow = remember(tail, tailAt) { BalloonShape(tail, tailAt, 20.dp, tailSize, withTail = false) }
     val tailPad = when (tail) {
         Tail.Top -> PaddingValues(top = tailSize)
         Tail.Start -> PaddingValues(start = tailSize)
         Tail.End -> PaddingValues(end = tailSize)
     }
-    PopSurface(modifier, shape, color = fill, depth = 3.dp, stroke = 2.5.dp) {
+    PopSurface(
+        modifier, shape, color = fill, sunk = sunk, depth = 3.dp, stroke = 2.5.dp,
+        strokeColor = strokeColor, shadowShape = shadow,
+    ) {
         Box(
             Modifier
                 .padding(tailPad)
@@ -864,15 +939,20 @@ internal fun SpeechBalloon(
 // ---- decoration ----
 
 /**
- * Comic sound-effect lettering: the word in [fill] over a fat ink outline
- * and a hard shadow. Pure decoration, hidden from accessibility services.
+ * Comic sound-effect lettering: the word in [fill] with a fat ink outline,
+ * a red drop, and a wide paper halo under it all. The halo is the manga
+ * knockout: the burst spikes and speed lines behind the word break around
+ * it instead of running through the letters. The outline is always Fuki's
+ * fixed ink, never the theme's stroke, which is cream in the dark and would
+ * melt into Fuki's own cream rim. Pure decoration, hidden from
+ * accessibility services.
  */
 @Composable
 internal fun Sfx(text: String, sizeDp: Int, fill: Color, rotation: Float, modifier: Modifier = Modifier) {
     val pop = LocalPop.current
     val density = LocalDensity.current
     val fontSize = with(density) { sizeDp.dp.toSp() }
-    val strokePx = with(density) { 6.dp.toPx() }
+    val (inkW, haloW) = with(density) { 7.dp.toPx() to 17.dp.toPx() }
     val base = TextStyle(
         fontFamily = ComicNeue,
         fontWeight = FontWeight.Bold,
@@ -880,10 +960,19 @@ internal fun Sfx(text: String, sizeDp: Int, fill: Color, rotation: Float, modifi
         fontSize = fontSize,
         lineHeight = fontSize,
     )
-    val outline = base.copy(drawStyle = Stroke(width = strokePx, join = StrokeJoin.Round))
-    Box(modifier.graphicsLayer { rotationZ = rotation }.clearAndSetSemantics { }) {
-        Text(text, style = outline, color = pop.shadow, modifier = Modifier.offset(3.dp, 3.dp))
-        Text(text, style = outline, color = pop.stroke)
+    val outline = base.copy(drawStyle = Stroke(width = inkW, join = StrokeJoin.Round))
+    val halo = base.copy(drawStyle = Stroke(width = haloW, join = StrokeJoin.Round))
+    Box(
+        modifier
+            .graphicsLayer { rotationZ = rotation }
+            .clearAndSetSemantics { }
+            .padding(10.dp)
+    ) {
+        Text(text, style = halo, color = pop.paper)
+        Text(text, style = halo, color = pop.paper, modifier = Modifier.offset(3.dp, 3.dp))
+        Text(text, style = outline, color = pop.punch, modifier = Modifier.offset(3.dp, 3.dp))
+        Text(text, style = base, color = pop.punch, modifier = Modifier.offset(3.dp, 3.dp))
+        Text(text, style = outline, color = pop.faceInk)
         Text(text, style = base, color = fill)
     }
 }
@@ -927,13 +1016,17 @@ internal fun WaitingDots(modifier: Modifier = Modifier) {
 /**
  * The update notice: a tilted "NEW!" sticker by the wordmark instead of a
  * banner, because an update is good news but never the next thing to do.
+ * It sinks into its shadow when pressed, like every other sticker.
  */
 @Composable
 internal fun UpdateSticker(update: UpdateChecker.Update, onClick: () -> Unit, modifier: Modifier = Modifier) {
     val pop = LocalPop.current
+    val view = LocalView.current
     val reduced = LocalReducedMotion.current
     val wiggle = rememberWiggle()
     LaunchedEffect(update.version) { wiggle.play(reduced) }
+    val interaction = remember { MutableInteractionSource() }
+    val sink = rememberSink(interaction)
     val shape = RoundedCornerShape(50)
     Box(
         modifier
@@ -943,27 +1036,40 @@ internal fun UpdateSticker(update: UpdateChecker.Update, onClick: () -> Unit, mo
                 contentDescription = "Update available: MangaLens ${update.version}"
                 role = Role.Button
             }
-            .clickable(role = Role.Button, onClick = onClick)
+            .clickable(interaction, indication = null, role = Role.Button) {
+                view.buzz(Buzz.CONFIRM)
+                onClick()
+            }
             .drawWithCache {
                 val sw = 2.5.dp.toPx()
-                val inner = insetOutline(shape, size, sw)
                 val drop = Offset(2.dp.toPx(), 3.dp.toPx())
+                val inner = insetOutline(shape, Size(size.width - drop.x, size.height - drop.y), sw)
+                val style = Stroke(sw)
                 onDrawBehind {
                     translate(drop.x + sw / 2f, drop.y + sw / 2f) {
                         drawOutline(inner, pop.shadow)
-                        drawOutline(inner, pop.shadow, style = Stroke(sw))
+                        drawOutline(inner, pop.shadow, style = style)
                     }
-                    translate(sw / 2f, sw / 2f) {
+                    val s = sink.value
+                    translate(drop.x * s + sw / 2f, drop.y * s + sw / 2f) {
                         drawOutline(inner, pop.zapSoft)
-                        drawOutline(inner, pop.stroke, style = Stroke(sw))
+                        drawOutline(inner, pop.zapSoftStroke, style = style)
                     }
                 }
             }
             .heightIn(min = 48.dp)
-            .padding(horizontal = 12.dp, vertical = 4.dp),
+            .padding(start = 12.dp, end = 14.dp, top = 4.dp, bottom = 7.dp),
         contentAlignment = Alignment.Center,
     ) {
-        Column(horizontalAlignment = Alignment.CenterHorizontally, modifier = Modifier.clearAndSetSemantics { }) {
+        Column(
+            horizontalAlignment = Alignment.CenterHorizontally,
+            modifier = Modifier
+                .clearAndSetSemantics { }
+                .graphicsLayer {
+                    translationX = 2.dp.toPx() * sink.value
+                    translationY = 3.dp.toPx() * sink.value
+                },
+        ) {
             Text("NEW!", style = MaterialTheme.typography.labelMedium, color = pop.punchText)
             Text("v${update.version} ↗", style = MaterialTheme.typography.labelMedium, color = pop.ink)
         }

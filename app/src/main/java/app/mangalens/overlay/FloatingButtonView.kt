@@ -57,12 +57,19 @@ class FloatingButtonView(context: Context) : View(context) {
         typeface = Typeface.create("sans-serif-medium", Typeface.BOLD)
         textSize = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 14f, resources.displayMetrics)
     }
+    private val napFace = runCatching { ResourcesCompat.getFont(context, R.font.comic_neue_bold) }.getOrNull()
+        ?: Typeface.create("sans-serif-medium", Typeface.BOLD)
     private val napPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         color = NAP_Z
         textAlign = Paint.Align.CENTER
-        typeface = runCatching { ResourcesCompat.getFont(context, R.font.comic_neue_bold) }.getOrNull()
-            ?: Typeface.create("sans-serif-medium", Typeface.BOLD)
-        textSize = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 10f, resources.displayMetrics)
+        typeface = napFace
+        textSize = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, 13f, resources.displayMetrics)
+    }
+    private val napOutline = Paint(napPaint).apply {
+        color = NAP_OUTLINE
+        style = Paint.Style.STROKE
+        strokeWidth = dp(3f)
+        strokeJoin = Paint.Join.ROUND
     }
     private val haloPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
         style = Paint.Style.STROKE
@@ -167,11 +174,6 @@ class FloatingButtonView(context: Context) : View(context) {
         canvas.drawCircle(cx, cy, discR, rimPaint)
         glyphPaint.color = blendArgb(PAUSED_GLYPH, LIVE_GLYPH, liveness)
         canvas.drawText(GLYPH, cx, cy - (glyphPaint.ascent() + glyphPaint.descent()) / 2f, glyphPaint)
-        val napAlpha = ((1f - liveness) * 255f).toInt().coerceIn(0, 255)
-        if (napAlpha > 0) {
-            napPaint.alpha = napAlpha
-            canvas.drawText("z", cx + 0.62f * discR, cy - 0.55f * discR, napPaint)
-        }
         canvas.restore()
 
         // The ring stays outside the pulse transform: it reports pipeline
@@ -183,6 +185,20 @@ class FloatingButtonView(context: Context) : View(context) {
             canvas.drawArc(cx - ringR, cy - ringR, cx + ringR, cy + ringR, start, 270f, false, haloPaint)
             canvas.drawArc(cx - ringR, cy - ringR, cx + ringR, cy + ringR, start, 270f, false, ringPaint)
             if (animate) postInvalidateOnAnimation()
+        }
+
+        // The paused "z": the cue that never rests on colour alone. It sits
+        // inside the disc, above and right of the glyph, with an ink outline
+        // so it reads on the dark disc and on any page, and it is drawn last
+        // so the busy ring never runs through it.
+        val napAlpha = ((1f - liveness) * 255f).toInt().coerceIn(0, 255)
+        if (napAlpha > 0) {
+            val zx = cx + 0.50f * discR
+            val zy = cy - 0.45f * discR
+            napOutline.alpha = napAlpha
+            napPaint.alpha = napAlpha
+            canvas.drawText("z", zx, zy, napOutline)
+            canvas.drawText("z", zx, zy, napPaint)
         }
     }
 
@@ -197,6 +213,7 @@ class FloatingButtonView(context: Context) : View(context) {
         internal const val PAUSED_GLYPH = 0xFFFFF4DC.toInt()
         private const val SHADOW = 0x801C1424.toInt()
         private const val NAP_Z = 0xFFFFCC1A.toInt()
+        private const val NAP_OUTLINE = 0xFF1C1424.toInt()
         private const val RING_HALO = 0x731C1424
         private const val RING = 0xFFD92B17.toInt()
 

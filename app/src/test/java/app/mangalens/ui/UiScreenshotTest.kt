@@ -3,6 +3,7 @@ package app.mangalens.ui
 import android.content.res.Configuration
 import android.graphics.Bitmap
 import android.graphics.Canvas
+import android.view.WindowManager
 import androidx.activity.ComponentActivity
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
@@ -25,6 +26,7 @@ import app.mangalens.settings.CaptureMode
 import app.mangalens.settings.LlmProvider
 import app.mangalens.settings.SourceLang
 import app.mangalens.translate.GeminiHttpException
+import app.mangalens.translate.GeminiRateLimited
 import app.mangalens.update.UpdateChecker
 import java.io.File
 import java.io.FileOutputStream
@@ -108,9 +110,14 @@ class UiScreenshotTest {
         val bmp = Bitmap.createBitmap(root.width, root.height, Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bmp)
         root.draw(canvas)
-        ShadowDialog.getLatestDialog()?.takeIf { it.isShowing }?.window?.decorView?.let { dv ->
-            // A dialog is its own window: draw the scrim, then the dialog centred over the screen.
-            canvas.drawColor(0x73000000)
+        ShadowDialog.getLatestDialog()?.takeIf { it.isShowing }?.window?.let { w ->
+            // A dialog is its own window: draw the platform's dim, if the
+            // window asks for one, then the dialog centred over the screen.
+            val lp = w.attributes
+            if (lp.flags and WindowManager.LayoutParams.FLAG_DIM_BEHIND != 0 && lp.dimAmount > 0f) {
+                canvas.drawColor(((lp.dimAmount * 255).toInt() shl 24))
+            }
+            val dv = w.decorView
             canvas.save()
             canvas.translate((bmp.width - dv.width) / 2f, (bmp.height - dv.height) / 2f)
             dv.draw(canvas)
@@ -168,7 +175,7 @@ class UiScreenshotTest {
         sayHi.phase = SayHi.Phase.Ok(LETTERED)
         ui = ui.copy(settings = keyed)
         compose.waitForIdle()
-        compose.onNodeWithText("All set, let's read!").performScrollTo()
+        compose.onNodeWithText("All set!").performScrollTo()
         both("05-demo-after")
     }
 
@@ -178,8 +185,22 @@ class UiScreenshotTest {
         home(HomeUiState(keyed, overlayGranted = true, browserName = "Brave"))
         sayHi.run(keyed)
         compose.waitForIdle()
-        compose.onNodeWithText("Try again").performScrollTo()
+        // A refused key offers no retry: the answer is a new key, so Paste is what shows.
+        compose.onNodeWithText("Gemini said no", substring = true).performScrollTo()
+        compose.onNodeWithText("Paste my key").performScrollTo()
         both("06-setup-key-refused")
+    }
+
+    @Test
+    fun `06b setup, test line rate limited`() {
+        attempt = { throw GeminiRateLimited("quota") }
+        // Step 1 still open, so the checklist is up; a busy key still counts
+        // as saved, so step 2 folds to its done line with the retry under it.
+        home(HomeUiState(keyed, overlayGranted = false, browserName = "Brave"))
+        sayHi.run(keyed)
+        compose.waitForIdle()
+        compose.onNodeWithText("Try again").performScrollTo()
+        both("06b-setup-rate-limited")
     }
 
     @Test
@@ -249,7 +270,7 @@ class UiScreenshotTest {
         ui = ui.copy(settings = keyed)
         Snapshot.sendApplyNotifications()
         compose.mainClock.advanceTimeBy(600)
-        compose.onNodeWithText("All set, let's read!").performScrollTo().performClick()
+        compose.onNodeWithText("All set!").performScrollTo().performClick()
         compose.mainClock.advanceTimeBy(520)
         capture("15-celebration-" + if (isDark) "dark" else "light")
     }

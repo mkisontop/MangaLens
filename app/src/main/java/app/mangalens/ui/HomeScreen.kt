@@ -2,6 +2,7 @@ package app.mangalens.ui
 
 import android.content.Context
 import android.os.Build
+import android.view.ViewGroup
 import androidx.activity.compose.BackHandler
 import androidx.compose.animation.AnimatedContent
 import androidx.compose.animation.EnterTransition
@@ -14,6 +15,7 @@ import androidx.compose.animation.slideOutVertically
 import androidx.compose.animation.togetherWith
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.gestures.detectTapGestures
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
@@ -27,6 +29,7 @@ import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.imePadding
+import androidx.compose.foundation.layout.offset
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.safeDrawingPadding
 import androidx.compose.foundation.layout.size
@@ -46,6 +49,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.Immutable
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -56,8 +60,19 @@ import androidx.compose.runtime.saveable.rememberSaveable
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.drawWithCache
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.translate
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.semantics.LiveRegionMode
 import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.semantics.clearAndSetSemantics
@@ -65,17 +80,23 @@ import androidx.compose.ui.semantics.contentDescription
 import androidx.compose.ui.semantics.heading
 import androidx.compose.ui.semantics.liveRegion
 import androidx.compose.ui.semantics.semantics
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.LineBreak
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.DialogWindowProvider
 import app.mangalens.capture.ScreenCaptureService
 import app.mangalens.settings.AppSettings
 import app.mangalens.settings.CaptureMode
 import app.mangalens.settings.SettingsRepository
 import app.mangalens.translate.LlmHttp
 import app.mangalens.update.UpdateChecker
+import kotlin.math.PI
+import kotlin.math.cos
+import kotlin.math.sin
 import kotlinx.coroutines.delay
 
 /** Everything the home screen shows, as plain values; see [HomeContent]. */
@@ -242,6 +263,10 @@ internal fun HomeContent(
         if (lastRunning == false && state.running) sfx = SfxShot(SfxKind.BOOP)
         lastRunning = state.running
     }
+    // One tip index for every stage, so a stage change never snaps back
+    // to the first tip; a new mode starts its own list from the top.
+    var tipIndex by rememberSaveable(settings?.mode) { mutableIntStateOf(0) }
+
     // The sticker already buzzed CONFIRM for the tap.
     val onAllSet = {
         sfx = SfxShot(SfxKind.KAPOW)
@@ -252,8 +277,8 @@ internal fun HomeContent(
         Modifier
             .fillMaxSize()
             .background(pop.paper)
-            .halftone(pop.dots, DotCorner.TopEnd)
-            .halftone(pop.dots, DotCorner.BottomStart)
+            .halftone(pop.dots, DotCorner.TopEnd, maxDot = pop.dotMax)
+            .halftone(pop.dots, DotCorner.BottomStart, maxDot = pop.dotMax)
     ) {
         if (settings == null) return@Box
         AnimatedContent(
@@ -269,11 +294,13 @@ internal fun HomeContent(
             label = "page",
         ) { p ->
             when (p) {
+                // Dots only at the bottom here: behind the header they sat
+                // under the title and subtitle and made the small text noisy.
                 Page.TWEAKS -> Box(
                     Modifier
                         .fillMaxSize()
                         .background(pop.paper)
-                        .halftone(pop.dots, DotCorner.TopEnd)
+                        .halftone(pop.dots, DotCorner.BottomStart, maxDot = pop.dotMax)
                 ) {
                     TweaksPage(
                         settings = settings,
@@ -287,6 +314,8 @@ internal fun HomeContent(
                 }
                 Page.HOME -> HomePage(
                     state, settings, stage, aiReady, drafts, sayHi, actions, sfx,
+                    tip = tipIndex,
+                    onNextTip = { tipIndex++ },
                     onAllSet = onAllSet,
                     openTweaks = openTweaks,
                 )
@@ -305,21 +334,27 @@ private fun HomePage(
     sayHi: SayHi,
     actions: HomeActions,
     sfx: SfxShot?,
+    tip: Int,
+    onNextTip: () -> Unit,
     onAllSet: () -> Unit,
     openTweaks: (TweaksTarget) -> Unit,
 ) {
-    val pop = LocalPop.current
     val reduced = LocalReducedMotion.current
     val uri = LocalUriHandler.current
     var dialog by remember { mutableStateOf(false) }
     val browser = state.browserName ?: "your browser"
     val summary = tweaksSummary(settings)
 
+    val tips = tipsFor(settings.mode)
+    val tipBalloon: @Composable () -> Unit = {
+        TipBalloon(tips, tip, onNextTip, fukiLook(stage))
+    }
     BoxWithConstraints(Modifier.fillMaxSize()) {
         val content = minOf(maxWidth, 520.dp) - 40.dp
         val landscape = maxWidth > maxHeight * 1.2f && maxHeight < 600.dp
-        val diameter = if (landscape) minOf(maxHeight * 0.55f, 200.dp)
-        else minOf(content / 1.5f, maxHeight * 0.30f).coerceIn(160.dp, 240.dp)
+        // The stage is 1.7 Fuki wide, room for the burst's longest spikes.
+        val diameter = if (landscape) minOf(maxHeight * 0.5f, 190.dp)
+        else minOf(content / 1.7f, maxHeight * 0.28f).coerceIn(150.dp, 230.dp)
 
         val setup = stage == Stage.SETUP
         AnimatedContent(
@@ -352,7 +387,7 @@ private fun HomePage(
             } else if (landscape) {
                 Row(Modifier.fillMaxSize().safeDrawingPadding()) {
                     Box(Modifier.weight(1f).fillMaxHeight(), contentAlignment = Alignment.Center) {
-                        PlayFuki(stage, diameter, sfx, actions)
+                        PlayFuki(stage, diameter, sfx, actions, state.startRefused)
                     }
                     Column(
                         Modifier
@@ -365,20 +400,25 @@ private fun HomePage(
                         TopRow(state.update) { dialog = true }
                         PlayHeadline(stage, state.startRefused)
                         Spacer(Modifier.height(8.dp))
-                        PlayBody(stage, state, settings, aiReady, browser, actions, openTweaks)
+                        PlayBody(stage, state, settings, aiReady, browser, actions, openTweaks, tipBalloon)
                         Spacer(Modifier.height(20.dp))
                         TweaksSticker(summary) { openTweaks(TweaksTarget.TOP) }
                         Spacer(Modifier.height(24.dp))
                     }
                 }
             } else {
-                ScrollColumn {
+                FillingColumn {
                     TopRow(state.update) { dialog = true }
+                    // The spare height goes a third above the headline and
+                    // the rest above Tweaks, so the stage sits mid-screen and
+                    // Tweaks sits low, where a thumb reaches it.
+                    Spacer(Modifier.weight(0.35f))
                     PlayHeadline(stage, state.startRefused)
                     Spacer(Modifier.height(8.dp))
-                    PlayFuki(stage, diameter, sfx, actions, Modifier.align(Alignment.CenterHorizontally))
+                    PlayFuki(stage, diameter, sfx, actions, state.startRefused, Modifier.align(Alignment.CenterHorizontally))
                     Spacer(Modifier.height(8.dp))
-                    PlayBody(stage, state, settings, aiReady, browser, actions, openTweaks)
+                    PlayBody(stage, state, settings, aiReady, browser, actions, openTweaks, tipBalloon)
+                    Spacer(Modifier.weight(0.65f))
                     Spacer(Modifier.height(20.dp))
                     TweaksSticker(summary) { openTweaks(TweaksTarget.TOP) }
                     Spacer(Modifier.height(24.dp))
@@ -408,6 +448,28 @@ private fun ScrollColumn(content: @Composable ColumnScope.() -> Unit) {
         horizontalAlignment = Alignment.CenterHorizontally,
     ) {
         Column(Modifier.widthIn(max = 520.dp).fillMaxWidth(), content = content)
+    }
+}
+
+/**
+ * A scrolling column at least as tall as the screen, so weighted spacers
+ * inside it share out the spare height on a tall phone and shrink to
+ * nothing when the content (or a large font) needs every pixel.
+ */
+@Composable
+private fun FillingColumn(content: @Composable ColumnScope.() -> Unit) {
+    BoxWithConstraints(Modifier.fillMaxSize().safeDrawingPadding()) {
+        val viewport = maxHeight
+        Column(
+            Modifier
+                .fillMaxSize()
+                .imePadding()
+                .verticalScroll(rememberScrollState())
+                .padding(horizontal = 20.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+        ) {
+            Column(Modifier.widthIn(max = 520.dp).fillMaxWidth().heightIn(min = viewport), content = content)
+        }
     }
 }
 
@@ -448,10 +510,10 @@ private fun PlayHeadline(stage: Stage, startRefused: Boolean) {
             modifier = Modifier.fillMaxWidth(),
             label = "headline",
         ) { t ->
+            val base = MaterialTheme.typography.headlineLarge.copy(lineBreak = LineBreak.Heading)
             Text(
                 t,
-                style = if (small) MaterialTheme.typography.headlineLarge.copy(fontSize = 34.sp, lineHeight = 38.sp)
-                else MaterialTheme.typography.headlineLarge,
+                style = if (small) base.copy(fontSize = 34.sp, lineHeight = 38.sp) else base,
                 color = pop.ink,
                 textAlign = TextAlign.Center,
                 modifier = Modifier.fillMaxWidth().semantics { heading() },
@@ -460,8 +522,20 @@ private fun PlayHeadline(stage: Stage, startRefused: Boolean) {
     }
 }
 
+/**
+ * The one big button. Paused, a tap wakes Fuki up rather than stopping: a
+ * napping face invites a poke, and a poke that ended the session would
+ * also throw away the screen-share grant. Stop has its own sticker below.
+ */
 @Composable
-private fun PlayFuki(stage: Stage, diameter: Dp, sfx: SfxShot?, actions: HomeActions, modifier: Modifier = Modifier) {
+private fun PlayFuki(
+    stage: Stage,
+    diameter: Dp,
+    sfx: SfxShot?,
+    actions: HomeActions,
+    refused: Boolean,
+    modifier: Modifier = Modifier,
+) {
     FukiStage(
         stage = stage,
         diameter = diameter,
@@ -469,11 +543,13 @@ private fun PlayFuki(stage: Stage, diameter: Dp, sfx: SfxShot?, actions: HomeAct
         onClick = {
             when (stage) {
                 Stage.READY -> actions.onStart()
-                Stage.RUNNING, Stage.PAUSED -> actions.onStop()
+                Stage.RUNNING -> actions.onStop()
+                Stage.PAUSED -> actions.onTogglePause()
                 else -> Unit
             }
         },
         modifier = modifier,
+        worried = stage == Stage.READY && refused,
     )
 }
 
@@ -487,6 +563,7 @@ private fun PlayBody(
     browser: String,
     actions: HomeActions,
     openTweaks: (TweaksTarget) -> Unit,
+    tipBalloon: @Composable () -> Unit,
 ) {
     val pop = LocalPop.current
     val reduced = LocalReducedMotion.current
@@ -504,15 +581,16 @@ private fun PlayBody(
                 Stage.RUNNING ->
                     if (handsFree) "Scroll in $browser. When you stop, I translate. Tap the $MARK bubble to pause; hold it for more."
                     else "Open a page in $browser, then tap the $MARK bubble to translate it. Hold it for more."
-                Stage.PAUSED -> "I'm paused. Tap Wake up here, or tap the $MARK bubble in $browser."
+                Stage.PAUSED -> "I'm napping. Tap me to wake up, or tap the $MARK bubble in $browser."
                 else ->
-                    if (state.startRefused) "Tap GO again and allow screen sharing. If Android offers a choice, pick “Entire screen”."
+                    if (state.startRefused) "⚠ Tap GO again and allow screen sharing. If Android offers a choice, pick “Entire screen”."
                     else "Tap GO and allow screen sharing, then hop into $browser. When you stop scrolling, I letter the English right over the bubbles."
             }
+            val refused = s == Stage.READY && state.startRefused
             Text(
                 caption,
                 style = MaterialTheme.typography.bodyLarge,
-                color = pop.inkSoft,
+                color = if (refused) pop.punchText else pop.inkSoft,
                 textAlign = TextAlign.Center,
                 modifier = Modifier.fillMaxWidth(),
             )
@@ -530,49 +608,68 @@ private fun PlayBody(
                     Spacer(Modifier.height(16.dp))
                     StickerButton(openLabel, actions.onOpenBrowser, height = 64.dp)
                 }
+                // Napping Fuki is the wake button, so nothing here is zap.
                 Stage.PAUSED -> {
                     Spacer(Modifier.height(16.dp))
-                    StickerButton("Wake up", actions.onTogglePause, height = 64.dp)
-                    Spacer(Modifier.height(12.dp))
                     StickerButton(openLabel, actions.onOpenBrowser, style = StickerStyle.Surface)
+                    Spacer(Modifier.height(12.dp))
+                    StickerButton("Stop translating", actions.onStop, style = StickerStyle.Surface)
                 }
                 else -> Unit
             }
             Spacer(Modifier.height(16.dp))
-            TipBalloon()
+            tipBalloon()
         }
     }
 }
 
-/** Fuki's tips, one at a time; a tap shows the next. */
+/**
+ * Fuki's tips, one at a time; a tap shows the next. A small Fuki sits at
+ * the balloon's tail so the tip is plainly Fuki talking, and the balloon
+ * sinks into its shadow when tapped, like any other sticker.
+ */
 @Composable
-private fun TipBalloon() {
+private fun TipBalloon(tips: List<String>, index: Int, onNext: () -> Unit, look: FukiLook) {
     val pop = LocalPop.current
     val reduced = LocalReducedMotion.current
-    var index by rememberSaveable { mutableIntStateOf(0) }
-    SpeechBalloon(
-        pop.zapSoft,
+    val view = LocalView.current
+    val interaction = remember { MutableInteractionSource() }
+    val sink = rememberSink(interaction)
+    Row(
         Modifier
             .fillMaxWidth()
-            .clickable(role = Role.Button, onClickLabel = "Next tip") { index = (index + 1) % TIPS.size }
-            .semantics { liveRegion = LiveRegionMode.Polite },
-        tail = Tail.Top,
-        tailAt = 0.5f,
-    ) {
-        Row(verticalAlignment = Alignment.CenterVertically) {
-            AnimatedContent(
-                targetState = index,
-                transitionSpec = {
-                    if (reduced) EnterTransition.None togetherWith ExitTransition.None
-                    else (fadeIn(tween(200)) + slideInVertically(tween(200)) { it / 4 }) togetherWith fadeOut(tween(120))
-                },
-                modifier = Modifier.weight(1f),
-                label = "tip",
-            ) { i ->
-                Text(TIPS[i % TIPS.size], style = MaterialTheme.typography.bodyLarge, color = pop.ink)
+            .clickable(interaction, indication = null, role = Role.Button, onClickLabel = "Next tip") {
+                view.buzz(Buzz.TICK)
+                onNext()
             }
-            Spacer(Modifier.width(8.dp))
-            Text("›", style = MaterialTheme.typography.titleLarge, color = pop.punchText, modifier = Modifier.clearAndSetSemantics { })
+            .semantics { liveRegion = LiveRegionMode.Polite },
+        verticalAlignment = Alignment.CenterVertically,
+    ) {
+        FukiAvatar(look)
+        Spacer(Modifier.width(2.dp))
+        SpeechBalloon(
+            pop.zapSoft,
+            Modifier.weight(1f),
+            tail = Tail.Start,
+            tailAt = 0.5f,
+            strokeColor = pop.zapSoftStroke,
+            sunk = { sink.value },
+        ) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                AnimatedContent(
+                    targetState = index,
+                    transitionSpec = {
+                        if (reduced) EnterTransition.None togetherWith ExitTransition.None
+                        else (fadeIn(tween(200)) + slideInVertically(tween(200)) { it / 4 }) togetherWith fadeOut(tween(120))
+                    },
+                    modifier = Modifier.weight(1f),
+                    label = "tip",
+                ) { i ->
+                    Text(tips[i % tips.size], style = MaterialTheme.typography.bodyLarge, color = pop.ink)
+                }
+                Spacer(Modifier.width(8.dp))
+                Text("›", style = MaterialTheme.typography.titleLarge, color = pop.punchText, modifier = Modifier.clearAndSetSemantics { })
+            }
         }
     }
 }
@@ -604,45 +701,118 @@ internal fun TweaksSticker(summary: String, onClick: () -> Unit) {
     }
 }
 
-/** The body of the update dialog, a sticker card like everything else. */
+/** The body of the update dialog, a sticker card like everything else, with a NEW! burst slapped on its corner. */
 @Composable
 internal fun UpdateDialogCard(update: UpdateChecker.Update, onDownload: () -> Unit, onLater: () -> Unit) {
     val pop = LocalPop.current
-    PopSurface(Modifier.fillMaxWidth(), RoundedCornerShape(20.dp), color = pop.surface) {
-        Column(Modifier.padding(24.dp)) {
-            Text(
-                "MangaLens ${update.version} is out!",
-                style = MaterialTheme.typography.titleLarge,
-                color = pop.ink,
-                modifier = Modifier.semantics { heading() },
-            )
-            Spacer(Modifier.height(8.dp))
-            Text(
-                when {
-                    update.requiresReinstall ->
-                        "This install can't update in place. Write down your API key, download the APK, uninstall MangaLens, then install the new one. Your API key will be cleared."
-                    update.legacyBridge ->
-                        "This one-time bridge APK keeps your data while moving 0.9.1 to the private release key."
-                    else -> "A fresh version is ready. Tap Download; Android asks before installing anything."
-                },
-                style = MaterialTheme.typography.bodyLarge,
-                color = pop.ink,
-            )
-            Spacer(Modifier.height(20.dp))
-            StickerButton("Download", onDownload)
-            Spacer(Modifier.height(4.dp))
-            TextLink("Later", onLater, Modifier.align(Alignment.CenterHorizontally))
+    Box {
+        PopSurface(Modifier.fillMaxWidth(), RoundedCornerShape(20.dp), color = pop.surface) {
+            Column(Modifier.padding(start = 24.dp, end = 24.dp, top = 24.dp, bottom = 8.dp)) {
+                Text(
+                    "MangaLens ${update.version} is out!",
+                    style = MaterialTheme.typography.titleLarge.copy(lineBreak = LineBreak.Heading),
+                    color = pop.ink,
+                    modifier = Modifier.padding(end = 40.dp).semantics { heading() },
+                )
+                Spacer(Modifier.height(8.dp))
+                Text(
+                    when {
+                        update.requiresReinstall ->
+                            "This install can't update in place. Write down your API key, download the APK, uninstall MangaLens, then install the new one. Your API key will be cleared."
+                        update.legacyBridge ->
+                            "This one-time bridge APK keeps your data while moving 0.9.1 to the private release key."
+                        else -> "A fresh version is ready. Tap Download; Android asks before installing anything."
+                    },
+                    style = MaterialTheme.typography.bodyLarge,
+                    color = pop.ink,
+                )
+                Spacer(Modifier.height(20.dp))
+                StickerButton("Download", onDownload)
+                TextLink("Later", onLater, Modifier.align(Alignment.CenterHorizontally))
+            }
         }
+        NewBurst(Modifier.align(Alignment.TopEnd).offset(x = 12.dp, y = (-26).dp))
     }
 }
 
+/** A small yellow starburst with "NEW!" on it, slapped on the dialog's corner like a price sticker. */
+@Composable
+private fun NewBurst(modifier: Modifier = Modifier) {
+    val pop = LocalPop.current
+    val glyph = with(LocalDensity.current) { 15.dp.toSp() }
+    Box(
+        modifier
+            .size(72.dp)
+            .graphicsLayer { rotationZ = 8f }
+            .clearAndSetSemantics { }
+            .drawWithCache {
+                val c = Offset(size.width / 2f, size.height / 2f)
+                val rp = size.minDimension / 2f
+                // Even spikes here: at badge size the big burst's wobble
+                // reads as a crumpled scrap rather than a POW.
+                val path = Path().apply {
+                    for (k in 0 until 24) {
+                        val a = (k * 15f - 90f) * PI.toFloat() / 180f
+                        val r = if (k % 2 == 0) 0.96f * rp else 0.72f * rp
+                        val x = c.x + cos(a) * r
+                        val y = c.y + sin(a) * r
+                        if (k == 0) moveTo(x, y) else lineTo(x, y)
+                    }
+                    close()
+                }
+                val drop = Offset(2.dp.toPx(), 3.dp.toPx())
+                val stroke = Stroke(2.5.dp.toPx(), join = StrokeJoin.Round)
+                onDrawBehind {
+                    translate(drop.x, drop.y) { drawPath(path, pop.shadow) }
+                    drawPath(path, pop.zap)
+                    drawPath(path, pop.faceInk, style = stroke)
+                }
+            },
+        contentAlignment = Alignment.Center,
+    ) {
+        Text(
+            "NEW!",
+            fontFamily = ComicNeue,
+            fontWeight = FontWeight.Bold,
+            fontSize = glyph,
+            lineHeight = glyph,
+            color = pop.onZap,
+        )
+    }
+}
+
+/**
+ * The update dialog. It draws its own scrim: the platform's black dim
+ * turned yellow Fuki and the red burst a muddy brown behind the card, so in
+ * the light the page washes out to paper instead.
+ */
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
 private fun UpdateDialog(update: UpdateChecker.Update, onDownload: () -> Unit, onDismiss: () -> Unit) {
-    // Own margins rather than the platform's, so the card sits the same on every phone.
-    BasicAlertDialog(onDismissRequest = onDismiss, properties = DialogProperties(usePlatformDefaultWidth = false)) {
-        Box(Modifier.fillMaxWidth().padding(horizontal = 24.dp), contentAlignment = Alignment.Center) {
-            Box(Modifier.widthIn(max = 480.dp)) { UpdateDialogCard(update, onDownload, onDismiss) }
+    val pop = LocalPop.current
+    BasicAlertDialog(
+        onDismissRequest = onDismiss,
+        properties = DialogProperties(usePlatformDefaultWidth = false, decorFitsSystemWindows = false),
+    ) {
+        val window = (LocalView.current.parent as? DialogWindowProvider)?.window
+        SideEffect {
+            window?.setDimAmount(0f)
+            window?.setLayout(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT)
+        }
+        val scrim = if (pop.dark) Color.Black.copy(alpha = 0.55f) else pop.paper.copy(alpha = 0.8f)
+        Box(
+            Modifier
+                .fillMaxSize()
+                .background(scrim)
+                .clickable(remember { MutableInteractionSource() }, indication = null, onClickLabel = "Close", onClick = onDismiss)
+                .safeDrawingPadding()
+                .padding(horizontal = 24.dp),
+            contentAlignment = Alignment.Center,
+        ) {
+            // Taps on the card itself must not fall through to the scrim.
+            Box(Modifier.widthIn(max = 480.dp).pointerInput(Unit) { detectTapGestures { } }) {
+                UpdateDialogCard(update, onDownload, onDismiss)
+            }
         }
     }
 }

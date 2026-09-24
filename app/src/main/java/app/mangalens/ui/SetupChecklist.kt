@@ -13,6 +13,11 @@ import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
 import androidx.compose.foundation.ExperimentalFoundationApi
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.interaction.MutableInteractionSource
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.ui.semantics.Role
+import androidx.compose.ui.text.style.LineBreak
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ColumnScope
@@ -65,9 +70,14 @@ private enum class TicketState { CURRENT, TODO, DONE }
 /**
  * First run: a sleeping Fuki and two tickets, "Let me float" and "Give me
  * a brain". One ticket is open at a time — the one tapped, otherwise the
- * next undone step — so the screen only ever asks for one thing. The
- * checklist stays up after the last step (the caller's latch) so the
- * reader sees it finish and taps "All set" themselves.
+ * next undone step — so the screen only ever asks for one thing. Fuki wakes
+ * a step at a time as the tickets are done. The checklist stays up after
+ * the last step (the caller's latch) so the reader sees it finish and taps
+ * "All set" themselves.
+ *
+ * The brain step counts as done only once the test line has answered: a
+ * key still being tried might yet be refused, and a checklist that ticked
+ * it off and then took it back would jump under the reader's thumb.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -85,16 +95,25 @@ internal fun SetupChecklist(
 ) {
     val pop = LocalPop.current
     val scope = rememberCoroutineScope()
-    val stacked = LocalDensity.current.fontScale > 1.3f
+    val fontScale = LocalDensity.current.fontScale
+    val stacked = fontScale > 1.3f
+    val brainDone = aiReady && sayHi.phase !is SayHi.Phase.Running
     var tapped by remember { mutableStateOf<Int?>(null) }
+    // A ticket opened by hand folds back once its step is done — for the
+    // brain, once a test line has answered — so the next undone step
+    // opens by itself.
+    LaunchedEffect(overlayGranted) { if (overlayGranted && tapped == 1) tapped = null }
+    LaunchedEffect(brainDone, sayHi.phase) { if (brainDone && tapped == 2) tapped = null }
     val current = when {
         !overlayGranted -> 1
-        !aiReady -> 2
+        !brainDone -> 2
         else -> null
     }
     val expanded = tapped ?: current
-    val requesters = remember { listOf(BringIntoViewRequester(), BringIntoViewRequester()) }
-    val doneCount = (if (overlayGranted) 1 else 0) + (if (aiReady) 1 else 0)
+    val requesters = remember { listOf(BringIntoViewRequester(), BringIntoViewRequester(), BringIntoViewRequester()) }
+    val doneCount = (if (overlayGranted) 1 else 0) + (if (brainDone) 1 else 0)
+    var cheers by remember { mutableIntStateOf(0) }
+    LaunchedEffect(sayHi.phase) { if (sayHi.phase is SayHi.Phase.Ok) cheers++ }
 
     fun stateOf(step: Int, done: Boolean) = when {
         done -> TicketState.DONE
@@ -104,15 +123,23 @@ internal fun SetupChecklist(
 
     Column(modifier.fillMaxWidth()) {
         val fuki: @Composable () -> Unit = {
-            FukiStage(Stage.SETUP, 104.dp, sfx = null, onClick = {
-                val step = expanded ?: 2
-                scope.launch { requesters[step - 1].bringIntoView() }
-            })
+            FukiStage(
+                Stage.SETUP, 104.dp, sfx = null,
+                onClick = {
+                    val target = expanded?.let { it - 1 } ?: if (doneCount == 2) 2 else 1
+                    scope.launch { requesters[target].bringIntoView() }
+                },
+                setupDone = doneCount,
+                cheerKey = cheers,
+                compact = true,
+            )
         }
         val headline: @Composable (Modifier) -> Unit = { m ->
             Text(
                 "Hi! I'm Fuki.",
-                style = MaterialTheme.typography.headlineLarge.copy(fontSize = 34.sp, lineHeight = 38.sp),
+                style = MaterialTheme.typography.headlineLarge.copy(
+                    fontSize = 34.sp, lineHeight = 38.sp, lineBreak = LineBreak.Heading,
+                ),
                 color = pop.ink,
                 modifier = m.semantics { heading() },
             )
@@ -134,7 +161,7 @@ internal fun SetupChecklist(
             color = pop.inkSoft,
         )
         Spacer(Modifier.height(16.dp))
-        Pips(doneCount)
+        Pips(doneCount, grow = fontScale.coerceIn(1f, 1.6f))
         Spacer(Modifier.height(12.dp))
 
         Ticket(
@@ -163,23 +190,17 @@ internal fun SetupChecklist(
         Spacer(Modifier.height(16.dp))
 
         val label = LlmHttp.providerLabel(settings)
+        val custom = settings.provider == LlmProvider.CUSTOM
         Ticket(
             number = 2,
             title = "Give me a brain",
-            state = stateOf(2, aiReady),
+            state = stateOf(2, brainDone),
             expanded = expanded == 2,
             requester = requesters[1],
             onHeaderClick = { tapped = 2 },
+            headerTrailing = if (custom) null else ({ TextLink("Change", { tapped = 2 }) }),
             done = {
-                if (settings.provider == LlmProvider.CUSTOM) {
-                    DoneLine("Done! Endpoint saved.")
-                } else {
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        DoneLine("Done! $label key saved.", Modifier.weight(1f, fill = false))
-                        Spacer(Modifier.width(12.dp))
-                        TextLink("Change", { tapped = 2 })
-                    }
-                }
+                DoneLine(if (custom) "Done! Endpoint saved." else "Done! $label key saved.")
                 SayHiResult(sayHi.phase, onRetry = { sayHi.run(drafts.settings) })
             },
         ) {
@@ -187,20 +208,21 @@ internal fun SetupChecklist(
         }
 
         AnimatedVisibility(
-            visible = overlayGranted && aiReady,
+            visible = overlayGranted && brainDone,
             enter = expandVertically(tween(220)) + fadeIn(tween(220)),
             exit = shrinkVertically(tween(150)) + fadeOut(tween(150)),
         ) {
-            Column {
+            Column(Modifier.bringIntoViewRequester(requesters[2])) {
                 Spacer(Modifier.height(20.dp))
-                StickerButton("All set, let's read!", onAllSet, height = 64.dp)
+                StickerButton("All set!", onAllSet, height = 64.dp)
             }
         }
     }
 }
 
+/** Setup progress as pips; they grow with the font so they never look lost beside large text. */
 @Composable
-private fun Pips(done: Int) {
+private fun Pips(done: Int, grow: Float) {
     val pop = LocalPop.current
     Row(
         verticalAlignment = Alignment.CenterVertically,
@@ -210,7 +232,7 @@ private fun Pips(done: Int) {
             val filled = i < done
             Box(
                 Modifier
-                    .size(12.dp)
+                    .size(12.dp * grow)
                     .clearAndSetSemantics { }
                     .drawWithCache {
                         val sw = 2.dp.toPx()
@@ -235,7 +257,8 @@ private fun DoneLine(text: String, modifier: Modifier = Modifier) {
 /**
  * One step: a numbered badge, a title, and a body while open. A done
  * step folds down to a single line on a pale yellow card, so what is
- * left to do stands out at a glance.
+ * left to do stands out at a glance. A folded ticket's header is a
+ * button, and the whole ticket sinks into its shadow while pressed.
  */
 @OptIn(ExperimentalFoundationApi::class)
 @Composable
@@ -246,15 +269,22 @@ private fun Ticket(
     expanded: Boolean,
     requester: BringIntoViewRequester,
     onHeaderClick: () -> Unit,
+    headerTrailing: (@Composable () -> Unit)? = null,
     done: @Composable ColumnScope.() -> Unit,
     body: @Composable ColumnScope.() -> Unit,
 ) {
     val pop = LocalPop.current
     val reduced = LocalReducedMotion.current
+    val view = LocalView.current
+    val interaction = remember { MutableInteractionSource() }
+    val sink = rememberSink(interaction)
+    val folded = state == TicketState.DONE && !expanded
     PopSurface(
         Modifier.fillMaxWidth().bringIntoViewRequester(requester),
         RoundedCornerShape(20.dp),
-        color = if (state == TicketState.DONE && !expanded) pop.zapSoft else pop.surface,
+        color = if (folded) pop.zapSoft else pop.surface,
+        strokeColor = if (folded) pop.zapSoftStroke else pop.stroke,
+        sunk = { sink.value },
     ) {
         Column(
             Modifier
@@ -265,34 +295,46 @@ private fun Ticket(
                 .padding(16.dp)
         ) {
             Row(
-                Modifier
-                    .fillMaxWidth()
-                    .clickable(enabled = !expanded, onClick = onHeaderClick)
-                    .semantics(mergeDescendants = true) {
-                        contentDescription = "Step $number, $title"
-                        stateDescription = when (state) {
-                            TicketState.DONE -> "Done"
-                            TicketState.CURRENT -> "Next"
-                            TicketState.TODO -> "To do"
-                        }
-                        heading()
-                    },
+                Modifier.fillMaxWidth(),
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                StepBadge(number, state)
-                Spacer(Modifier.width(12.dp))
-                Text(
-                    title,
-                    style = MaterialTheme.typography.titleLarge,
-                    color = pop.ink,
-                    modifier = Modifier.weight(1f).clearAndSetSemantics { },
-                )
+                Row(
+                    Modifier
+                        .weight(1f)
+                        .clickable(interaction, indication = null, enabled = !expanded, role = Role.Button) {
+                            view.buzz(Buzz.TICK)
+                            onHeaderClick()
+                        }
+                        .semantics(mergeDescendants = true) {
+                            contentDescription = "Step $number, $title"
+                            stateDescription = when (state) {
+                                TicketState.DONE -> "Done"
+                                TicketState.CURRENT -> "Next"
+                                TicketState.TODO -> "To do"
+                            }
+                            heading()
+                        },
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    StepBadge(number, state)
+                    Spacer(Modifier.width(12.dp))
+                    Text(
+                        title,
+                        style = MaterialTheme.typography.titleLarge,
+                        color = pop.ink,
+                        modifier = Modifier.weight(1f).clearAndSetSemantics { },
+                    )
+                }
+                if (folded && headerTrailing != null) {
+                    Spacer(Modifier.width(8.dp))
+                    headerTrailing()
+                }
             }
             if (expanded) {
                 Spacer(Modifier.height(12.dp))
                 body()
             } else if (state == TicketState.DONE) {
-                Spacer(Modifier.height(8.dp))
+                Spacer(Modifier.height(4.dp))
                 done()
             }
         }
@@ -302,12 +344,14 @@ private fun Ticket(
 /**
  * The step number, which flips over to an ink check when the step is
  * done. Both faces are always composed and the flip only changes a layer,
- * so it costs no recomposition while it turns.
+ * so it costs no recomposition while it turns. It grows with the font (up
+ * to a point), so a large numeral never fills the disc edge to edge.
  */
 @Composable
 private fun StepBadge(number: Int, state: TicketState) {
     val pop = LocalPop.current
     val reduced = LocalReducedMotion.current
+    val grow = LocalDensity.current.fontScale.coerceIn(1f, 1.6f)
     val flip = animateFloatAsState(
         if (state == TicketState.DONE) 180f else 0f,
         if (reduced) snap() else tween(320),
@@ -317,7 +361,7 @@ private fun StepBadge(number: Int, state: TicketState) {
     val frontInk = if (state == TicketState.CURRENT) pop.onZap else pop.ink
     Box(
         Modifier
-            .size(40.dp)
+            .size(40.dp * grow)
             .clearAndSetSemantics { }
             .graphicsLayer {
                 rotationY = flip.value
@@ -343,7 +387,7 @@ private fun StepBadge(number: Int, state: TicketState) {
                 .badgeDisc(pop.faceInk, pop.stroke),
             contentAlignment = Alignment.Center,
         ) {
-            Icon(Icons.Filled.Check, contentDescription = null, tint = pop.zap, modifier = Modifier.size(24.dp))
+            Icon(Icons.Filled.Check, contentDescription = null, tint = pop.zap, modifier = Modifier.size(24.dp * grow))
         }
     }
 }
@@ -357,9 +401,10 @@ private fun Modifier.badgeDisc(fill: Color, stroke: Color): Modifier = drawWithC
 }
 
 /**
- * Step 2. For Gemini, the default, it is two taps: open Google's key
- * page, then paste. The clipboard is read only when Paste is tapped —
- * never on resume — so nothing else the reader copied is ever looked at.
+ * Step 2. For Gemini, the default, it is two taps: open the key page, then
+ * paste. The clipboard is read only when Paste is tapped — never on resume
+ * — so nothing else the reader copied is ever looked at. What the test
+ * line says lands right under the Paste button that set it off.
  */
 @Composable
 private fun ColumnScope.BrainStep(
@@ -391,6 +436,14 @@ private fun ColumnScope.BrainStep(
         }
         onPauseOrDispose { }
     }
+    // A refused key can only be fixed by a new one, so point at Paste, not at a retry.
+    val phase = sayHi.phase
+    LaunchedEffect(phase) {
+        if (phase is SayHi.Phase.Failed && phase.rejected) {
+            view.buzz(Buzz.REJECT)
+            pasteWiggle.play(reduced)
+        }
+    }
 
     fun submit(raw: String) {
         notice = null
@@ -414,13 +467,13 @@ private fun ColumnScope.BrainStep(
             color = pop.inkSoft,
         )
         Spacer(Modifier.height(12.dp))
-        StickerButton("Open AI brain", onOpenAiTweaks)
+        StickerButton("Set up my server ›", onOpenAiTweaks)
         return
     }
 
     val help = providerKeyHelp(provider)
     Text(
-        if (provider == LlmProvider.GEMINI) "I translate with Google's Gemini AI. Its key is free, no card needed. Two taps:"
+        if (provider == LlmProvider.GEMINI) "I translate with Gemini AI. Its key is free, no card needed. Two taps:"
         else "Paste your $label key and I'm ready.",
         style = MaterialTheme.typography.bodyLarge,
         color = pop.inkSoft,
@@ -463,7 +516,8 @@ private fun ColumnScope.BrainStep(
             color = pop.inkSoft,
         )
     }
-    Spacer(Modifier.height(4.dp))
+    SayHiResult(phase, onRetry = { sayHi.run(drafts.settings) })
+    Spacer(Modifier.height(8.dp))
     TextLink("Type it instead", {
         notice = null
         typeOpen = !typeOpen
@@ -483,15 +537,12 @@ private fun ColumnScope.BrainStep(
                 label = apiKeyLabel(provider),
                 onDone = { submit(typed) },
             )
-            Spacer(Modifier.height(10.dp))
-            StickerButton(
-                "Save key", { submit(typed) },
-                style = StickerStyle.Surface, height = 48.dp, fillWidth = false,
-            )
+            Spacer(Modifier.height(12.dp))
+            StickerButton("Save key", { submit(typed) }, style = StickerStyle.Surface, height = 48.dp)
+            Spacer(Modifier.height(4.dp))
         }
     }
     if (provider == LlmProvider.GEMINI) {
-        TextLink("Using Claude, OpenAI or another AI instead? →", onOpenAiTweaks)
+        TextLink("Use Claude, OpenAI or another AI →", onOpenAiTweaks)
     }
-    SayHiResult(sayHi.phase, onRetry = { sayHi.run(drafts.settings) })
 }

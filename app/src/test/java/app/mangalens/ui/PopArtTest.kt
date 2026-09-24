@@ -46,40 +46,61 @@ class PopArtTest {
 
     @Test
     fun `the burst alternates jittered tips and notches on the inner radius`() {
-        val inner = 106f
-        val pts = burstPoints(0f, 0f, inner = inner, outer = 134f)
-        assertEquals(28, pts.size)
+        val inner = 98f
+        val pts = burstPoints(0f, 0f, inner = inner, outer = 136f)
+        assertEquals(22, pts.size)
         pts.forEachIndexed { i, p ->
             val r = hypot(p.x, p.y)
             if (i % 2 == 0) assertTrue("tip $i at $r", r > inner) else assertEquals(inner, r, 0.01f)
         }
-        val tips = pts.filterIndexed { i, _ -> i % 2 == 0 }.map { hypot(it.x, it.y) }.toSet()
-        assertTrue("the jitter gives the tips different lengths", tips.size > 3)
+        val tips = pts.filterIndexed { i, _ -> i % 2 == 0 }.map { hypot(it.x, it.y) }
+        assertTrue("the jitter gives the tips different lengths", tips.toSet().size > 5)
+        assertTrue("long and stubby spikes side by side, not a sun", tips.max() / tips.min() > 1.5f)
     }
 
     @Test
-    fun `speed lines skip the tail's sector and grow with progress`() {
+    fun `speed lines skip the tail's sector, cluster unevenly and grow with progress`() {
         val r = 100f
         val full = speedLines(0f, 0f, r, 1f)
-        assertTrue(full.size in 24..31)
+        assertTrue("${full.size} lines", full.size in 16..26)
+        val lengths = mutableSetOf<Int>()
         for (l in full) {
             var deg = (atan2(l.start.y, l.start.x) * 180f / PI.toFloat())
             if (deg < 0f) deg += 360f
             assertTrue("line at $deg°", deg < 105f || deg > 155f)
-            assertEquals(112f, hypot(l.start.x, l.start.y), 0.01f)
-            assertTrue(hypot(l.end.x, l.end.y) > 112f)
+            assertEquals(116f, hypot(l.start.x, l.start.y), 0.01f)
+            val end = hypot(l.end.x, l.end.y)
+            assertTrue(end > 116f)
+            assertTrue("reaches $end, past the headline's clearance", end <= 155.01f)
+            lengths += end.toInt()
         }
+        assertTrue("lines come in several lengths", lengths.size >= 3)
         for (l in speedLines(0f, 0f, r, 0f)) {
             assertEquals(0f, hypot(l.end.x - l.start.x, l.end.y - l.start.y), 1e-4f)
         }
     }
 
     @Test
-    fun `every stage has a mood, and a finger on GO squints`() {
-        assertEquals(FukiMood.SLEEPY, moodFor(Stage.SETUP, pressed = false))
-        assertEquals(FukiMood.AWAKE, moodFor(Stage.READY, pressed = false))
-        assertEquals(FukiMood.SQUINT, moodFor(Stage.READY, pressed = true))
-        assertEquals(FukiMood.HAPPY, moodFor(Stage.RUNNING, pressed = true))
-        assertEquals(FukiMood.NAPPING, moodFor(Stage.PAUSED, pressed = false))
+    fun `setup wakes Fuki a step at a time`() {
+        assertEquals(FukiLook(FukiMood.SLEEPY, FukiBody.SLEEP, ""), fukiLook(Stage.SETUP, setupDone = 0))
+        assertEquals(FukiLook(FukiMood.PEEK, FukiBody.SLEEP, ""), fukiLook(Stage.SETUP, setupDone = 1))
+        assertEquals(FukiLook(FukiMood.AWAKE, FukiBody.ZAP, ""), fukiLook(Stage.SETUP, setupDone = 2))
+        assertEquals(FukiMood.HAPPY, fukiLook(Stage.SETUP, setupDone = 2, cheering = true).mood)
+    }
+
+    @Test
+    fun `every stage has a face, a body and a word`() {
+        assertEquals(FukiLook(FukiMood.AWAKE, FukiBody.ZAP, "GO!"), fukiLook(Stage.READY))
+        assertEquals(FukiMood.SQUINT, fukiLook(Stage.READY, pressed = true).mood)
+        assertEquals(FukiMood.WORRIED, fukiLook(Stage.READY, worried = true).mood)
+        assertEquals(FukiMood.HAPPY, fukiLook(Stage.READY, cheering = true).mood)
+        assertEquals(FukiLook(FukiMood.HAPPY, FukiBody.PUNCH, "STOP"), fukiLook(Stage.RUNNING, pressed = true))
+    }
+
+    @Test
+    fun `a napping Fuki is a yellow wake button, never a red stop`() {
+        val napping = fukiLook(Stage.PAUSED)
+        assertEquals(FukiLook(FukiMood.NAPPING, FukiBody.ZAP, "WAKE"), napping)
+        assertEquals(FukiMood.PEEK, fukiLook(Stage.PAUSED, pressed = true).mood)
     }
 }

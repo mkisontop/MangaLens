@@ -12,6 +12,7 @@ import android.view.WindowManager
 import android.widget.LinearLayout
 import android.widget.TextView
 import androidx.core.view.ViewCompat
+import app.mangalens.R
 import kotlin.math.abs
 
 /**
@@ -277,24 +278,30 @@ class OverlayController(private val context: Context, private val listener: List
          */
         internal fun buildQuickMenu(context: Context, listener: Listener, dismiss: () -> Unit): LinearLayout {
             val col = OverlayStyle.menuPanel(context)
-            fun item(label: String, color: Int = OverlayStyle.MENU_INK, action: () -> Unit) {
-                col.addView(OverlayStyle.menuRow(context, label, color).apply {
+            fun item(label: String, icon: Int, color: Int = OverlayStyle.MENU_INK, action: () -> Unit) {
+                col.addView(OverlayStyle.menuRow(context, label, icon, color).apply {
                     setOnClickListener {
                         dismiss()
                         action()
                     }
                 })
             }
-            item("⚡  Translate this page") { listener.onTranslateNow() }
-            item(if (listener.isPaused()) "▶  Wake up (resume)" else "⏸  Pause for a nap") { listener.onTogglePause() }
-            item(if (listener.isAutoMode()) "✋  Switch to tap-to-translate" else "🔄  Switch to hands-free") {
-                listener.onToggleMode()
+            item("Translate this page", R.drawable.ic_menu_bolt) { listener.onTranslateNow() }
+            if (listener.isPaused()) {
+                item("Wake up (resume)", R.drawable.ic_menu_play) { listener.onTogglePause() }
+            } else {
+                item("Pause for a nap", R.drawable.ic_menu_pause) { listener.onTogglePause() }
             }
-            item("👁  Peek at the original (4 s)") { listener.onPeek() }
-            item("📖  New series: forget names") { listener.onNewSeries() }
-            item("⚙  Tweaks") { listener.onOpenSettings() }
+            if (listener.isAutoMode()) {
+                item("Switch to tap-to-translate", R.drawable.ic_menu_tap) { listener.onToggleMode() }
+            } else {
+                item("Switch to hands-free", R.drawable.ic_menu_hands_free) { listener.onToggleMode() }
+            }
+            item("Peek at the original (4 s)", R.drawable.ic_menu_peek) { listener.onPeek() }
+            item("New series: forget names", R.drawable.ic_menu_book) { listener.onNewSeries() }
+            item("Tweaks", R.drawable.ic_menu_tweaks) { listener.onOpenSettings() }
             col.addView(OverlayStyle.menuDivider(context))
-            item("✕  Stop translating", OverlayStyle.MENU_STOP) { listener.onStopRequested() }
+            item("Stop translating", R.drawable.ic_menu_stop, OverlayStyle.MENU_STOP) { listener.onStopRequested() }
             return col
         }
     }

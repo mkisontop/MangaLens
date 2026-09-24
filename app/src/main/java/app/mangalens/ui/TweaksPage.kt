@@ -12,6 +12,8 @@ import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.IntrinsicSize
+import androidx.compose.foundation.layout.fillMaxHeight
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
@@ -344,6 +346,14 @@ private fun AiBrainBody(settings: AppSettings, sink: SettingsSink, drafts: AiDra
     val scope = rememberCoroutineScope()
     val pasteWiggle = rememberWiggle()
     var notice by remember(provider) { mutableStateOf<String?>(null) }
+    // A refused key can only be fixed by a new one: point at Paste.
+    val phase = sayHi.phase
+    LaunchedEffect(phase) {
+        if (phase is SayHi.Phase.Failed && phase.rejected) {
+            view.buzz(Buzz.REJECT)
+            pasteWiggle.play(reduced)
+        }
+    }
 
     Spacer(Modifier.height(16.dp))
     Text("Who translates", style = MaterialTheme.typography.titleMedium, color = pop.ink)
@@ -362,8 +372,32 @@ private fun AiBrainBody(settings: AppSettings, sink: SettingsSink, drafts: AiDra
         minHeight = 56.dp,
     )
 
+    // A custom server cannot work without its URL, so that field comes
+    // first and says so until it is filled; the token is optional.
+    if (provider == LlmProvider.CUSTOM) {
+        Spacer(Modifier.height(16.dp))
+        val missing = drafts.customUrl.isBlank()
+        SecretField(
+            value = drafts.customUrl,
+            onValueChange = drafts::editCustomUrl,
+            label = "Chat-completions endpoint URL",
+            secret = false,
+            keyboardType = KeyboardType.Uri,
+            isError = missing,
+        )
+        if (missing) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                "Required: your server's chat-completions URL, e.g. https://host/v1/chat/completions",
+                style = MaterialTheme.typography.bodyMedium,
+                color = pop.punchText,
+            )
+        }
+    }
+
     Spacer(Modifier.height(16.dp))
-    Row(verticalAlignment = Alignment.CenterVertically) {
+    FieldLabel(apiKeyLabel(provider))
+    Row(Modifier.fillMaxWidth().height(IntrinsicSize.Min), verticalAlignment = Alignment.CenterVertically) {
         SecretField(
             value = drafts.key,
             onValueChange = {
@@ -372,6 +406,7 @@ private fun AiBrainBody(settings: AppSettings, sink: SettingsSink, drafts: AiDra
             },
             label = apiKeyLabel(provider),
             modifier = Modifier.weight(1f),
+            showLabel = false,
         )
         Spacer(Modifier.width(10.dp))
         StickerButton(
@@ -385,6 +420,7 @@ private fun AiBrainBody(settings: AppSettings, sink: SettingsSink, drafts: AiDra
                     scope.launch { pasteWiggle.play(reduced) }
                 }
             },
+            modifier = Modifier.fillMaxHeight(),
             style = StickerStyle.Surface,
             height = 48.dp,
             fillWidth = false,
@@ -407,26 +443,11 @@ private fun AiBrainBody(settings: AppSettings, sink: SettingsSink, drafts: AiDra
         onValueChange = drafts::editModel,
         label = "Model",
         secret = false,
-        placeholder = "Blank = " + drafts.settings.copy(model = "").effectiveModel(),
+        placeholder = "Blank = " + drafts.settings.copy(model = "").effectiveModel().ifEmpty { "your server's default" },
     )
-    // The placeholder only shows while typing, so the default is spelled out here too.
-    drafts.settings.copy(model = "").effectiveModel().takeIf { it.isNotEmpty() && drafts.model.isBlank() }?.let {
-        Spacer(Modifier.height(4.dp))
-        Helper("Blank uses $it.")
-    }
     if (provider == LlmProvider.GEMINI) {
-        Spacer(Modifier.height(10.dp))
-        GeminiModelPicker(apiKey = drafts.key.trim(), onPick = drafts::editModel)
-    }
-    if (provider == LlmProvider.CUSTOM) {
         Spacer(Modifier.height(12.dp))
-        SecretField(
-            value = drafts.customUrl,
-            onValueChange = drafts::editCustomUrl,
-            label = "Chat-completions endpoint URL",
-            secret = false,
-            keyboardType = KeyboardType.Uri,
-        )
+        GeminiModelPicker(apiKey = drafts.key.trim(), onPick = drafts::editModel)
     }
 
     Spacer(Modifier.height(16.dp))
@@ -501,9 +522,11 @@ private fun AiBrainBody(settings: AppSettings, sink: SettingsSink, drafts: AiDra
 }
 
 /**
- * Fetches Google's live model list on demand and offers it as a menu — the
+ * Fetches Gemini's live model list on demand and offers it as a menu — the
  * newest Flash first — so the picker shows models released long after this
- * build shipped. Typing in the Model field always stays available.
+ * build shipped. Typing in the Model field always stays available. The copy
+ * names Gemini, never its maker: to a reader who found the old machine
+ * translation useless, the maker's name reads as that engine coming back.
  */
 @Composable
 private fun GeminiModelPicker(apiKey: String, onPick: (String) -> Unit) {
@@ -515,7 +538,7 @@ private fun GeminiModelPicker(apiKey: String, onPick: (String) -> Unit) {
     var models by remember { mutableStateOf<List<ModelCatalog.LiveModel>>(emptyList()) }
     Box {
         StickerButton(
-            if (loading) "Asking Google…" else "Pick from Google's live list ▾",
+            if (loading) "Asking Gemini…" else "Pick from Gemini's live list ▾",
             {
                 if (loading) return@StickerButton
                 if (apiKey.isBlank()) {
@@ -532,7 +555,7 @@ private fun GeminiModelPicker(apiKey: String, onPick: (String) -> Unit) {
                     try {
                         models = ModelCatalog.gemini(apiKey)
                         open = models.isNotEmpty()
-                        if (models.isEmpty()) error = "Google returned no usable models."
+                        if (models.isEmpty()) error = "Gemini returned no usable models."
                     } catch (e: Exception) {
                         error = "Couldn't fetch models: " + (e.message ?: "network error")
                     } finally {
@@ -542,7 +565,6 @@ private fun GeminiModelPicker(apiKey: String, onPick: (String) -> Unit) {
             },
             style = StickerStyle.Surface,
             height = 48.dp,
-            fillWidth = false,
         )
         DropdownMenu(
             expanded = open,

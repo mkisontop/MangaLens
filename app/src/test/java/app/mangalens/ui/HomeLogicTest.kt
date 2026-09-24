@@ -160,4 +160,14 @@ class HomeLogicTest {
         assertNotEquals(0, TIPS.size)
         assertTrue(TIPS.none { "文A" in it })
     }
+
+    @Test
+    fun `tap mode opens with its own tip instead of the hands-free one`() {
+        assertEquals(TIPS, tipsFor(CaptureMode.AUTO))
+        val tap = tipsFor(CaptureMode.MANUAL)
+        assertEquals(TIPS.size, tap.size)
+        assertTrue(tap.first().startsWith("Tap mode"))
+        assertTrue(tap.none { it.startsWith("Hands-free:") })
+        assertEquals(TIPS.drop(1), tap.drop(1))
+    }
 }

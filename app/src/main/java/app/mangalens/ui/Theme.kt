@@ -15,6 +15,8 @@ import androidx.compose.ui.text.font.Font
 import androidx.compose.ui.text.font.FontFamily
 import androidx.compose.ui.text.font.FontStyle
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.mangalens.R
 import kotlin.math.pow
@@ -42,11 +44,23 @@ internal data class PopColors(
     val zap: Color,
     val onZap: Color,
     val zapSoft: Color,
+    /**
+     * The outline of a [zapSoft] card: ink in the light, zap in the dark.
+     * A pale yellow fill says "done" or "tip" on cream paper, but any
+     * yellow-tinted fill on the dark paper turns olive; there the card keeps
+     * a plain fill and the yellow moves to its outline.
+     */
+    val zapSoftStroke: Color,
     val stroke: Color,
     val shadow: Color,
     /** Outlines each hard shadow in the dark, where black on near-black would not read as depth. */
     val shadowStroke: Color?,
     val dots: Color,
+    /**
+     * The biggest Ben-Day dot. Smaller in the dark, where big red dots on
+     * near-black blur into a stain instead of reading as screentone.
+     */
+    val dotMax: Dp,
     val faceInk: Color,
     val sleepBody: Color,
     val dark: Boolean,
@@ -64,10 +78,12 @@ internal val LightPop = PopColors(
     zap = Color(0xFFFFCC1A),
     onZap = Color(0xFF1C1424),
     zapSoft = Color(0xFFFFEFB0),
+    zapSoftStroke = Color(0xFF1C1424),
     stroke = Color(0xFF1C1424),
     shadow = Color(0xFF1C1424),
     shadowStroke = null,
     dots = Color(0xFFD92B17).copy(alpha = 0.16f),
+    dotMax = 4.5.dp,
     faceInk = Color(0xFF1C1424),
     sleepBody = Color(0xFFEFE4CC),
     dark = false,
@@ -84,11 +100,13 @@ internal val DarkPop = PopColors(
     punchText = Color(0xFFFF8A77),
     zap = Color(0xFFFFD233),
     onZap = Color(0xFF1C1424),
-    zapSoft = Color(0xFF3A3014),
+    zapSoft = Color(0xFF2B2233),
+    zapSoftStroke = Color(0xFFFFD233),
     stroke = Color(0xFFF2E6CC),
     shadow = Color(0xFF000000),
-    shadowStroke = Color(0xFFF2E6CC).copy(alpha = 0.45f),
-    dots = Color(0xFFFF5A43).copy(alpha = 0.22f),
+    shadowStroke = Color(0xFFF2E6CC).copy(alpha = 0.28f),
+    dots = Color(0xFFFF5A43).copy(alpha = 0.32f),
+    dotMax = 3.5.dp,
     faceInk = Color(0xFF1C1424),
     sleepBody = Color(0xFFEFE4CC),
     dark = true,

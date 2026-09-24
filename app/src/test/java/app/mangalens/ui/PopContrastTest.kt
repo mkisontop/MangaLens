@@ -55,6 +55,8 @@ class PopContrastTest {
         "stroke/paper" to (p.stroke to p.paper),
         "stroke/surface" to (p.stroke to p.surface),
         "zap/faceInk" to (p.zap to p.faceInk),
+        "zapSoftStroke/zapSoft" to (p.zapSoftStroke to p.zapSoft),
+        "zapSoftStroke/paper" to (p.zapSoftStroke to p.paper),
     )
 
     @Test
