@@ -570,6 +570,33 @@ class LetteringRenderTest {
     }
 
     @Test
+    fun `two columns of thoughts side by side keep a lane each`() {
+        // izumi: two vertical thoughts a gap apart over the art. Set wider
+        // than its column, as free English is, each ran onto the other.
+        val clean = Bitmap.createBitmap(pageW, pageH, Bitmap.Config.ARGB_8888)
+        noiseArt(Canvas(clean), Rect(0, 0, pageW, pageH), 5)
+        val page = copy(clean)
+        val right = Rect(400, 220, 460, 600)
+        val left = Rect(320, 220, 385, 640)
+        for (b in listOf(right, left)) drawLettering(Canvas(page), b, vertical = true, fill = Color.BLACK, outline = Color.WHITE)
+        val texts = listOf("Should I say \"hello\"? Would that work?", "Since it's my first day, maybe \"nice to meet you\"?")
+        val v = view()
+        v.setBubbles(listOf(right, left).mapIndexed { i, b ->
+            RenderBubble(
+                box = Rect(b), translated = texts[i], original = "説「你好」？行嗎？", bgColor = Color.GRAY,
+                textColor = Color.BLACK, vertical = true, style = LetterStyle.THOUGHT,
+                patch = patchFor(clean, page, b), patchRect = Rect(b), outlineColor = Color.WHITE,
+            )
+        })
+        v.draw(Canvas(page))
+        writePreview("columns-side-by-side.png", page)
+        val (a, b) = v.placements().map { it.second }
+        val overlap = maxOf(0f, minOf(a.right, b.right) - maxOf(a.left, b.left)) * maxOf(0f, minOf(a.bottom, b.bottom) - maxOf(a.top, b.top))
+        assertTrue("the two blocks stay apart: $a / $b", overlap < minOf(a.width() * a.height(), b.width() * b.height()) * 0.02f)
+        assertTrue("each still over its own column", a.centerX() > b.centerX())
+    }
+
+    @Test
     fun `placed rects cover every painted pixel of a mixed page`() {
         val clean = Bitmap.createBitmap(pageW, pageH, Bitmap.Config.ARGB_8888)
         noiseArt(Canvas(clean), Rect(0, 0, pageW, pageH), 3)

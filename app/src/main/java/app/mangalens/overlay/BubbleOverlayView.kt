@@ -204,6 +204,8 @@ class BubbleOverlayView(context: Context) : View(context) {
         val inpainted: Boolean,
         val patched: Boolean,
         val busy: Boolean,
+        /** The room free lettering was held to off its neighbours ([laneFor]); null for none. */
+        val lane: RectF? = null,
     )
 
     /** Identity of a balloon's mask and fill: a stamp is derived from exactly these objects. */
@@ -317,6 +319,9 @@ class BubbleOverlayView(context: Context) : View(context) {
 
         /** Share of a note that may lie on other lettering before the sound is left un-noted. */
         const val NOTE_CROWDED = 0.2f
+
+        /** Share of free lettering that may lie on a neighbour's English before it is held to a lane. */
+        const val CROWDING = 0.08f
 
         /** Share of a spot beside a sound that may hold line work and still take its note. */
         const val NOTE_CALM = 0.12f
@@ -606,10 +611,11 @@ class BubbleOverlayView(context: Context) : View(context) {
      * on a dense page, lettering centred on neighbouring columns lands on
      * the same spot, and a stack of text reads as one unreadable slab.
      *
-     * Only the nudging depends on the neighbours; everything else about a
-     * bubble is looked up from the previous call when the bubble is
-     * unchanged. The caches are rebuilt from this list alone, so they never
-     * hold more than the page on screen.
+     * Only the nudging, and the lane free lettering is held to when it
+     * would run into its neighbours, depend on the neighbours; everything
+     * else about a bubble is looked up from the previous call when the
+     * bubble is unchanged. The caches are rebuilt from this list alone, so
+     * they never hold more than the page on screen.
      */
     private fun placeAll(bubbles: List<RenderBubble>): List<Placed> {
         val screenW = screenWidth()
@@ -629,6 +635,7 @@ class BubbleOverlayView(context: Context) : View(context) {
 
         val out = ArrayList<Placed>(bubbles.size)
         val occupied = ArrayList<RectF>(bubbles.size)
+        val claims = IdentityHashMap<RenderBubble, RectF>(bubbles.size)
         // Notes go last: a note may sit anywhere around its sound, so it is
         // the one to step around everything else.
         val (notes, lettered) = bubbles.partition { it.style == LetterStyle.SFX_NOTE }
@@ -653,9 +660,21 @@ class BubbleOverlayView(context: Context) : View(context) {
                 patched = patch != null,
                 busy = busy,
             )
-            val l = if (letterings.containsKey(key)) letterings[key] else letter(b, stamp != null, patch != null, busy)
+            var l = if (letterings.containsKey(key)) letterings[key] else letter(b, stamp != null, patch != null, busy)
             nextLetterings[key] = l
             if (l == null) continue
+            // Free lettering set over its original runs on past it; where
+            // that runs into a neighbour's lines it is set again in a lane of
+            // its own, a column beside a column, a line above a line.
+            if (stamp == null && patch != null && b.style != LetterStyle.SFX && crowds(l.inkRect, b, bubbles, claims)) {
+                val lane = laneFor(b, bubbles, claims)
+                if (lane.width() >= dp(MIN_TYPE_SIZE) * 3 && lane.height() >= dp(MIN_TYPE_SIZE) * 2) {
+                    val laneKey = key.copy(lane = lane)
+                    val held = if (letterings.containsKey(laneKey)) letterings[laneKey] else placeFree(b, busy, lane)
+                    nextLetterings[laneKey] = held
+                    if (held != null) l = held
+                }
+            }
 
             var dy = 0f
             val claim = RectF(l.card ?: l.inkRect)
@@ -687,6 +706,7 @@ class BubbleOverlayView(context: Context) : View(context) {
             // A cleaned balloon claims all of itself; free lettering only its text,
             // since a patch is background anyone may letter over.
             occupied.add(if (stamp != null) bounds else claim)
+            claims[b] = claim
         }
         // A noted sound effect stays part of the art: nothing under it is cleaned.
         val sounds = notes.map { RectF(it.box) }
@@ -1305,7 +1325,7 @@ class BubbleOverlayView(context: Context) : View(context) {
      * The block is centred on the original and sized from it ([fitFree]);
      * sound effects are sized to fill their box instead ([fitSfx]).
      */
-    private fun placeFree(b: RenderBubble, busy: Boolean): Lettering? {
+    private fun placeFree(b: RenderBubble, busy: Boolean, lane: RectF? = null): Lettering? {
         val style = b.style
         val text = letterText(b)
         if (text.isEmpty()) return null
@@ -1354,8 +1374,8 @@ class BubbleOverlayView(context: Context) : View(context) {
         } else {
             fitFree(
                 b, text, tp, spacing,
-                room = min(screenW - dp(4f), panel?.width() ?: Float.MAX_VALUE),
-                maxH = panel?.height() ?: Float.MAX_VALUE,
+                room = min(screenW - dp(4f), min(panel?.width() ?: Float.MAX_VALUE, lane?.width() ?: Float.MAX_VALUE)),
+                maxH = min(panel?.height() ?: Float.MAX_VALUE, lane?.height() ?: Float.MAX_VALUE),
             )
         }
         val layout = blockOf(lines, tp, spacing)
@@ -1363,7 +1383,7 @@ class BubbleOverlayView(context: Context) : View(context) {
         // A sound or art lettering drawn down a narrow column: English set
         // across it would spill over the art either side of the erased
         // strip, so it runs down the column instead, as a letterer sets it.
-        val column = b.vertical && box.height() > box.width() * TURN_COLUMN && (sfx || style == LetterStyle.ART)
+        val column = lane == null && b.vertical && box.height() > box.width() * TURN_COLUMN && (sfx || style == LetterStyle.ART)
         if (column && layout.width > box.width() * TURN_SPILL) {
             val along = Rect(0, 0, box.height(), box.width())
             val turnedTp = paintFor(style).apply { color = ink }
@@ -1398,13 +1418,14 @@ class BubbleOverlayView(context: Context) : View(context) {
         }
         var y = box.exactCenterY() - inkMid
         val pad = inkPad(size, style, if (edge != 0) size * edgeShare else 0f, weightFor(style, size))
-        // Inside the panel when the block fits it, then on the screen.
-        if (panel != null && !sfx) {
-            if (layout.width + pad * 2 <= panel.width()) {
-                x = x.coerceAtMost(panel.right - layout.width - pad).coerceAtLeast(panel.left + pad)
+        // Inside its lane, then the panel, when the block fits them; then on the screen.
+        for (bounds in listOfNotNull(lane, panel)) {
+            if (sfx) break
+            if (layout.width + pad * 2 <= bounds.width()) {
+                x = x.coerceAtMost(bounds.right - layout.width - pad).coerceAtLeast(bounds.left + pad)
             }
-            if (layout.height + pad * 2 <= panel.height()) {
-                y = y.coerceAtMost(panel.bottom - layout.height - pad).coerceAtLeast(panel.top + pad)
+            if (layout.height + pad * 2 <= bounds.height()) {
+                y = y.coerceAtMost(bounds.bottom - layout.height - pad).coerceAtLeast(bounds.top + pad)
             }
         }
         x = x.coerceAtMost(screenW - layout.width - pad).coerceAtLeast(pad)
@@ -1861,6 +1882,59 @@ class BubbleOverlayView(context: Context) : View(context) {
             }
             rect.offsetTo(rect.left, top)
         }
+    }
+
+    /**
+     * Where [o]'s English will be: its balloon, or its original together
+     * with the lettering already set for it.
+     */
+    private fun regionOf(o: RenderBubble, claims: Map<RenderBubble, RectF>): RectF {
+        o.balloon?.let { return RectF(it.box) }
+        return RectF(o.box).apply { claims[o]?.let { union(it) } }
+    }
+
+    /**
+     * Two originals over each other — a box the model drew on a balloon it
+     * also boxed — have no room between them to share out.
+     */
+    private fun entangled(a: RenderBubble, b: RenderBubble): Boolean {
+        val ra = RectF(a.box)
+        val rb = RectF(b.box)
+        return overlapArea(ra, rb) > min(area(ra), area(rb)) * 0.5f
+    }
+
+    /** Whether lettering at [ink] for [b] runs into a neighbour's English. */
+    private fun crowds(ink: RectF, b: RenderBubble, bubbles: List<RenderBubble>, claims: Map<RenderBubble, RectF>): Boolean {
+        val own = area(ink)
+        if (own <= 0f) return false
+        return bubbles.any { o -> o !== b && !entangled(b, o) && overlapArea(ink, regionOf(o, claims)) > own * CROWDING }
+    }
+
+    /**
+     * The room [b]'s free lettering may take: its panel, cut halfway
+     * between its original and each neighbour's English across whichever
+     * way the two stand apart — two columns side by side get a column
+     * each, two lines one over the other a line each.
+     */
+    private fun laneFor(b: RenderBubble, bubbles: List<RenderBubble>, claims: Map<RenderBubble, RectF>): RectF {
+        val lane = b.panel?.let { RectF(it) } ?: RectF(0f, 0f, screenWidth().toFloat(), screenHeight().toFloat())
+        val box = RectF(b.box)
+        for (o in bubbles) {
+            if (o === b || entangled(b, o)) continue
+            val r = regionOf(o, claims)
+            val across = min(box.right, r.right) - max(box.left, r.left)
+            val down = min(box.bottom, r.bottom) - max(box.top, r.top)
+            // Diagonal neighbours share no span to divide.
+            if (across <= 0f && down <= 0f) continue
+            val sideBySide = across / min(box.width(), r.width()) < down / min(box.height(), r.height())
+            when {
+                sideBySide && r.centerX() < box.centerX() -> lane.left = max(lane.left, (r.right + box.left) / 2f)
+                sideBySide -> lane.right = min(lane.right, (box.right + r.left) / 2f)
+                r.centerY() < box.centerY() -> lane.top = max(lane.top, (r.bottom + box.top) / 2f)
+                else -> lane.bottom = min(lane.bottom, (box.bottom + r.top) / 2f)
+            }
+        }
+        return lane
     }
 
     /** Intersection area as a share of [self]'s area. */
