@@ -151,13 +151,74 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
          * every pass, and the reader would never see a translation at all.
          * Two in a row is a reader skimming; from the third the pass runs
          * to the end, and the page is watched again once it has.
+         *
+         * Only a page seen to be replaced counts. A scroll is the reader
+         * moving on, which no banner can pass for: it cancels a pass
+         * whatever the count, and it starts the next stop with the full
+         * budget again.
          */
         private const val MAX_MID_PASS_CANCELS = 2
 
+        /**
+         * How long an alert holds the status pill. It is shown once, so it
+         * stays long enough to be read, whatever the loop does meanwhile.
+         */
+        private const val ALERT_MS = 6000L
+
         val running = MutableStateFlow(false)
+
+        /**
+         * Whether the screen moved between two frames. While our own
+         * painting is settling — [ownPaintSettling] — the difference is taken
+         * only over the cells [mask] leaves: a card fading in or a draft
+         * giving way to the polish changes nothing outside the mask, while
+         * a scroll moves the page around the cards as much as under them.
+         * The rest of the time every cell counts, as it always has.
+         */
+        internal fun frameMoved(
+            prev: IntArray?,
+            thumb: IntArray,
+            mask: BooleanArray?,
+            ownPaintSettling: Boolean,
+        ): Boolean = FrameStability.meanDiff(prev, thumb, if (ownPaintSettling) mask else null) > MOTION_THRESHOLD
+
+        /**
+         * How [thumb] differs from [base], the page as it was translated,
+         * over the cells [mask] leaves to judge by.
+         *
+         * The page may have moved (slow scroll — cells shift, and the balloon
+         * that matters most may slide in under a card, changing only masked
+         * cells), or been replaced (tap-to-turn swap — cells change in
+         * place). A move is looked for first: a scroll changes plenty of
+         * cells too, and must never be taken for a replaced page, which only
+         * so many passes may be cancelled for.
+         *
+         * The bar for a replaced page adapts to how much of the page our own
+         * cards hide. On a dense page the cards cover most of the text — the
+         * very cells a page swap changes hardest — so the comparison runs
+         * over gutters and margins, where a real swap moves far fewer cells.
+         * Demanding the full fraction there is how a tap-to-turn under
+         * blanket coverage went unnoticed while the old page's cards sat on
+         * the new page.
+         */
+        internal fun judgeAgainstShown(base: IntArray, thumb: IntArray, mask: BooleanArray?): PageCheck {
+            if (kotlin.math.abs(FrameStability.verticalShift(base, thumb, mask)) >= SLOW_SCROLL_MIN_ROWS) {
+                return PageCheck.SCROLLED
+            }
+            val cov = FrameStability.coverage(mask)
+            val pageBar = PAGE_CHANGE_FRACTION * when {
+                cov > 0.60 -> 0.30
+                cov > 0.35 -> 0.60
+                else -> 1.0
+            }
+            return if (FrameStability.changedFraction(base, thumb, mask) > pageBar) PageCheck.REPLACED else PageCheck.SAME
+        }
     }
 
     private enum class State { SCANNING, TRANSLATING, SHOWING }
+
+    /** What a frame says about the page that was translated; see [judgeAgainstShown]. */
+    internal enum class PageCheck { SAME, SCROLLED, REPLACED }
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
     private lateinit var settingsRepo: SettingsRepository
@@ -282,14 +343,30 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
 
     @Volatile private var lastMotionAt = 0L
 
-    /** Passes cancelled by the page-change check, one after another; see [MAX_MID_PASS_CANCELS]. */
+    /**
+     * Passes cancelled by a replaced page since the reader last scrolled;
+     * see [MAX_MID_PASS_CANCELS]. Written on the main thread only.
+     */
     @Volatile private var midPassCancels = 0
     @Volatile private var lastFrameAt = 0L
+
+    /**
+     * Until when our own painting or clearing is still settling on screen.
+     * Meanwhile frame differencing looks only past the overlays (see
+     * [frameMoved]) and no pass starts.
+     */
     @Volatile private var suppressUntil = 0L
     @Volatile private var state = State.SCANNING
     @Volatile private var paused = false
 
     private var translateJob: Job? = null
+
+    /** The alert last shown, so the same one is not shown again; see [showAlert]. Main thread only. */
+    private var alerted: String? = null
+
+    /** Uptime until which an alert holds the pill; see [setPill]. Main thread only. */
+    private var alertUntil = 0L
+
     private var lastShown: List<RenderBubble> = emptyList()
     private var capW = 0
     private var capH = 0
@@ -301,6 +378,9 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         settingsRepo = SettingsRepository(this)
         scope.launch {
             settingsRepo.flow.collect { s ->
+                // A new key gets its own verdict, even when it is the same
+                // words the old key earned.
+                if (s.apiKey != settings.apiKey || s.provider != settings.provider) alerted = null
                 settings = s
                 controller?.bubbleView?.let { v ->
                     v.textScale = s.textScale
@@ -525,74 +605,56 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                 latestBitmap = bmp
             }
             val thumb = FrameStability.grayThumb(bmp, capW, capH)
-            val diff = FrameStability.meanDiff(prevThumb, thumb)
-            prevThumb = thumb
-            latestThumb = thumb
             val mask = overlayMask
             // Our own painting and clearing is motion too, as far as
-            // frame-to-frame differencing can tell, so the two checks
-            // below sit out the moments around it. The comparison against
-            // the translated page, further down, does not have to: it
-            // excludes exactly the cells we paint, so our cards never fool
-            // it — and it must not sit out, because the polish paints
-            // balloon by balloon for as long as the model streams, and a
-            // reader who turned the page while it did would otherwise not
-            // be noticed until the stream ended.
-            if (now >= suppressUntil) {
-                if (diff > MOTION_THRESHOLD) {
-                    lastMotionAt = now
-                    slowRefThumb = null
-                    if (state != State.SCANNING) scope.launch { onMotion() }
-                    else if (preparing) scope.launch { discardPrepared() }
+            // frame-to-frame differencing can tell. For the moments around
+            // it the difference is taken past the cells our overlays cover,
+            // so a card fading in cannot pass for a scroll. Every card is in
+            // the mask from the moment it is painted and for a while after it
+            // is cleared. The check used to sit these moments out altogether,
+            // and the polish repaints each time the model streams an item.
+            // For as long as a stream lasted there was then no motion check
+            // at all, and cards stayed painted over a page that had moved.
+            val moved = frameMoved(prevThumb, thumb, mask, ownPaintSettling = now < suppressUntil)
+            prevThumb = thumb
+            latestThumb = thumb
+            if (moved) {
+                slowRefThumb = null
+                scrolled(now)
+                return
+            }
+            // Slow scrolls hide from frame differencing, so drift is measured
+            // over a longer baseline: whatever this sampled check misses while
+            // cards are up, the cumulative check below accumulates. It looks
+            // only past the mask, so our own painting never reads as drift.
+            val ref = slowRefThumb
+            if (ref == null) {
+                slowRefThumb = thumb
+                slowRefAt = now
+            } else if (now - slowRefAt >= SLOW_SCROLL_SAMPLE_MS) {
+                val drift = FrameStability.verticalShift(ref, thumb, mask)
+                slowRefThumb = thumb
+                slowRefAt = now
+                if (kotlin.math.abs(drift) >= SLOW_SCROLL_MIN_ROWS) {
+                    scrolled(now)
                     return
                 }
-                // Slow scrolls hide from frame differencing, so drift is measured
-                // over a longer baseline: whatever this sampled check misses while
-                // cards are up, the cumulative check below accumulates.
-                val ref = slowRefThumb
-                if (ref == null) {
-                    slowRefThumb = thumb
-                    slowRefAt = now
-                } else if (now - slowRefAt >= SLOW_SCROLL_SAMPLE_MS) {
-                    val drift = FrameStability.verticalShift(ref, thumb, mask)
-                    slowRefThumb = thumb
-                    slowRefAt = now
-                    if (kotlin.math.abs(drift) >= SLOW_SCROLL_MIN_ROWS) {
-                        lastMotionAt = now
-                        if (state != State.SCANNING) scope.launch { onMotion() }
-                        else if (preparing) scope.launch { discardPrepared() }
-                        return
-                    }
-                }
             }
-            if (state == State.SHOWING || (state == State.TRANSLATING && midPassCancels < MAX_MID_PASS_CANCELS)) {
-                // Two ways this page can stop being the page we translated: it
-                // was replaced (tap-to-turn swap — cells change in place), or
-                // it moved (slow scroll — cells shift, and the balloon that
-                // matters most may slide in under a card, changing only masked
-                // cells). Check for both against the translated page itself,
-                // from the moment it is grabbed until its cards come down.
-                //
-                // The threshold adapts to how much of the page our own cards
-                // hide. On a dense page the cards cover most of the text — the
-                // very cells a page swap changes hardest — so the comparison
-                // runs over gutters and margins, where a real swap moves far
-                // fewer cells. Demanding the full fraction there is how a
-                // tap-to-turn under blanket coverage went unnoticed while the
-                // old page's cards sat on the new page.
-                val base = shownThumb ?: return
-                val cov = FrameStability.coverage(mask)
-                val pageBar = PAGE_CHANGE_FRACTION * when {
-                    cov > 0.60 -> 0.30
-                    cov > 0.35 -> 0.60
-                    else -> 1.0
-                }
-                if (FrameStability.changedFraction(base, thumb, mask) > pageBar ||
-                    kotlin.math.abs(FrameStability.verticalShift(base, thumb, mask)) >= SLOW_SCROLL_MIN_ROWS
-                ) {
+            // The page is compared against the page we translated, from the
+            // moment it is grabbed until its cards come down. The comparison
+            // excludes exactly the cells we paint, so it runs through every
+            // paint, and a page turned mid-stream is caught at once rather
+            // than when the stream ends.
+            val current = state
+            if (current == State.SCANNING) return
+            val base = shownThumb ?: return
+            when (judgeAgainstShown(base, thumb, mask)) {
+                PageCheck.SCROLLED -> scrolled(now)
+                PageCheck.REPLACED -> if (current == State.SHOWING || midPassCancels < MAX_MID_PASS_CANCELS) {
                     lastMotionAt = now
                     scope.launch { onMotion(pageChanged = true) }
                 }
+                PageCheck.SAME -> Unit
             }
         } catch (_: IllegalStateException) {
             return
@@ -644,13 +706,29 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
     }
 
     /**
+     * The reader moved the page, as a frame at [now] shows. Capture thread.
+     * Between stops there is usually nothing to take down, and no reason to
+     * wake the main thread for every frame of a scroll. The exceptions are
+     * a frame being read ahead, and a count of cancelled passes for the
+     * scroll to wipe.
+     */
+    private fun scrolled(now: Long) {
+        lastMotionAt = now
+        if (state != State.SCANNING || preparing || midPassCancels > 0) scope.launch { onMotion() }
+    }
+
+    /**
      * The screen moved, or — [pageChanged] — the page under the cards is no
      * longer the page they were written for. Main thread only.
      */
     private fun onMotion(pageChanged: Boolean = false) {
+        // A scroll is the reader moving on, which a region that never stops
+        // changing cannot pass for. Whatever stop comes next gets the full
+        // budget of page-change cancels again.
+        if (!pageChanged) midPassCancels = 0
         when (state) {
             State.TRANSLATING -> {
-                if (pageChanged) midPassCancels++ else midPassCancels = 0
+                if (pageChanged) midPassCancels++
                 translateJob?.cancel()
                 state = State.SCANNING
                 shownThumb = null
@@ -658,13 +736,14 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                 setPill(null)
             }
             State.SHOWING -> {
-                if (!pageChanged) midPassCancels = 0
                 state = State.SCANNING
                 shownThumb = null
                 clearCards()
                 setPill(null)
             }
-            State.SCANNING -> Unit
+            // Between stops the only thing left to throw away is a frame
+            // read ahead, which the screen no longer shows.
+            State.SCANNING -> if (!pageChanged) discardPrepared()
         }
     }
 
@@ -778,9 +857,12 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
     }
 
     /**
-     * Where AI reads run: the service's lifetime, off the main thread, and
-     * outside any one pass's job — a read started ahead of the stability
-     * window outlives the preparation that started it.
+     * Where AI reads started ahead of a pass run: the service's lifetime,
+     * off the main thread, and outside any one pass's job — a read started
+     * ahead of the stability window outlives the preparation that started
+     * it. Nothing stops such a read but whoever holds it: [abandon] for a
+     * frame read ahead, and the pass's own cleanup once it has taken the
+     * frame over.
      */
     private val readScope by lazy { CoroutineScope(scope.coroutineContext + Dispatchers.IO) }
 
@@ -789,7 +871,18 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         val p = prepared
         prepared = null
         preparing = false
-        if (p == null) return
+        if (p != null) abandon(p)
+    }
+
+    /**
+     * Gives up a frame read ahead. Its analysis and its AI read stop, and
+     * the frame is freed once nothing can still be looking at it. The read
+     * does not stop with its analysis, since it runs in [readScope], and
+     * nobody else will cancel it. Left running, it streams on to the end,
+     * spends the rate limit on racing requests, and teaches the glossary
+     * and cast from a page nobody reads. Main thread only.
+     */
+    private fun abandon(p: Prepared) {
         p.job.cancel()
         p.drop()
         retireLater(p.bitmap)
@@ -809,14 +902,17 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
             FrameStability.changedFraction(read, live, mask) <= PAGE_CHANGE_FRACTION
     }
 
-    /** Hands over the frame read ahead, or null when there is none. Main thread only. */
+    /**
+     * Hands over the frame read ahead, or null when there is none. The
+     * caller owns it from here, and must adopt or [abandon] it however it
+     * ends. Main thread only.
+     */
     private fun takePrepared(): Prepared? {
         val p = prepared ?: return null
         prepared = null
         preparing = false
         if (p.job.isCancelled) {
-            p.drop()
-            retireLater(p.bitmap)
+            abandon(p)
             return null
         }
         return p
@@ -840,8 +936,17 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         state = State.TRANSLATING
         translateJob = scope.launch {
             pushBusy()
+            // What the pass holds, and must give back however it ends:
+            // finished, failed, or cancelled by a scroll or a pause at any
+            // point where it suspends. Each is recorded the moment the pass
+            // takes it on, before it can suspend again. A frame read ahead is
+            // held whole until the pass adopts its bitmap and read in one
+            // step. A read started here is recorded as it starts, not once
+            // the page has been analysed. AI reads run outside this job (see
+            // [readScope]), and one missed here would run to its end.
+            var prep: Prepared? = null
             var bmp: Bitmap? = null
-            var pendingRead: PendingRead? = null
+            var read: PendingRead? = null
             try {
                 // A long enough break since the last translated page means the
                 // next one probably belongs to a different series.
@@ -862,27 +967,29 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                 // described the old one, and the mismatch could never be
                 // noticed.
                 var ahead: TranslatePipeline.Analysis? = null
-                var read: PendingRead? = null
-                val prep = takePrepared()
-                if (prep != null) {
+                val taken = takePrepared()
+                prep = taken
+                if (taken != null) {
                     setPill("translating…")
                     val done = try {
-                        prep.job.await()
+                        taken.job.await()
                     } catch (e: CancellationException) {
                         if (!isActive) throw e
                         null
                     } catch (_: Exception) {
                         null
                     }
+                    // Either the pass adopts the frame and its read, or it
+                    // gives both up. It holds them whole no longer.
+                    prep = null
                     if (done != null && stillOnScreen(done.first, latestThumb)) {
-                        bmp = prep.bitmap
+                        bmp = taken.bitmap
+                        read = taken.read
                         shownThumb = done.first
                         ahead = done.second
-                        read = prep.read
                     } else {
                         // The screen moved under the reading, or it failed.
-                        prep.drop()
-                        retireLater(prep.bitmap)
+                        abandon(taken)
                     }
                 }
                 val analysis: TranslatePipeline.Analysis = ahead ?: run {
@@ -893,20 +1000,25 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                     }
                     bmp = fresh
                     setPill("translating…")
+                    // A read the pass starts itself runs as the pass's child.
+                    // A scroll or a pause then stops it the moment the pass is
+                    // cancelled, not once analysis next looks up from the
+                    // pixels. A read started ahead cannot be a child: it began
+                    // before the pass did.
+                    val passScope = CoroutineScope(coroutineContext + Dispatchers.IO)
                     withContext(Dispatchers.Default) {
                         // The model needs nothing analysis produces, so it
                         // starts first and reads while the page is analysed.
-                        read = pipeline.startRead(fresh, settings, readScope)
+                        read = pipeline.startRead(fresh, settings, passScope)
                         shownThumb = FrameStability.grayThumbOf(fresh)
                         pipeline.analyze(fresh, settings, exclusions)
                     }
                 }
-                val aheadRead = read
-                pendingRead = aheadRead
+                val passRead = read
 
                 var draftShown: List<RenderBubble> = emptyList()
                 val result = withContext(Dispatchers.Default) {
-                    pipeline.translate(analysis, settings, read = aheadRead, onPartial = { partial ->
+                    pipeline.translate(analysis, settings, read = passRead, onPartial = { partial ->
                         // A draft or a streamed batch landed — paint it now,
                         // the rest of the polish follows.
                         withContext(Dispatchers.Main.immediate) {
@@ -949,9 +1061,14 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                     delay(1500)
                     if (state == State.SHOWING && lastShown === shown) midPassCancels = 0
                 }
-                // Diagnostics stay up: they exist to be read off a page that
-                // came back wrong, and a pill that vanishes is no use for that.
-                if (result.diag != null) {
+                // A problem the reader has to act on comes before everything
+                // else, in auto mode too. Diagnostics stay up: they exist to
+                // be read off a page that came back wrong, and a pill that
+                // vanishes is no use for that.
+                val alert = result.alert?.takeIf { it.isNotBlank() && it != alerted }
+                if (alert != null) {
+                    showAlert(alert)
+                } else if (result.diag != null) {
                     setPill("${result.engineLabel.ifBlank { "—" }} · ${result.diag} · ${works.describe()}")
                 } else if (shown.isEmpty()) {
                     setPill(if (auto) null else "no text found", 1800)
@@ -971,12 +1088,15 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                 state = State.SHOWING
                 setPill("⚠ " + (e.message?.take(90) ?: "translation failed"), 4500)
             } finally {
-                // Cancellation is this loop's steady state — every scroll
-                // that interrupts a pass lands here — so the full-screen
-                // copy is reclaimed on that path too, not only on success.
-                // A read started ahead of this pass lives outside its job:
-                // finished it is a no-op to cancel, abandoned it must stop.
-                pendingRead?.cancel()
+                // Cancellation is this loop's steady state. Every scroll
+                // that interrupts a pass lands here, so what the pass holds
+                // is given back on that path too, not only on success. The
+                // read stays the pass's to stop even once it is passed to
+                // translate, which reads from it but does not stop it when
+                // the pass is cancelled. Cancelling a finished read does
+                // nothing.
+                prep?.let { abandon(it) }
+                read?.cancel()
                 bmp?.let { if (isActive) it.recycle() else retireLater(it) }
                 popBusy()
             }
@@ -1012,8 +1132,37 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         }
     }
 
+    /**
+     * Shows [text] in the status pill, or hides it. While an alert holds
+     * the pill (see [showAlert]), the loop's own messages leave it alone. A
+     * scroll, or the next page's "translating…", would otherwise wipe the
+     * one message the reader has to act on before they could read it, and
+     * it is not shown twice. Main thread only.
+     */
     private fun setPill(text: String?, autoHideMs: Long = 0) {
+        if (SystemClock.uptimeMillis() < alertUntil) return
         controller?.setStatus(text, autoHideMs)
+    }
+
+    /** Answers something the reader just did. It shows at once, over an alert too. Main thread only. */
+    private fun answer(text: String, autoHideMs: Long) {
+        alertUntil = 0L
+        setPill(text, autoHideMs)
+    }
+
+    /**
+     * Shows a problem the reader has to act on, such as a rejected key. It
+     * shows in auto mode too, where the pill otherwise stays quiet, because
+     * nothing on the page would say why it stays untranslated. Each text is
+     * shown once, unless another comes between. A rejected key fails every
+     * page the same way, and once the reader has read it, they do not need
+     * it over every page after. Main thread only.
+     */
+    private fun showAlert(text: String) {
+        alerted = text
+        alertUntil = 0L
+        setPill(if (text.startsWith("⚠")) text else "⚠ $text", ALERT_MS)
+        alertUntil = SystemClock.uptimeMillis() + ALERT_MS
     }
 
     // ---- OverlayController.Listener (all invoked on main thread) ----
@@ -1029,20 +1178,23 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         // straight from one work to the next with neither.
         works.startNewWork()
         pipeline.forgetRecent()
-        setPill("new series · names cleared", 2000)
+        answer("new series · names cleared", 2000)
     }
 
     override fun onTogglePause() {
         paused = !paused
         if (paused) {
+            // Cancelling the pass stops its AI read too: the pass gives
+            // back everything it holds on the way out. A frame read ahead
+            // and not yet taken is stopped here.
             translateJob?.cancel()
             discardPrepared()
             state = State.SCANNING
             shownThumb = null
             clearCards()
-            setPill("paused", 1600)
+            answer("paused", 1600)
         } else {
-            setPill("live", 1200)
+            answer("live", 1200)
         }
         controller?.setPaused(paused)
         updateNotification()
@@ -1051,7 +1203,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
     override fun onToggleMode() {
         val next = if (settings.mode == CaptureMode.AUTO) CaptureMode.MANUAL else CaptureMode.AUTO
         scope.launch { settingsRepo.setMode(next) }
-        setPill(if (next == CaptureMode.AUTO) "auto-live mode" else "tap the button to translate", 2200)
+        answer(if (next == CaptureMode.AUTO) "auto-live mode" else "tap the button to translate", 2200)
     }
 
     override fun onPeek() {
