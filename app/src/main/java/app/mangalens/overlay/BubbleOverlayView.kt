@@ -13,6 +13,7 @@ import android.graphics.Typeface
 import android.text.Layout
 import android.text.StaticLayout
 import android.text.TextPaint
+import android.util.TypedValue
 import android.view.View
 import android.view.animation.AnimationUtils
 import androidx.core.content.res.ResourcesCompat
@@ -266,6 +267,12 @@ class BubbleOverlayView(context: Context) : View(context) {
 
         const val FADE_MS = 120L
 
+        /** A sound-effect note's type size, in sp, whatever the size of the sound. */
+        const val NOTE_SIZE = 13f
+
+        /** A note's measure, in multiples of its type size, when the sound is narrower. */
+        const val NOTE_MEASURE = 8f
+
         /** Type size widths are measured at before scaling ([scaledMeasure]). */
         const val MEASURE_REF = 100f
 
@@ -336,11 +343,12 @@ class BubbleOverlayView(context: Context) : View(context) {
     private fun faceFor(style: LetterStyle): Typeface = when (style) {
         LetterStyle.THOUGHT -> italicFace
         LetterStyle.NARRATION -> regularFace
-        LetterStyle.SFX -> boldItalicFace
+        LetterStyle.SFX, LetterStyle.SFX_NOTE -> boldItalicFace
         else -> boldFace
     }
 
-    private fun italic(style: LetterStyle) = style == LetterStyle.THOUGHT || style == LetterStyle.SFX
+    private fun italic(style: LetterStyle) =
+        style == LetterStyle.THOUGHT || style == LetterStyle.SFX || style == LetterStyle.SFX_NOTE
 
     private val bgPaint = Paint(Paint.ANTI_ALIAS_FLAG)
     private val maskPaint = Paint(Paint.ANTI_ALIAS_FLAG or Paint.FILTER_BITMAP_FLAG)
@@ -408,9 +416,11 @@ class BubbleOverlayView(context: Context) : View(context) {
         val occupied = ArrayList<RectF>(bubbles.size)
         for (b in bubbles) {
             if (b.translated.isBlank()) continue
-            val balloon = b.balloon
+            // A noted sound effect stays part of the art: nothing under it is cleaned.
+            val note = b.style == LetterStyle.SFX_NOTE
+            val balloon = if (note) null else b.balloon
             val stamp = balloon?.let { stampFor(it, b.fill, nextStamps) }
-            val patch = if (stamp == null) b.patch else null
+            val patch = if (stamp == null && !note) b.patch else null
             val busy = patch != null && busyFor(patch, b.bgColor, nextBusy)
             val key = Key(
                 box = Rect(b.box),
@@ -503,6 +513,7 @@ class BubbleOverlayView(context: Context) : View(context) {
     }
 
     private fun letter(b: RenderBubble, clean: Boolean, patched: Boolean, busy: Boolean): Lettering? = when {
+        b.style == LetterStyle.SFX_NOTE -> placeNote(b)
         clean -> placeClean(b, b.balloon!!, b.fill != null)
         patched || b.style == LetterStyle.SFX -> placeFree(b, busy)
         else -> placeCard(b)
@@ -635,7 +646,7 @@ class BubbleOverlayView(context: Context) : View(context) {
      * than standing as one unbreakable word.
      */
     private fun letterText(b: RenderBubble): String {
-        val text = if (b.style == LetterStyle.SFX) {
+        val text = if (b.style == LetterStyle.SFX || b.style == LetterStyle.SFX_NOTE) {
             b.translated.replace("*", " ").trim().uppercase()
         } else {
             b.translated.trim()
@@ -1051,6 +1062,59 @@ class BubbleOverlayView(context: Context) : View(context) {
             movable = true,
         )
     }
+
+    /**
+     * A note for a sound effect left in the art: a small outlined caption
+     * just below the sound — or above it, where the screen ends first —
+     * aligned to its left edge, so it reads as the sound's caption and
+     * covers none of it. Its size is the reader's, not the sound's: a note
+     * scaled to a sound drawn across half the panel would bury the art it
+     * exists to spare.
+     */
+    private fun placeNote(b: RenderBubble): Lettering? {
+        val text = letterText(b)
+        if (text.isEmpty()) return null
+        val style = LetterStyle.SFX_NOTE
+        val box = b.box
+        val screenW = screenWidth()
+        val screenH = screenHeight()
+        val size = sp(NOTE_SIZE) * textScale
+        val ink = opaque(b.textColor)
+        val edge = b.outlineColor?.let(::opaque)?.takeIf { contrast(it, ink) >= 1.5 } ?: contrasting(ink)
+        val edgeWidth = size * OUTLINE_SHARE
+        val tp = paintFor(style).apply {
+            color = ink
+            textSize = size
+        }
+        val measure = max(box.width().toFloat(), size * NOTE_MEASURE).coerceAtMost(screenW - dp(4f))
+        val lines = TypeSet.breakLines(text, scaledMeasure(tp), measure)
+        val layout = blockOf(lines, tp, SFX_LINE_SPACING)
+        val weight = weightFor(style, size)
+        val pad = inkPad(size, style, edgeWidth, weight)
+        val gap = dp(2f)
+        val below = box.bottom + gap + pad
+        val above = box.top - gap - pad - layout.height
+        val y = when {
+            below + layout.height + pad <= screenH -> below
+            above - pad >= 0f -> above
+            // A sound the height of the screen: inside its bottom corner.
+            else -> screenH - layout.height - pad
+        }
+        val x = (box.left + pad).coerceAtMost(screenW - layout.width - pad).coerceAtLeast(pad)
+        return lettering(
+            layout = layout,
+            x = x,
+            y = y,
+            style = style,
+            ink = ink,
+            edge = edge,
+            edgeWidth = edgeWidth,
+            weight = weight,
+            movable = true,
+        )
+    }
+
+    private fun sp(v: Float) = TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_SP, v, resources.displayMetrics)
 
     private fun capHeight(tp: TextPaint): Float {
         val r = Rect()
