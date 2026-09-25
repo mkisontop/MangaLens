@@ -35,6 +35,7 @@ import androidx.core.content.IntentCompat
 import app.mangalens.MainActivity
 import app.mangalens.MangaLensApp
 import app.mangalens.R
+import app.mangalens.ocr.BalloonFinder
 import app.mangalens.ocr.OcrEngine
 import app.mangalens.overlay.Hyphenation
 import app.mangalens.overlay.OverlayController
@@ -43,8 +44,6 @@ import app.mangalens.pipeline.AiFailure
 import app.mangalens.pipeline.ScrollMatch
 import app.mangalens.pipeline.TranslatePipeline
 import app.mangalens.pipeline.UpgradeMerge
-import app.mangalens.ocr.BalloonFinder
-import app.mangalens.scroll.AutoScrollHost
 import app.mangalens.scroll.AutoScroller
 import app.mangalens.settings.AppSettings
 import app.mangalens.settings.CaptureMode

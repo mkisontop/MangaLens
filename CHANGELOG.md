@@ -1,5 +1,48 @@
 # Changelog
 
+## 1.0.5
+
+Auto-scroll: MangaLens scrolls the page for you, in any app, and slows down
+for the big balloons.
+
+**Download:** `MangaLens.apk` below updates 0.9.2 and newer in place.
+
+- **Auto-scroll.** Tap the new **▼** beside the 文A bubble and the page moves
+  on by itself — in Brave, a reader app, anything that scrolls. **−** and
+  **+** change the speed as it goes, **❚❚** stops it, and touching the
+  screen pauses it until you let go. It stops by itself at the end of the
+  page. It is also in the long-press menu, and Tweaks → Auto-scroll sets
+  the speed it starts at.
+- **It slows down for big balloons.** MangaLens watches the page on your
+  phone as it moves and slows right down while a big balloon goes by, the
+  more the bigger it is, then hurries through the empty gaps between
+  panels. No AI or connection is involved, so it works the same with
+  translation napping.
+- **With translation or without.** Napping (tap 文A), the page glides
+  without stopping. Awake, it glides half a screen, waits for that stop's
+  translation, gives you time to read it, and glides on.
+- **One switch in Accessibility.** Only an accessibility service can move
+  another app's page, so auto-scroll comes with one, "MangaLens auto-scroll":
+  Tweaks → Auto-scroll → **Turn on** takes you there. It can only drag the
+  page — it can't read the screen, see what you type or tap anything. On
+  Android 13 and later, if the switch is greyed out, allow restricted
+  settings in App info first (the link is right under the button).
+- **Installing:** where Play Protect's enhanced fraud protection is on,
+  Android refuses a downloaded app with an accessibility service ("App
+  blocked to protect your device"). Switch that protection off for the
+  install and back on afterwards; see the README.
+- **Fewer slow stops while you scroll yourself.** Lines read at the last
+  stop are found again more reliably, thin ones like a lone "……" included,
+  so a small scroll reads only the new strip instead of the whole screen
+  again (about 1 stop in 10 used to).
+- A line the screen's edge cut in half is read whole at the next stop,
+  instead of keeping the half-sentence it was first read as.
+- **Cleaner balloons.** A panel whose boxes all slid off their balloons,
+  a box that slid down out of its balloon, and a face under a drifted box
+  are all handled: the balloon is cleaned whole and the art is left alone.
+- Words that fit no centred block are set in the balloon's largest clear
+  area instead of spilling over its edge.
+
 ## 1.0.4
 
 Faster, above all when you scroll.
