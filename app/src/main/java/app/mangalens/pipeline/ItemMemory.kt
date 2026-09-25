@@ -35,6 +35,8 @@ internal class ItemMemory {
 
     private class Remembered(
         val item: PageItem,
+        /** The pixels fingerprinted: [item]'s box, widened to [MIN_PX] where the lettering is thinner. */
+        val area: Rect,
         /** Fingerprint origin and size, in quarter-scale cells. */
         val cx: Int,
         val cy: Int,
@@ -237,7 +239,7 @@ internal class ItemMemory {
     private fun verifyCut(bitmap: Bitmap, r: Remembered, dy: Int): Pair<Int, Int>? {
         val d = r.detail
         val f = d.f
-        val box = r.item.box
+        val box = r.area
         val reachX = 2
         val xL = minOf(reachX, box.left / f)
         val xR = minOf(reachX, (bitmap.width - box.left - d.w * f) / f)
@@ -257,7 +259,7 @@ internal class ItemMemory {
             for (y in y0 until y1) for (x in 0 until d.w) if (d.ink[y * d.w + x]) dInk++
             if (dInk == 0) continue
             val g = sample(bitmap, left, top + y0 * f, gw, y1 - y0, f)
-            val t = threshold(g) ?: continue
+            val t = threshold(g, gw, xL, 0, d.w, y1 - y0) ?: continue
             val ink = BooleanArray(g.size) { if (d.darkInk) g[it] < t else g[it] > t }
             for (sx in 0..xL + xR) {
                 var inter = 0
@@ -299,7 +301,7 @@ internal class ItemMemory {
         a.item.src == b.item.src && Rect.intersects(a.item.box, b.item.box)
 
     private fun fingerprint(gray: Gray, bitmap: Bitmap, item: PageItem): Remembered? {
-        val box = item.box
+        val box = atLeast(item.box, MIN_PX, bitmap.width, bitmap.height)
         val cx = (box.left / SCALE).coerceIn(0, gray.w - 1)
         val cy = (box.top / SCALE).coerceIn(0, gray.h - 1)
         val cw = ((box.right + SCALE - 1) / SCALE).coerceAtMost(gray.w) - cx
@@ -317,7 +319,26 @@ internal class ItemMemory {
         // Too flat to be told apart from anywhere else.
         if (dev / cells.size < MIN_CONTRAST) return null
         val detail = detailOf(bitmap, box) ?: return null
-        return Remembered(item, cx, cy, cw, ch, cells, bitmap.width, bitmap.height, detail)
+        return Remembered(item, box, cx, cy, cw, ch, cells, bitmap.width, bitmap.height, detail)
+    }
+
+    /**
+     * [box] widened about its centre to [min] pixels each way, within a
+     * [w] x [h] frame. A lone "……" or "！" is a column a few pixels wide:
+     * too thin to fingerprint on its own, it was never remembered, and a
+     * strip stop that counted on memory for it read the screen again.
+     * With the paper round it, it is found like any other line.
+     */
+    private fun atLeast(box: Rect, min: Int, w: Int, h: Int): Rect {
+        if (box.width() >= min && box.height() >= min) return box
+        fun span(lo: Int, hi: Int, size: Int): Pair<Int, Int> {
+            if (hi - lo >= min || size < min) return lo to hi
+            val start = ((lo + hi - min) / 2).coerceIn(0, size - min)
+            return start to start + min
+        }
+        val (l, r) = span(box.left, box.right, w)
+        val (t, b) = span(box.top, box.bottom, h)
+        return Rect(l, t, r, b)
     }
 
     /** The ink inside [box], or null when it holds too little contrast to be lettering. */
@@ -347,7 +368,7 @@ internal class ItemMemory {
     private fun verify(bitmap: Bitmap, r: Remembered, coarse: Int): Pair<Int, Int>? {
         val d = r.detail
         val f = d.f
-        val box = r.item.box
+        val box = r.area
         val reachX = 2
         val reachY = (SCALE * 2 + f - 1) / f
         // The search reaches a little either way of where the coarse pass
@@ -364,7 +385,7 @@ internal class ItemMemory {
         val gw = d.w + xL + xR
         val gh = d.h + yT + yB
         val g = sample(bitmap, left, top, gw, gh, f)
-        val t = threshold(g) ?: return null
+        val t = threshold(g, gw, xL, yT, d.w, d.h) ?: return null
         val ink = BooleanArray(g.size) { if (d.darkInk) g[it] < t else g[it] > t }
         var best = 0f
         var bestX = 0
@@ -465,12 +486,26 @@ internal class ItemMemory {
         return out
     }
 
-    /** Midway between paper and ink, or null when the two are too alike to tell apart. */
-    private fun threshold(g: IntArray): Int? {
+    /**
+     * Midway between paper and ink, or null when the two are too alike to
+     * tell apart. Read, when [w] is given, from the [w] x [h] cells at
+     * ([x0], [y0]) of the [gw]-wide grid [g]: where the lettering was
+     * fingerprinted, so it is split into ink and paper as it was then. The
+     * search's reach round it is more paper, which shifts the levels read
+     * from the whole grid — enough, round a line of sparse dots, to take
+     * every stroke's grey rim for ink.
+     */
+    private fun threshold(g: IntArray, gw: Int = 0, x0: Int = 0, y0: Int = 0, w: Int = 0, h: Int = 0): Int? {
         val hist = IntArray(256)
-        for (v in g) hist[v.coerceIn(0, 255)]++
+        val total = if (w > 0) {
+            for (y in y0 until y0 + h) for (x in x0 until x0 + w) hist[g[y * gw + x].coerceIn(0, 255)]++
+            w * h
+        } else {
+            for (v in g) hist[v.coerceIn(0, 255)]++
+            g.size
+        }
         fun pct(p: Int): Int {
-            val target = g.size.toLong() * p / 100
+            val target = total.toLong() * p / 100
             var acc = 0L
             for (i in 0..255) {
                 acc += hist[i]
@@ -555,6 +590,9 @@ internal class ItemMemory {
         /** Recalls in a row that may miss a memory before it is forgotten. */
         const val FORGET_AFTER = 4
         const val MIN_CELLS = 4
+
+        /** Side, in pixels, the fingerprinted area is widened to: [MIN_CELLS] quarter-scale cells. */
+        const val MIN_PX = MIN_CELLS * SCALE
 
         /** Mean absolute deviation, in grey levels, below which a patch is blank paper. */
         const val MIN_CONTRAST = 10.0

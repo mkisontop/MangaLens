@@ -360,4 +360,26 @@ class ItemMemoryTest {
             assertTrue("${item.en} moved up by the scroll", abs(f.box.top - (item.box.top - 302)) <= 2)
         }
     }
+
+    @Test
+    fun aLoneEllipsisIsFoundAgain() {
+        // A balloon holding only "……": a column of dots a few pixels wide,
+        // too thin to fingerprint on its own. It was never remembered, and
+        // a strip stop below it read the whole screen again for it.
+        val (page, c) = blank()
+        val oval = RectF(300f, 600f, 400f, 800f)
+        c.drawOval(oval, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE })
+        c.drawOval(oval, Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 4f; color = Color.BLACK })
+        val dot = Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.BLACK }
+        for (i in 0 until 6) c.drawCircle(350f, 650f + i * 18f, 3f, dot)
+        val item = PageItem(Rect(346, 646, 354, 744), ItemKind.SPEECH, "……", "...", vertical = true)
+        val memory = ItemMemory()
+        memory.remember(page, listOf(item))
+        assertEquals(1, memory.size)
+        val found = memory.recall(scrolled(page, 331).first)
+        assertEquals(listOf(item.en), found.map { it.en })
+        val f = found.single()
+        assertTrue("moved up by the scroll: ${f.box}", abs(f.box.top - (item.box.top - 331)) <= 2)
+        assertEquals("the line's own box, not the paper round it", item.box.width(), f.box.width())
+    }
 }
