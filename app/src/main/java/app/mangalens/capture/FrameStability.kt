@@ -9,12 +9,11 @@ import kotlin.math.abs
 /**
  * Cheap frame-difference detector: frames are downscaled to a tiny grayscale
  * thumbnail and compared by mean absolute difference. Used to know when the
- * reader has stopped scrolling (stable page -> OCR) and when they start again
- * (motion -> clear overlays).
+ * reader has stopped scrolling (stable page -> translation pass) and when they
+ * start again (motion -> clear overlays).
  *
- * Not thread-safe — call only from the capture thread. The 96x96 scratch
- * bitmap is reused across frames so steady-state motion detection allocates
- * nothing but the returned thumb array.
+ * Only [grayThumb] keeps shared state; everything else is a pure function of
+ * its arguments, safe from any thread.
  */
 object FrameStability {
 
@@ -29,6 +28,10 @@ object FrameStability {
     /**
      * [srcW]/[srcH] bound the logical frame inside a possibly stride-padded
      * source bitmap, so padding columns never leak into the comparison.
+     *
+     * Not thread-safe — call only from the capture thread. The 96x96 scratch
+     * bitmap is reused across frames so steady-state motion detection
+     * allocates nothing but the returned thumb array.
      */
     fun grayThumb(src: Bitmap, srcW: Int = src.width, srcH: Int = src.height): IntArray {
         val bmp = thumbBmp ?: Bitmap.createBitmap(SIZE, SIZE, Bitmap.Config.ARGB_8888).also {
@@ -39,30 +42,32 @@ object FrameStability {
         thumbCanvas?.drawBitmap(src, srcRect, dstRect, paint)
         val px = IntArray(SIZE * SIZE)
         bmp.getPixels(px, 0, SIZE, 0, 0, SIZE, SIZE)
-        for (i in px.indices) {
-            val p = px[i]
-            px[i] = ((p shr 16 and 0xFF) * 299 + (p shr 8 and 0xFF) * 587 + (p and 0xFF) * 114) / 1000
-        }
-        return px
+        return toGray(px)
     }
 
     /**
      * Like [grayThumb], but with no shared scratch state — safe to call from
      * any thread, at the cost of allocating its own 96x96 working bitmap.
-     * Used once per translation pass to remember the page the overlays were
-     * written for; the capture loop keeps the reusing variant.
+     * Used on the frames a pass reads, and on those read ahead of one, to
+     * remember the page the overlays were written for; the capture loop
+     * keeps the reusing variant.
      */
-    fun grayThumbOf(src: Bitmap, srcW: Int = src.width, srcH: Int = src.height): IntArray {
+    fun grayThumbOf(src: Bitmap): IntArray {
         val bmp = Bitmap.createBitmap(SIZE, SIZE, Bitmap.Config.ARGB_8888)
         Canvas(bmp).drawBitmap(
             src,
-            Rect(0, 0, srcW.coerceAtMost(src.width), srcH.coerceAtMost(src.height)),
+            Rect(0, 0, src.width, src.height),
             Rect(0, 0, SIZE, SIZE),
             Paint(Paint.FILTER_BITMAP_FLAG),
         )
         val px = IntArray(SIZE * SIZE)
         bmp.getPixels(px, 0, SIZE, 0, 0, SIZE, SIZE)
         bmp.recycle()
+        return toGray(px)
+    }
+
+    /** Turns ARGB pixels into their luminance, in place. */
+    private fun toGray(px: IntArray): IntArray {
         for (i in px.indices) {
             val p = px[i]
             px[i] = ((p shr 16 and 0xFF) * 299 + (p shr 8 and 0xFF) * 587 + (p and 0xFF) * 114) / 1000
