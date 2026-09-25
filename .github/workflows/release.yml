@@ -19,16 +19,22 @@ on:
         description: "Release tag, e.g. v0.9.3"
         required: true
 
+# Two jobs, on two machines. `build` runs the repository's Gradle code (the
+# tests and the release build) with read-only access and no secrets, and
+# hands over the unsigned APK. `sign` never runs Gradle: on a fresh runner,
+# where nothing the build started can still be running, it checks that APK,
+# and only then decodes the signing key, signs, and publishes.
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  release:
+  build:
     runs-on: ubuntu-latest
-    env:
-      RELEASE_KEY_ALIAS: mangalens
-      RELEASE_CERT_SHA256: 6bde3720dc055d1f233970e4c038cb5955d816a6353c557aa59689742ab75ab6
-      DEBUG_CERT_SHA256: df0e8ef059da2b1bb121e49252a07c55e468fb4453a4fbb7d90263d3c7b7a344
+    permissions:
+      contents: read
+    outputs:
+      tag: ${{ steps.meta.outputs.TAG }}
+      ver: ${{ steps.meta.outputs.VER }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -41,6 +47,7 @@ jobs:
           java-version: "17"
 
       - name: Resolve release metadata
+        id: meta
         env:
           INPUT_TAG: ${{ inputs.tag }}
         run: |
@@ -57,7 +64,7 @@ jobs:
           {
             echo "TAG=$TAG"
             echo "VER=$VER"
-          } >> "$GITHUB_ENV"
+          } >> "$GITHUB_OUTPUT"
           if git show-ref --verify --quiet "refs/tags/$TAG"; then
             tagged_commit="$(git rev-list -n 1 "$TAG")"
             if [ "$tagged_commit" != "$GITHUB_SHA" ]; then
@@ -72,8 +79,122 @@ jobs:
       - name: Build unsigned release APK
         run: ./gradlew --no-daemon :app:assembleRelease
 
-      # Repository-controlled Gradle code runs before private key material is
-      # exposed to the runner. No build/test task runs after this step.
+      - name: Hand over the unsigned APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-release
+          path: |
+            app/build/outputs/apk/release/output-metadata.json
+            app/build/outputs/apk/release/*.apk
+          if-no-files-found: error
+          retention-days: 1
+
+  sign:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    env:
+      TAG: ${{ needs.build.outputs.tag }}
+      VER: ${{ needs.build.outputs.ver }}
+      RELEASE_KEY_ALIAS: mangalens
+      RELEASE_CERT_SHA256: 6bde3720dc055d1f233970e4c038cb5955d816a6353c557aa59689742ab75ab6
+      DEBUG_CERT_SHA256: df0e8ef059da2b1bb121e49252a07c55e468fb4453a4fbb7d90263d3c7b7a344
+    steps:
+      # For signing/debug.keystore (the legacy bridge's old signer) and
+      # CHANGELOG.md. Nothing from the checkout is built or run.
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - uses: actions/download-artifact@v4
+        with:
+          name: unsigned-release
+          path: unsigned
+
+      # Everything that can be checked about the APK is checked before the
+      # key is decoded.
+      - name: Check the unsigned APK
+        run: |
+          metadata="unsigned/output-metadata.json"
+          if [ ! -f "$metadata" ]; then
+            echo "::error::Gradle did not produce release output metadata."
+            exit 1
+          fi
+          built_version="$(jq -r '.elements[0].versionName' "$metadata")"
+          built_code="$(jq -r '.elements[0].versionCode' "$metadata")"
+          if [ "$built_version" != "$VER" ]; then
+            echo "::error::Tag $TAG does not match app version $built_version."
+            exit 1
+          fi
+          if [[ ! "$built_code" =~ ^[0-9]+$ ]]; then
+            echo "::error::Gradle produced an invalid version code: $built_code."
+            exit 1
+          fi
+          output_file="$(jq -r '.elements[0].outputFile' "$metadata")"
+          unsigned="unsigned/$output_file"
+          if [ ! -f "$unsigned" ]; then
+            echo "::error::Unsigned release APK is missing: $unsigned"
+            exit 1
+          fi
+
+          build_tools="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d -print | sort -V | tail -n 1)"
+          aapt="$build_tools/aapt"
+          if [ ! -x "$build_tools/apksigner" ] || [ ! -x "$aapt" ] || [ ! -x "$build_tools/zipalign" ]; then
+            echo "::error::Android SDK build tools are unavailable under $ANDROID_HOME/build-tools."
+            exit 1
+          fi
+
+          # Play Protect's enhanced fraud protection refuses to install a
+          # sideloaded app that declares any of these, and MangaLens is only
+          # ever sideloaded: 1.0.1 could not be installed where it is on.
+          # Auto-scroll's accessibility service is the one exception, by the
+          # reader's choice (only an accessibility service may move another
+          # app's page); no second one may slip in beside it.
+          manifest="$("$aapt" dump xmltree "$unsigned" AndroidManifest.xml)"
+          blocked="$(printf '%s\n' "$manifest" |
+            grep -oE 'android\.permission\.(BIND_NOTIFICATION_LISTENER_SERVICE|RECEIVE_SMS|READ_SMS)' |
+            sort -u || true)"
+          if [ -n "$blocked" ]; then
+            echo "::error::The APK declares what Play Protect blocks sideloaded installs for: $blocked"
+            exit 1
+          fi
+          accessibility="$(printf '%s\n' "$manifest" | grep -c 'android\.permission\.BIND_ACCESSIBILITY_SERVICE' || true)"
+          if [ "$accessibility" -gt 1 ] || { [ "$accessibility" -eq 1 ] && ! printf '%s\n' "$manifest" | grep -q 'app\.mangalens\.scroll\.AutoScrollService\|\.scroll\.AutoScrollService'; }; then
+            echo "::error::The APK declares an accessibility service other than auto-scroll's."
+            exit 1
+          fi
+
+          previous="$RUNNER_TEMP/previous-release.apk"
+          if ! curl --fail --location --silent --show-error \
+            "https://github.com/mkisontop/mangalens/releases/latest/download/MangaLens.apk" \
+            --output "$previous"; then
+            echo "::error::Could not download the previous stable APK to validate versionCode."
+            exit 1
+          fi
+          previous_code="$("$aapt" dump badging "$previous" | sed -n "s/.*versionCode='\([0-9][0-9]*\)'.*/\1/p" | head -n 1)"
+          if [[ ! "$previous_code" =~ ^[0-9]+$ ]]; then
+            echo "::error::Could not read versionCode from the previous stable APK."
+            exit 1
+          fi
+          if [ "$built_code" -le "$previous_code" ]; then
+            echo "::error::versionCode must increase: previous=$previous_code, candidate=$built_code."
+            exit 1
+          fi
+          if "$build_tools/apksigner" verify "$unsigned" > /dev/null 2>&1; then
+            echo "::error::Gradle release output was unexpectedly signed."
+            exit 1
+          fi
+          {
+            echo "UNSIGNED=$unsigned"
+            echo "BUILD_TOOLS=$build_tools"
+          } >> "$GITHUB_ENV"
+
       - name: Validate private signing key
         env:
           KS_B64: ${{ secrets.RELEASE_KEYSTORE_B64 }}
@@ -121,77 +242,9 @@ jobs:
         env:
           KS_PASS: ${{ secrets.RELEASE_KEYSTORE_PASSWORD }}
         run: |
-          metadata="app/build/outputs/apk/release/output-metadata.json"
-          if [ ! -f "$metadata" ]; then
-            echo "::error::Gradle did not produce release output metadata."
-            exit 1
-          fi
-          built_version="$(jq -r '.elements[0].versionName' "$metadata")"
-          built_code="$(jq -r '.elements[0].versionCode' "$metadata")"
-          if [ "$built_version" != "$VER" ]; then
-            echo "::error::Tag $TAG does not match app version $built_version."
-            exit 1
-          fi
-          if [[ ! "$built_code" =~ ^[0-9]+$ ]]; then
-            echo "::error::Gradle produced an invalid version code: $built_code."
-            exit 1
-          fi
-          output_file="$(jq -r '.elements[0].outputFile' "$metadata")"
-          unsigned="app/build/outputs/apk/release/$output_file"
-          if [ ! -f "$unsigned" ]; then
-            echo "::error::Unsigned release APK is missing: $unsigned"
-            exit 1
-          fi
-
-          build_tools="$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d -print | sort -V | tail -n 1)"
-          apksigner="$build_tools/apksigner"
-          aapt="$build_tools/aapt"
-          zipalign="$build_tools/zipalign"
-          if [ ! -x "$apksigner" ] || [ ! -x "$aapt" ] || [ ! -x "$zipalign" ]; then
-            echo "::error::Android SDK build tools are unavailable under $ANDROID_HOME/build-tools."
-            exit 1
-          fi
-
-          # Play Protect's enhanced fraud protection refuses to install a
-          # sideloaded app that declares any of these, and MangaLens is only
-          # ever sideloaded: 1.0.1 could not be installed where it is on.
-          # Auto-scroll's accessibility service is the one exception, by the
-          # reader's choice (only an accessibility service may move another
-          # app's page); no second one may slip in beside it.
-          manifest="$("$aapt" dump xmltree "$unsigned" AndroidManifest.xml)"
-          blocked="$(printf '%s\n' "$manifest" |
-            grep -oE 'android\.permission\.(BIND_NOTIFICATION_LISTENER_SERVICE|RECEIVE_SMS|READ_SMS)' |
-            sort -u || true)"
-          if [ -n "$blocked" ]; then
-            echo "::error::The APK declares what Play Protect blocks sideloaded installs for: $blocked"
-            exit 1
-          fi
-          accessibility="$(printf '%s\n' "$manifest" | grep -c 'android\.permission\.BIND_ACCESSIBILITY_SERVICE' || true)"
-          if [ "$accessibility" -gt 1 ] || { [ "$accessibility" -eq 1 ] && ! printf '%s\n' "$manifest" | grep -q 'app\.mangalens\.scroll\.AutoScrollService\|\.scroll\.AutoScrollService'; }; then
-            echo "::error::The APK declares an accessibility service other than auto-scroll's."
-            exit 1
-          fi
-
-          previous="$RUNNER_TEMP/previous-release.apk"
-          if ! curl --fail --location --silent --show-error \
-            "https://github.com/mkisontop/mangalens/releases/latest/download/MangaLens.apk" \
-            --output "$previous"; then
-            echo "::error::Could not download the previous stable APK to validate versionCode."
-            exit 1
-          fi
-          previous_code="$("$aapt" dump badging "$previous" | sed -n "s/.*versionCode='\([0-9][0-9]*\)'.*/\1/p" | head -n 1)"
-          if [[ ! "$previous_code" =~ ^[0-9]+$ ]]; then
-            echo "::error::Could not read versionCode from the previous stable APK."
-            exit 1
-          fi
-          if [ "$built_code" -le "$previous_code" ]; then
-            echo "::error::versionCode must increase: previous=$previous_code, candidate=$built_code."
-            exit 1
-          fi
-          if "$apksigner" verify "$unsigned" > /dev/null 2>&1; then
-            echo "::error::Gradle release output was unexpectedly signed."
-            exit 1
-          fi
+          apksigner="$BUILD_TOOLS/apksigner"
+          zipalign="$BUILD_TOOLS/zipalign"
+          unsigned="$UNSIGNED"
 
           aligned="$RUNNER_TEMP/MangaLens-aligned.apk"
           "$zipalign" -P 16 -f 4 "$unsigned" "$aligned"
