@@ -1,15 +1,33 @@
 package app.mangalens.pipeline
 
 import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Rect
+import android.graphics.RectF
+import android.util.Base64
+import app.mangalens.ocr.OcrEngine
+import app.mangalens.ocr.OcrLine
+import app.mangalens.settings.AppSettings
+import app.mangalens.settings.LlmProvider
+import app.mangalens.settings.SourceLang
+import app.mangalens.translate.FakeHttpServer
+import app.mangalens.translate.GeminiApi
 import app.mangalens.translate.ItemKind
 import app.mangalens.translate.PageItem
+import app.mangalens.translate.StoryContext
+import app.mangalens.translate.TranslationCache
+import app.mangalens.translate.TranslationService
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.runBlocking
+import org.json.JSONArray
+import org.json.JSONObject
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
@@ -20,8 +38,8 @@ import org.robolectric.annotation.GraphicsMode
 import kotlin.random.Random
 
 /**
- * How far a webtoon stop scrolled, to the pixel, and what a strip read of
- * it counts on memory for.
+ * How far a webtoon stop scrolled, to the pixel, what a strip read of it
+ * counts on memory for, and which frame the next strip is measured from.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -55,11 +73,11 @@ class ScrollMatchTest {
         }
     }
 
-    /** The screen at scroll offset [top], with a fixed browser bar across its top and bottom. */
-    private fun screen(top: Int, bars: Boolean = true): Bitmap {
+    /** The screen at scroll offset [top] down [page], with a fixed browser bar across its top and bottom. */
+    private fun screen(top: Int, bars: Boolean = true, page: Bitmap = strip): Bitmap {
         val out = Bitmap.createBitmap(w, h, Bitmap.Config.ARGB_8888)
         val c = Canvas(out)
-        c.drawBitmap(strip, 0f, -top.toFloat(), null)
+        c.drawBitmap(page, 0f, -top.toFloat(), null)
         if (bars) {
             val bar = Paint().apply { color = Color.rgb(40, 40, 48) }
             c.drawRect(0f, 0f, w.toFloat(), 90f, bar)
@@ -157,18 +175,20 @@ class ScrollMatchTest {
     @Test
     fun aStripReadCountsOnMemoryForEverythingItsNewRowsDoNotReach() {
         val match = ScrollMatch.of(screen(900))
+        // The last stop's bottom edge cut the third line: its box ends
+        // there, as every box a read reports ends on the screen.
         val before = listOf(
             item(Rect(100, 400, 300, 500), "above"),
             item(Rect(100, 1000, 300, 1100), "margin"),
-            item(Rect(100, 1150, 300, 1250), "cut"),
+            item(Rect(100, 1150, 300, 1200), "cut"),
         )
         // Scrolled 300 down: the strip is the bottom 300 rows, the ones the
         // scroll revealed, plus a 300-row margin the model is told to leave.
-        val read = StripRead(null, Rect(0, h - 600, w, h), 300, Seen(match, before), match, Rect(0, h - 300, w, h))
+        val read = StripRead(null, Rect(0, h - 600, w, h), 300, Seen(match, before), match)
         val aboveNow = item(Rect(100, 100, 300, 200), "above")
         val marginNow = item(Rect(100, 700, 300, 800), "margin")
         assertTrue(
-            "the upper line and the margin's were found again; the cut one reaches the new rows",
+            "the upper line and the margin's were found again; the cut one the model is told to read again",
             read.covered(listOf(aboveNow, marginNow), h, 0, 0),
         )
         assertFalse("memory lost the line in the margin, which the model leaves", read.covered(listOf(aboveNow), h, 0, 0))
@@ -176,6 +196,13 @@ class ScrollMatchTest {
         assertTrue("a line scrolled into the ignored top band is not expected", read.covered(listOf(marginNow), h, 250, 0))
         assertTrue("the lost margin line is on the strip: reading it whole will do", read.coveredByStrip(listOf(aboveNow), h, 0, 0))
         assertFalse("the lost upper line is not: only the whole screen will", read.coveredByStrip(listOf(marginNow), h, 0, 0))
+
+        // A cut line reaching above the strip is shown to the model only in
+        // part, so it is memory's to letter still.
+        val tall = listOf(item(Rect(100, 700, 300, 1200), "tall"))
+        val tallRead = StripRead(null, Rect(0, h - 600, w, h), 300, Seen(match, tall), match)
+        assertFalse(tallRead.covered(emptyList(), h, 0, 0))
+        assertTrue(tallRead.covered(listOf(item(Rect(100, 400, 300, 900), "tall")), h, 0, 0))
     }
 
     @Test
@@ -226,5 +253,112 @@ class ScrollMatchTest {
         val read = StripRead(null, Rect(), 12, Seen(match, emptyList()), match)
         assertFalse(read.isActive)
         assertEquals(emptyList<PageItem>(), read.collect(null))
+    }
+
+    /** OCR that reads nothing: the model reads every stop. */
+    private class NoOcr : OcrEngine() {
+        override suspend fun recognize(bitmap: Bitmap, setting: SourceLang) = Result(emptyList(), setting)
+        override suspend fun recognizeRegion(bitmap: Bitmap, lang: SourceLang?): List<OcrLine> = emptyList()
+    }
+
+    private var server: FakeHttpServer? = null
+
+    @After
+    fun tearDown() {
+        server?.close()
+        GeminiApi.base = GeminiApi.BASE
+        GeminiApi.resetLearned()
+        StoryContext.reset()
+    }
+
+    /**
+     * Reads [page] at one stop, then at two nudges of 40 rows, each under
+     * the 48 (4% of the screen) a request is worth and together over it.
+     * The model answers a whole screen with [answer] and a strip with
+     * nothing. Returns the three stops' results, and the first row of the
+     * third stop the model was told is new, or null when it was sent
+     * nothing.
+     */
+    private fun nudgedTwice(page: Bitmap, answer: List<JSONObject>): Pair<List<TranslatePipeline.PageResult>, Int?> = runBlocking {
+        fun reply(items: List<JSONObject>) = JSONObject().put(
+            "candidates",
+            JSONArray().put(
+                JSONObject()
+                    .put("content", JSONObject().put("role", "model").put("parts", JSONArray().put(JSONObject().put("text", JSONObject().put("items", JSONArray(items)).toString()))))
+                    .put("finishReason", "STOP"),
+            ),
+        ).toString()
+        val ai = FakeHttpServer { ex ->
+            ex.startEvents()
+            ex.event(reply(if (ex.body.contains("unread_rows")) emptyList() else answer))
+        }.also {
+            server = it
+            GeminiApi.base = it.base
+        }
+        val settings = AppSettings(provider = LlmProvider.GEMINI, apiKey = "k", diagnostics = true)
+        val cache = TranslationCache()
+        val pipeline = TranslatePipeline(NoOcr(), TranslationService(cache), cache)
+        suspend fun stop(top: Int) = coroutineScope {
+            val frame = screen(top, bars = false, page = page)
+            val read = pipeline.startRead(frame, settings, this)
+            pipeline.translate(pipeline.analyze(frame, settings), settings, read = read)
+        }
+        val results = listOf(stop(600), stop(640))
+        assertTrue("the first nudge sent nothing", ai.exchanges.none { it.body.contains("unread_rows") })
+        val third = stop(680)
+        val sent = ai.exchanges.lastOrNull { it.body.contains("unread_rows") } ?: return@runBlocking results + third to null
+        val parts = JSONObject(sent.body).getJSONArray("contents").getJSONObject(0).getJSONArray("parts")
+        val jpeg = Base64.decode(parts.getJSONObject(1).getJSONObject("inlineData").getString("data"), Base64.DEFAULT)
+        val stripH = BitmapFactory.decodeByteArray(jpeg, 0, jpeg.size).height
+        val unread = JSONObject(parts.getJSONObject(2).getString("text")).getJSONArray("unread_rows")
+        results + third to h - stripH + unread.getInt(0) * stripH / 1000
+    }
+
+    /**
+     * A nudge too small to be worth a request leaves the rows it revealed
+     * unread, and they stay new to the model: the scroll is measured from
+     * the last frame the model read, not from the nudge. Two nudges that
+     * together reveal a strip's worth have it read, the first nudge's rows
+     * included — measured from the nudge, the second would send nothing
+     * either, and once a third stop's slack no longer reached back to them,
+     * those rows would never be read at all.
+     */
+    @Test
+    fun theRowsANudgeRevealedAreReadWithTheNextStrip() {
+        val (_, toldFrom) = nudgedTwice(strip, emptyList())
+        assertNotNull("80 unread rows are worth a strip", toldFrom)
+        assertTrue("told from row $toldFrom: both nudges' rows are new", toldFrom!! <= h - 80)
+    }
+
+    /** The same where the nudge's balloon is answered from the cache, as it is whenever memory finds it. */
+    @Test
+    fun aNudgeAnsweredFromTheCacheLeavesItsRowsUnreadToo() {
+        val page = strip.copy(Bitmap.Config.ARGB_8888, true)
+        val c = Canvas(page)
+        // A balloon on the strip holding one line of four seeded glyphs, as
+        // ItemMemoryTest draws them, 500 rows down the first stop's screen.
+        val oval = RectF(120f, 1010f, 420f, 1190f)
+        c.drawOval(oval, Paint(Paint.ANTI_ALIAS_FLAG).apply { color = Color.WHITE })
+        c.drawOval(oval, Paint(Paint.ANTI_ALIAS_FLAG).apply { style = Paint.Style.STROKE; strokeWidth = 4f; color = Color.BLACK })
+        val pen = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            color = Color.BLACK
+            strokeWidth = 3.5f
+            style = Paint.Style.STROKE
+            strokeCap = Paint.Cap.ROUND
+        }
+        "ABCD".forEachIndexed { i, ch ->
+            val rnd = Random(ch.code * 7919)
+            val x = 218f + i * 26
+            repeat(4) { c.drawLine(x + rnd.nextFloat() * 22, 1087f + rnd.nextFloat() * 22, x + rnd.nextFloat() * 22, 1087f + rnd.nextFloat() * 22, pen) }
+        }
+        val line = Rect(214, 483, 326, 517)
+        val answer = JSONObject()
+            .put("box_2d", JSONArray(listOf(line.top * 1000.0 / h, line.left * 1000.0 / w, line.bottom * 1000.0 / h, line.right * 1000.0 / w)))
+            .put("kind", "speech").put("src", "ABCD").put("en", "Why?")
+        val (results, toldFrom) = nudgedTwice(page, listOf(answer))
+        assertEquals(listOf("Why?"), results[0].bubbles.map { it.translated })
+        assertTrue("the nudge was answered from the cache: ${results[1].diag}", results[1].diag.orEmpty().contains("cached"))
+        assertNotNull("80 unread rows are worth a strip", toldFrom)
+        assertTrue("told from row $toldFrom: both nudges' rows are new", toldFrom!! <= h - 80)
     }
 }
