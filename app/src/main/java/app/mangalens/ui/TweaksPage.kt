@@ -87,8 +87,9 @@ internal enum class TweaksTarget { TOP, AI, OTHER_AI, SCROLL }
 
 /**
  * Tweaks, kept to what a reader actually changes: the language, hands-free
- * or tap, the size of the lettering and whether the original may show
- * through it, and whether the AI's key works. That is all the page shows. Everything else —
+ * or tap, auto-scroll and how it goes, the size of the lettering and
+ * whether the original may show through it, and whether the AI's key
+ * works. That is all the page shows. Everything else —
  * timing, data, the thinking setting, the model, other AI providers,
  * diagnostics — has defaults that are right for nearly everyone, and waits
  * folded under More options, where it can be found without being in the
@@ -109,8 +110,8 @@ internal fun TweaksPage(
     onTurnOnSolid: () -> Unit,
     onOpenAppInfo: () -> Unit,
     onClose: () -> Unit,
-    autoScrollOn: Boolean = false,
-    onTurnOnAutoScroll: () -> Unit = {},
+    autoScrollOn: Boolean,
+    onTurnOnAutoScroll: () -> Unit,
 ) {
     val pop = LocalPop.current
     var moreOpen by rememberSaveable { mutableStateOf(target == TweaksTarget.OTHER_AI) }
@@ -293,9 +294,14 @@ private fun AutoScrollSection(
                         color = pop.ink,
                     )
                     Spacer(Modifier.height(2.dp))
+                    // With Scroll button off there is no ▼ to tap: the words
+                    // point to the long-press, as that row below does.
                     Helper(
-                        if (on) "Tap ▼ beside the $MARK bubble and I scroll the page for you, in any app."
-                        else "Only an Accessibility switch lets me move another app's page. Switch on \"MangaLens auto-scroll\"."
+                        when {
+                            !on -> "Only an Accessibility switch lets me move another app's page. Switch on \"MangaLens auto-scroll\"."
+                            settings.autoScrollButton -> "Tap ▼ beside the $MARK bubble and I scroll the page for you, in any app."
+                            else -> "Long-press the $MARK bubble → Auto-scroll the page, in any app."
+                        }
                     )
                 }
             }

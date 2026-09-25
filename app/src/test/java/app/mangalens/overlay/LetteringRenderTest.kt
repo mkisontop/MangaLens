@@ -12,6 +12,7 @@ import java.io.ByteArrayOutputStream
 import java.io.File
 import kotlin.random.Random
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertNotEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -756,6 +757,34 @@ class LetteringRenderTest {
         val out = copy(dirty)
         v2.draw(Canvas(out))
         writePreview("twenty-items.png", out)
+    }
+
+    @Test
+    fun `the same line in a new panel is set again for that panel`() {
+        // At a webtoon stop the card carried from the last stop brings the
+        // old frame's panel, cut off at the bottom of that frame; the stop's
+        // read finds the whole panel. Nothing else about the line differs.
+        val clean = Bitmap.createBitmap(pageW, pageH, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.WHITE) }
+        val box = Rect(200, 300, 520, 360)
+        val dirty = copy(clean)
+        drawLettering(Canvas(dirty), box, vertical = false, fill = letteringInk)
+        val patch = patchFor(clean, dirty, box)
+        fun bubble(panel: Rect) = RenderBubble(
+            box = Rect(box), translated = "We can't stay here any longer. The tide is coming in fast, the boats are already gone, and nobody is coming back for us!",
+            original = "ここにはいられない。潮が満ちてきて、船はもう出てしまった！", bgColor = Color.WHITE, textColor = Color.BLACK,
+            vertical = false, patch = patch, patchRect = Rect(box), panel = panel,
+        )
+        val cut = Rect(120, 280, 600, 364)
+        val whole = Rect(120, 280, 600, 800)
+        fun placed(v: BubbleOverlayView) = v.placements().single().second
+
+        val v = view()
+        v.setBubbles(listOf(bubble(cut)))
+        val inCut = placed(v)
+        v.setBubbles(listOf(bubble(whole)))
+        val fresh = placed(view().apply { setBubbles(listOf(bubble(whole))) })
+        assertNotEquals("the cut panel holds the line to less room", fresh, inCut)
+        assertEquals("the whole panel's layout, not the cut one's", fresh, placed(v))
     }
 
     // ---- hyphenation ----

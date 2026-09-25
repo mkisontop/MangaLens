@@ -164,7 +164,7 @@ internal fun HomeScreen(
     repo: SettingsRepository,
     browserName: String?,
     tweaksRequests: Int,
-    tweaksTarget: TweaksTarget = TweaksTarget.TOP,
+    tweaksTarget: TweaksTarget,
     startRefused: Boolean,
     onStart: () -> Unit,
     onStop: () -> Unit,
@@ -173,7 +173,7 @@ internal fun HomeScreen(
     onOpenBrowser: () -> Unit,
     onTurnOnSolid: () -> Unit,
     onOpenAppInfo: () -> Unit,
-    onTurnOnAutoScroll: () -> Unit = {},
+    onTurnOnAutoScroll: () -> Unit,
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -196,11 +196,14 @@ internal fun HomeScreen(
     val solidOffered = remember { Build.VERSION.SDK_INT >= 31 && LetteringHost.declared(context) }
     val ghostsOffered = remember { OverlayStrength.of(context) < 1f }
     // Solid lettering is switched on in Settings, so it is checked again
-    // each time the reader comes back.
-    var solidLettering by remember { mutableStateOf(LetteringHost.isOn(context)) }
+    // each time the reader comes back. Only where it is offered: a switch
+    // turned on in 1.0.1, the one release that declared the host, can
+    // outlive the service in Accessibility's list, and taken at its word it
+    // would hide "No ghosts" from a reader who cannot have solid lettering.
+    var solidLettering by remember { mutableStateOf(solidOffered && LetteringHost.isOn(context)) }
     var autoScrollOn by remember { mutableStateOf(AutoScrollHost.isOn(context)) }
     LifecycleResumeEffect(Unit) {
-        solidLettering = LetteringHost.isOn(context)
+        solidLettering = solidOffered && LetteringHost.isOn(context)
         autoScrollOn = AutoScrollHost.isOn(context)
         onPauseOrDispose { }
     }
@@ -278,10 +281,12 @@ internal fun HomeContent(
     val reduced = LocalReducedMotion.current
     var page by rememberSaveable { mutableStateOf(Page.HOME) }
     var target by rememberSaveable { mutableStateOf(TweaksTarget.TOP) }
-    var seenRequests by rememberSaveable { mutableIntStateOf(0) }
+    // Runs once for each new count, which is all the marking a request
+    // needs. The count lives in the activity and starts again at 0 when it
+    // is recreated; a mark saved with the page would outlive it and swallow
+    // the first request after a rotation.
     LaunchedEffect(tweaksRequests) {
-        if (tweaksRequests > 0 && tweaksRequests != seenRequests) {
-            seenRequests = tweaksRequests
+        if (tweaksRequests > 0) {
             target = tweaksTarget
             page = Page.TWEAKS
         }

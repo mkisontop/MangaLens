@@ -68,9 +68,9 @@ internal interface SettingsSink {
     fun setNoGhosts(v: Boolean)
     fun setIgnoreTopPct(v: Float)
     fun setStabilityMs(v: Int)
-    fun setAutoScrollButton(v: Boolean) {}
-    fun setScrollLevel(v: Int) {}
-    fun setSmartScroll(v: Boolean) {}
+    fun setAutoScrollButton(v: Boolean)
+    fun setScrollLevel(v: Int)
+    fun setSmartScroll(v: Boolean)
 }
 
 /**

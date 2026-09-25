@@ -47,6 +47,9 @@ class KeyFlowTest {
         override fun setNoGhosts(v: Boolean) = Unit
         override fun setIgnoreTopPct(v: Float) = Unit
         override fun setStabilityMs(v: Int) = Unit
+        override fun setAutoScrollButton(v: Boolean) = Unit
+        override fun setScrollLevel(v: Int) = Unit
+        override fun setSmartScroll(v: Boolean) = Unit
     }
 
     private val key = "test-key-" + "x".repeat(24)

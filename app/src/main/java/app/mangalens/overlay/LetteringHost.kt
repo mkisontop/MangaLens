@@ -58,10 +58,12 @@ object LetteringHost {
 
     /**
      * Whether this build declares [LetteringHostService] at all. The APK
-     * published for download does not: Play Protect's enhanced fraud
-     * protection refuses to install a sideloaded app that declares an
-     * accessibility service, whatever the service does. Without it there
-     * is nothing to switch on, so solid lettering is not offered.
+     * published for download does not. Since 1.0.3 the veil (Tweaks → No
+     * ghosts) keeps the original from showing through without it, and the
+     * release check and LetteringHostTest allow auto-scroll's accessibility
+     * service alone, so a reader has one switch to find in Accessibility,
+     * not two. Without it there is nothing to switch on, so solid lettering
+     * is not offered.
      */
     fun declared(context: Context): Boolean = runCatching {
         @Suppress("DEPRECATION") // The flags overload is API 33+.
@@ -73,6 +75,11 @@ object LetteringHost {
      * in Accessibility, or the system has it connected. The setting alone
      * counts too: the system connects a switched-on service a moment after
      * the switch flips, and the reader may be back before it has.
+     *
+     * The setting can also name the service in a build that no longer
+     * declares it: Android 12 to 14 before QPR3 keep a switched-on service
+     * in the list across an update that drops it, so a switch turned on in
+     * 1.0.1 may still be there. Ask [declared] first.
      */
     fun isOn(context: Context): Boolean =
         windowManager != null || switchedOn(
