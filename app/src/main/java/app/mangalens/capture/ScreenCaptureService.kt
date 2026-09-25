@@ -685,6 +685,9 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         controller?.bubbleView?.let { v -> v.onVeilChanged = { screenLevel = v.screenLevel } }
         updateVeil()
         refreshOverlayMask()
+        // The session starts unattributed before anything reads ahead with
+        // the glossary, the cast or the story so far.
+        works.startNewWork()
         running.value = true
         startTicker()
         setPill(
@@ -1170,6 +1173,9 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         val thumb = FrameStability.grayThumbOf(bmp)
         val p = Prepared(bmp, thumb)
         val current = settings
+        // A long enough break ends the work before the read ahead takes
+        // that work's memory with it.
+        works.beginPass(System.currentTimeMillis())
         p.job = scope.async(Dispatchers.Default) {
             // Encoding the page for the model and reading it on-device need
             // nothing from each other: the request is prepared and sent
@@ -1760,6 +1766,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         translateJob?.cancel()
         discardPrepared()
         scope.cancel()
+        ocr.close()
         runCatching { virtualDisplay?.release() }
         virtualDisplay = null
         // Releasing the display stops new frames, not the copy of one the

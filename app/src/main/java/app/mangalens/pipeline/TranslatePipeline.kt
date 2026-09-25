@@ -876,6 +876,7 @@ class TranslatePipeline(
                     resolver.erasureOf(item)?.takeIf { !it.flat && it.busy >= BUSY_FOR_AI }?.let { item to it }
                 }
                 .sortedByDescending { it.second.busy }
+                .take(AiCleaner.MAX_REGIONS)
         }
         if (targets.isNotEmpty()) {
             onPartial?.invoke(PageResult(rendered, reader.label, "cleaning art…"))

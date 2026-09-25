@@ -289,7 +289,7 @@ internal class AutoScroller(
                 if (same && dragged > 0f && (!featureless || now - stillSince >= BLANK_STUCK_MS)) {
                     scroller.stop()
                     awaitLifted()
-                    stop("that's the end of the page · tap ▼ to scroll again")
+                    stop("that's the end of the page")
                     return
                 }
                 if (!same || !featureless) {
@@ -340,7 +340,7 @@ internal class AutoScroller(
         if (unchanged(from, fromMask, thumb)) {
             unmovedMs += stoppedAt - startedAt
             if (!ScrollPace.blank(thumb, FrameStability.SIZE, 0f, 1f, page.mask()) || unmovedMs >= BLANK_STUCK_MS) {
-                stop("that's the end of the page · tap ▼ to scroll again")
+                stop("that's the end of the page")
                 return
             }
         } else {
