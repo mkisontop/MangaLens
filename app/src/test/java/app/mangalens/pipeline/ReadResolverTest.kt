@@ -347,6 +347,42 @@ class ReadResolverTest {
         assertTrue("lettered in its balloon, not over the face", out.single().balloon === balloon)
     }
 
+    /**
+     * The model's box slid down its own column: over the last two glyphs
+     * in the balloon and on out over a brick wall below. Clean lettering
+     * on paper where the box says, it was erased on its own there, the
+     * wall scuffed with it, and the four glyphs above left standing over
+     * the English. The box holds some of the balloon's lettering, and the
+     * balloon is the line's.
+     */
+    @Test
+    fun aBoxThatSlidDownOutOfItsBalloonStillCleansTheBalloon() {
+        val oval = Rect(300, 300, 500, 700)
+        val balloon = detection(oval, oval)
+        val bmp = Bitmap.createBitmap(800, 1400, Bitmap.Config.ARGB_8888)
+        val c = Canvas(bmp)
+        c.drawColor(Color.WHITE)
+        val edge = android.graphics.Paint(android.graphics.Paint.ANTI_ALIAS_FLAG).apply {
+            style = android.graphics.Paint.Style.STROKE; strokeWidth = 5f; color = Color.BLACK
+        }
+        c.drawOval(android.graphics.RectF(oval), edge)
+        val ink = android.graphics.Paint().apply { color = Color.BLACK }
+        // Six glyphs of three strokes each down the balloon's middle.
+        for (g in 0 until 6) for (k in 0 until 3) {
+            val y = 350f + g * 50 + k * 12
+            c.drawRect(385f, y, 415f, y + 4, ink)
+        }
+        // The wall below: courses of brick.
+        for (row in 0 until 5) {
+            val y = 730f + row * 40
+            c.drawRect(250f, y, 550f, y + 2, ink)
+            for (x in 0 until 4) c.drawRect(260f + x * 80 + (row % 2) * 40, y, 262f + x * 80 + (row % 2) * 40, y + 40, ink)
+        }
+        val line = PageItem(Rect(380, 560, 420, 830), ItemKind.SPEECH, "真不可思議啊", "It's really bizarre.", vertical = true)
+        val out = ReadResolver(bmp, listOf(balloon), emptyList(), 0, 0, emptyList()).resolve(listOf(line))
+        assertTrue("the whole balloon is cleaned and lettered", out.single().balloon === balloon)
+    }
+
     @Test
     fun cleanLetteringWhereTheBoxSaysKeepsItThere() {
         // Plain paper with the line drawn right where the box is, and a

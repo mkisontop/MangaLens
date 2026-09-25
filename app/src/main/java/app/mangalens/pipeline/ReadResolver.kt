@@ -411,6 +411,20 @@ internal class ReadResolver(
                 kotlin.math.hypot((b.box.exactCenterX() - box.exactCenterX()).toDouble(), (b.box.exactCenterY() - box.exactCenterY()).toDouble()) <= reach
         }
         if (near.isEmpty()) return null
+        val blocks = near.mapNotNull { b -> BalloonTrust.letteringBlock(bitmap, b)?.let { b to it } }
+        // A box that slid along its own column, from the last glyphs of a
+        // balloon no line claims on out over the art, holds some of that
+        // balloon's lettering: the line is that balloon's however little of
+        // the box is left inside it. Taken for lettering on the art, the
+        // glyphs it covered were erased, the art beyond with them, and the
+        // rest of the column left standing over the English.
+        blocks
+            .filter { (_, block) -> Rect.intersects(block, box) }
+            .maxByOrNull { (_, block) -> overlapArea(block, box) }
+            ?.let { (b, block) ->
+                drift[b] = block
+                return b
+            }
         val here = if (erasures.containsKey(item)) erasures[item] else {
             runCatching { TextEraser.erase(bitmap, item.box, item.kind, item.textColor, item.outlineColor) }
                 .getOrNull().also { erasures[item] = it }
@@ -424,8 +438,7 @@ internal class ReadResolver(
         // The nearest, counting lettering of another size as further off:
         // a box drifts with its line's size, and when a whole panel's boxes
         // slid, the balloon nearest a line's box can be its neighbour's.
-        val found = near
-            .mapNotNull { b -> BalloonTrust.letteringBlock(bitmap, b)?.let { b to it } }
+        val found = blocks
             .minByOrNull { (b, block) ->
                 kotlin.math.hypot((b.box.exactCenterX() - box.exactCenterX()).toDouble(), (b.box.exactCenterY() - box.exactCenterY()).toDouble()) *
                     kotlin.math.exp(sizeGap(block, box))
@@ -434,6 +447,13 @@ internal class ReadResolver(
         if (clean && sizeGap(found.second, box) > SAME_SIZE) return null
         drift[found.first] = found.second
         return found.first
+    }
+
+    /** Area [a] and [b] share. */
+    private fun overlapArea(a: Rect, b: Rect): Long {
+        val ix = minOf(a.right, b.right) - maxOf(a.left, b.left)
+        val iy = minOf(a.bottom, b.bottom) - maxOf(a.top, b.top)
+        return if (ix <= 0 || iy <= 0) 0L else ix.toLong() * iy
     }
 
     /** Characters in [item]'s source: what a line of its lettering is made of. */
