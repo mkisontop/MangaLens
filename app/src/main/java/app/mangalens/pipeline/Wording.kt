@@ -20,16 +20,17 @@ internal object Wording {
      * fresh item — copying it across would say a line twice or drop half
      * of it — so the fresh reading stands whole. A recalled item no fresh
      * item touches is lettering the model passed over this time, and is
-     * kept as it was.
+     * kept as it was. A [partial] recalled item — one the screen's edge
+     * cut when it was read — never keeps its wording over a fresh one.
      */
-    fun keep(recalled: List<PageItem>, fresh: List<PageItem>): List<PageItem> {
+    fun keep(recalled: List<PageItem>, fresh: List<PageItem>, partial: Set<PageItem> = emptySet()): List<PageItem> {
         if (recalled.isEmpty()) return fresh
         val touches = recalled.map { r -> fresh.indices.filter { onSameLettering(r.box, fresh[it].box) } }
         val out = ArrayList<PageItem>(fresh.size + recalled.size)
         for ((k, f) in fresh.withIndex()) {
             val by = recalled.indices.filter { k in touches[it] }
             val r = by.singleOrNull()?.let { recalled[it] }
-            if (r != null && touches[by[0]].size == 1 && sameLettering(r.box, f.box) && sameWords(r.src, f.src)) {
+            if (r != null && r !in partial && touches[by[0]].size == 1 && sameLettering(r.box, f.box) && sameWords(r.src, f.src) && !sawMore(r, f)) {
                 out.add(f.copy(en = r.en, who = r.who.ifBlank { f.who }))
             } else {
                 out.add(f)
@@ -38,6 +39,17 @@ internal object Wording {
         for (i in recalled.indices) if (touches[i].isEmpty()) out.add(recalled[i])
         return out
     }
+
+    /**
+     * The fresh reading saw more of the line than the recalled one did:
+     * more characters, over a box a tenth taller or more. The screen's edge cut
+     * the line when it was first read, and its English says only the part
+     * that showed ("a part-time job..." for 打工 of 打工？); kept, the line
+     * would stay a fragment however much of it the reader can now see.
+     */
+    private fun sawMore(recalled: PageItem, fresh: PageItem): Boolean =
+        fresh.src.count { !it.isWhitespace() } > recalled.src.count { !it.isWhitespace() } &&
+            fresh.box.height() > recalled.box.height() * TALLER
 
     private fun sameLettering(a: Rect, b: Rect): Boolean =
         iou(a, b) > 0.45f || (a.contains(b.centerX(), b.centerY()) && b.contains(a.centerX(), a.centerY()))
@@ -89,4 +101,7 @@ internal object Wording {
 
     /** Share of the longer transcription two readings of one line have in common. */
     private const val SAME_WORDS = 0.6f
+
+    /** How much taller a fresh box must be for its reading to be of more of the line. */
+    private const val TALLER = 1.1f
 }

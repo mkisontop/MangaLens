@@ -189,6 +189,37 @@ class ScrollMatchTest {
         assertEquals("without a memory of it, the half is all there is", 2, read.trim(listOf(half, below), emptyList()).size)
     }
 
+    /**
+     * A line the last stop's bottom edge cut was read only as far as it
+     * showed. The next strip tells the model its rows are new as well, so
+     * it is read whole rather than left to memory's fragment.
+     */
+    @Test
+    fun aLineTheLastStopsEdgeCutIsReadAgainWhole() {
+        val h = 2000
+        val strip = Rect(0, 634, 1250, 2000)
+        val revealed = Rect(0, 1134, 1250, 2000)
+        val whole = PageItem(Rect(100, 1500, 200, 1700), ItemKind.SPEECH, "嗯", "Yeah.")
+        val cut = PageItem(Rect(610, 1770, 700, 2000), ItemKind.SPEECH, "我們家的陽斗\n隨時可以過去接", "Haruto can pick you up anytime,")
+        assertEquals("the revealed rows and a little slack", 1054 to 2000, StripRead.told(h, 866, strip, revealed, 80, listOf(whole), 0, 0))
+        assertEquals("back over the cut line, now 866 rows higher", 904 to 2000, StripRead.told(h, 866, strip, revealed, 80, listOf(whole, cut), 0, 0))
+        // Scrolled back up: the line the top edge cut, now 600 rows lower.
+        val topCut = PageItem(Rect(300, 0, 380, 150), ItemKind.SPEECH, "なに", "What?")
+        assertEquals(0 to 750, StripRead.told(h, -600, Rect(0, 0, 1250, 1100), Rect(0, 0, 1250, 600), 80, listOf(topCut), 0, 0))
+    }
+
+    @Test
+    fun theLinesTheLastStopsEdgeCutAreKnownWhenRecalled() {
+        val cutThen = PageItem(Rect(610, 1770, 700, 2000), ItemKind.SPEECH, "我們家的陽斗\n隨時可以過去接", "Haruto can pick you up anytime,")
+        val wholeThen = PageItem(Rect(100, 1500, 200, 1700), ItemKind.SPEECH, "嗯", "Yeah.")
+        val match = ScrollMatch.of(screen(900))
+        val read = StripRead(null, Rect(0, 634, 1250, 2000), 866, Seen(match, listOf(cutThen, wholeThen)), match)
+        // Recalled where the scroll put them.
+        val cutNow = cutThen.copy(box = Rect(610, 904, 700, 1134))
+        val wholeNow = wholeThen.copy(box = Rect(100, 634, 200, 834))
+        assertEquals(setOf(cutNow), read.cutByEdge(listOf(cutNow, wholeNow), 2000, 0, 0))
+    }
+
     @Test
     fun aNudgeThatRevealedNothingSendsNothing() = runBlocking {
         val match = ScrollMatch.of(screen(900))

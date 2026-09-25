@@ -90,6 +90,22 @@ internal class StripRead(
         }
 
     /**
+     * Of [recalled], the lines the last stop's edge (or the band ignored
+     * there) cut: read only as far as they showed, they are told to the
+     * model again ([told]) and keep no wording over its reading of them
+     * whole — however little taller that reading is, when the edge cut
+     * only a balloon's last column.
+     */
+    fun cutByEdge(recalled: List<PageItem>, height: Int, ignoreTop: Int, ignoreBottom: Int): Set<PageItem> {
+        if (scrolled == 0) return emptySet()
+        val cut = since.items
+            .filter { old -> if (scrolled > 0) old.box.bottom >= height - ignoreBottom - CUT_BY_EDGE_PX else old.box.top <= ignoreTop + CUT_BY_EDGE_PX }
+            .map { Rect(it.box).apply { offset(0, -scrolled) } }
+        if (cut.isEmpty()) return emptySet()
+        return recalled.filterTo(HashSet()) { r -> cut.any { sameSpot(it, r.box) } }
+    }
+
+    /**
      * The strip's answers, less any the strip's own edge cut in two: a
      * balloon straddling the edge towards what was read before is half on
      * the strip, and the model reads the half it was shown. Where memory
@@ -105,11 +121,42 @@ internal class StripRead(
         }
     }
 
-    private companion object {
+    companion object {
         /** An answer's box this close to the strip's cut edge was cut by it. */
-        const val EDGE_PX = 6
+        private const val EDGE_PX = 6
 
-        fun sameSpot(a: Rect, b: Rect): Boolean {
+        /** A line's box this close to the edge of what the last stop could read ran on past it. */
+        private const val CUT_BY_EDGE_PX = 8
+
+        /**
+         * The rows, top and bottom on a frame [h] rows tall, the model is
+         * told are new: the [revealed] rows, reaching [slack] into the
+         * [strip]'s margin, and back over every line of [since] the last
+         * stop's edge (or the band ignored there) cut. Such a line was read
+         * only as far as it showed — 打工 of 打工？ — and told nothing, the
+         * model left it to memory, which letters the fragment for good.
+         * [scrolled] moves [since]'s boxes onto this frame.
+         */
+        internal fun told(
+            h: Int,
+            scrolled: Int,
+            strip: Rect,
+            revealed: Rect,
+            slack: Int,
+            since: List<PageItem>,
+            ignoreTop: Int,
+            ignoreBottom: Int,
+        ): Pair<Int, Int> = if (scrolled > 0) {
+            var top = revealed.top - slack
+            for (old in since) if (old.box.bottom >= h - ignoreBottom - CUT_BY_EDGE_PX) top = minOf(top, old.box.top - scrolled)
+            top.coerceAtLeast(strip.top) to strip.bottom
+        } else {
+            var bottom = revealed.bottom + slack
+            for (old in since) if (old.box.top <= ignoreTop + CUT_BY_EDGE_PX) bottom = maxOf(bottom, old.box.bottom - scrolled)
+            strip.top to bottom.coerceAtMost(strip.bottom)
+        }
+
+        private fun sameSpot(a: Rect, b: Rect): Boolean {
             val r = Rect()
             if (!r.setIntersect(a, b)) return false
             val smaller = minOf(a.width().toLong() * a.height(), b.width().toLong() * b.height()).coerceAtLeast(1L)

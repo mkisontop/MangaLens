@@ -234,12 +234,10 @@ class TranslatePipeline(
         // into the margin, so a line that reaches them at all is its to read
         // however loosely it boxes it.
         val revealedRows = if (d > 0) Rect(0, h - revealed, bitmap.width, h) else Rect(0, 0, bitmap.width, revealed)
-        val slack = (h * UNREAD_SLACK).toInt()
-        val told = if (d > 0) {
-            (revealedRows.top - slack).coerceAtLeast(strip.top) to strip.bottom
-        } else {
-            strip.top to (revealedRows.bottom + slack).coerceAtMost(strip.bottom)
-        }
+        val told = StripRead.told(
+            h, d, strip, revealedRows, (h * UNREAD_SLACK).toInt(), last.items,
+            (h * settings.ignoreTopPct).toInt(), (h * settings.ignoreBottomPct).toInt(),
+        )
         val unread = intArrayOf(
             (told.first - strip.top) * 1000 / strip.height(),
             (told.second - strip.top) * 1000 / strip.height(),
@@ -767,9 +765,15 @@ class TranslatePipeline(
         // A strip read's answers, less the halves of balloons its edge cut.
         fun fresh(items: List<PageItem>): List<PageItem> = (read as? StripRead)?.trim(items, remembered) ?: items
 
+        // Lines the last stop's edge cut were read only as far as they
+        // showed; recalled, they keep no wording over this stop's reading
+        // of them whole.
+        val partial = (read as? StripRead)?.cutByEdge(remembered, bitmap.height, analysis.ignoreTop, analysis.ignoreBottom).orEmpty()
+        fun keep(items: List<PageItem>): List<PageItem> = Wording.keep(remembered, items, partial)
+
         suspend fun paint() {
             val emit = onPartial ?: return
-            val shown = resolver.resolve(Wording.keep(remembered, fresh(streamed)))
+            val shown = resolver.resolve(keep(fresh(streamed)))
             if (shown.isNotEmpty()) emit(PageResult(shown, reader.label, null))
         }
 
@@ -804,7 +808,7 @@ class TranslatePipeline(
             // rather than waiting for the model to read it again. The
             // collector has stopped: nothing adds to the list any more.
             val shown = ArrayList(streamed)
-            if (shown.isNotEmpty()) runCatching { memory.remember(bitmap, Wording.keep(remembered, fresh(shown))) }
+            if (shown.isNotEmpty()) runCatching { memory.remember(bitmap, keep(fresh(shown))) }
             throw e
         } catch (e: Exception) {
             failure = e
@@ -818,7 +822,7 @@ class TranslatePipeline(
             // knows why lettering stays raw rather than seeing some other
             // translation in the AI's place.
             val lined = withLines()
-            val partial = resolver.resolve(Wording.keep(remembered, streamed))
+            val partialShown = resolver.resolve(keep(streamed))
             val text = try {
                 aiTextTranslate(bitmap, lined.bubbles, lined.ocr.lang, settings, lined.detected)
             } catch (e: CancellationException) {
@@ -826,7 +830,7 @@ class TranslatePipeline(
             } catch (_: Exception) {
                 null
             }
-            val shown = if (text == null) partial else UpgradeMerge.merge(text.bubbles, partial)
+            val shown = if (text == null) partialShown else UpgradeMerge.merge(text.bubbles, partialShown)
             val cause = failure?.let(AiFailure::cause) ?: "unexpected error"
             return@coroutineScope PageResult(
                 shown, reader.label, "AI read failed: $cause",
@@ -842,7 +846,7 @@ class TranslatePipeline(
         val lined = withLines()
         val gap = gapItems(lined.bubbles, lined.detected, answered + remembered, lined.ocr.lang, settings)
         val complete = answered + gap.items
-        val finalItems = Wording.keep(remembered, complete)
+        val finalItems = keep(complete)
         // What is stored is what the reader sees, so the next stop and a
         // scroll-back say it in the same words. A reply that broke off is
         // shown, and remembered line by line, but never kept as the page's
