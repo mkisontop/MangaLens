@@ -1,8 +1,12 @@
 # Changelog
 
-## Unreleased
+## 1.0.7
 
 A full review of the app, with every finding checked and fixed.
+
+**Download:** `MangaLens.apk` below updates 0.9.2 and newer in place.
+Installing still needs Play Protect's scanning switched off for a moment
+(auto-scroll's Accessibility switch is what it blocks); see the README.
 
 - **Auto-scroll**
   - Translation no longer starts on a page that is still gliding slowly,
