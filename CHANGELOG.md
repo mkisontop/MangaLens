@@ -35,6 +35,8 @@ A full review of the app, with every finding checked and fixed.
   - Art text is no longer wiped flat because a line once drifted into it.
   - The AI clean-up sends at most eight regions and paints none of its
     lettering back, and skips the request when no image model is left.
+  - Two balloons drawn joined each get their own line of English again,
+    instead of one block running across the outline between them.
 - **Reading the page on the phone**
   - Two joined balloons cut by the screen's edge are treated as cut.
   - Korean lines ending in 야 or 라 are no longer run into the next
