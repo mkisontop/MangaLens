@@ -101,9 +101,11 @@ an accessibility service may move another app's page. Where Play Protect's
 enhanced fraud protection is on, Android refuses to install an app from a
 browser or file manager that declares one ("App blocked to protect your
 device"), whatever the service does — 1.0.1 hit the same wall. If that
-happens, switch enhanced fraud protection off in Play Protect's settings for
-the install, and back on afterwards. MangaLens asks for nothing else of that
-kind: no notification access, no SMS.
+happens: Play Store → your profile picture → **Play Protect** → ⚙ → switch
+off **Scan apps with Play Protect** (and **enhanced fraud protection**, where
+your phone shows it), open the APK again to install, then switch scanning
+back on. MangaLens stays installed; each update needs the same. MangaLens
+asks for nothing else of that kind: no notification access, no SMS.
 
 ### No ghosts
 
