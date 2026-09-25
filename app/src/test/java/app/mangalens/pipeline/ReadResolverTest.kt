@@ -215,6 +215,32 @@ class ReadResolverTest {
         assertTrue("lettered in the balloon it came from", out[0].balloon === balloon)
     }
 
+    /**
+     * A line drifts into a balloon holding two columns of lettering; the
+     * next item streamed in is a sign on one column, and takes the balloon
+     * from it. The line's put-back must not vouch for the balloon now: the
+     * page re-resolved one item longer comes out as it does resolved whole,
+     * as it is on a scroll-back.
+     */
+    @Test
+    fun aBalloonALineHasLeftIsJudgedAsIfItNeverDriftedThere() {
+        val oval = Rect(300, 500, 500, 820)
+        val balloon = detection(oval, oval)
+        val page = artWithBalloon(oval, empty = true)
+        val ink = android.graphics.Paint().apply { color = Color.BLACK }
+        for (x in listOf(340f, 430f)) for (k in 0 until 4) Canvas(page).drawRect(x, 560f + k * 50, x + 30, 595f + k * 50, ink)
+        val line = PageItem(Rect(370, 300, 430, 470), ItemKind.SPEECH, "違うって、それ！", "No, that's not it!", vertical = true)
+        val sign = PageItem(Rect(335, 555, 375, 750), ItemKind.ART_TEXT, "営業中", "Open", vertical = true)
+
+        val live = ReadResolver(page, listOf(balloon), emptyList(), 0, 0, emptyList())
+        assertTrue("the line went back to the balloon", live.resolve(listOf(line)).single().balloon === balloon)
+        val streamed = live.resolve(listOf(line, sign)).single { it.translated == sign.en }
+        val whole = ReadResolver(page, listOf(balloon), emptyList(), 0, 0, emptyList())
+            .resolve(listOf(line, sign)).single { it.translated == sign.en }
+        assertTrue("the sign's balloon, resolved whole, is not trusted", whole.balloon == null)
+        assertTrue("streamed in, the sign's balloon is judged the same", streamed.balloon === whole.balloon)
+    }
+
     @Test
     fun anEmptyBalloonNearbyDoesNotClaimALine() {
         val oval = Rect(300, 500, 500, 820)

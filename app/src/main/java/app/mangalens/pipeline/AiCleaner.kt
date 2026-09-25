@@ -13,8 +13,6 @@ import app.mangalens.translate.GeminiApi
 import app.mangalens.translate.GeminiBlocked
 import app.mangalens.translate.GeminiModelMissing
 import java.io.ByteArrayOutputStream
-import kotlin.math.abs
-import kotlin.math.max
 import kotlin.math.roundToInt
 import kotlinx.coroutines.CancellationException
 import org.json.JSONArray
@@ -66,9 +64,15 @@ class AiCleaner internal constructor(
      * art around it — has been redrawn by the image model without its
      * lettering, or null when the model failed, declined or is resting.
      * Everything outside the regions is the page's own pixels.
+     *
+     * Every region given is sent: the caller keeps to [MAX_REGIONS], the
+     * busiest first, and refines only those. A region left out here and
+     * refined anyway, its erasure half inside a neighbour's crop, passed
+     * [refine] and painted its own lettering back where the crop ended.
      */
     suspend fun cleanRegions(page: Bitmap, regions: List<Rect>): Bitmap? {
         if (resting()) return null
+        val model = model() ?: return null
         val plan = plan(page.width, page.height, regions) ?: return null
         var collage: Bitmap? = null
         return try {
@@ -78,9 +82,6 @@ class AiCleaner internal constructor(
                 for (crop in plan.crops) canvas.drawBitmap(page, crop.src, crop.dst, FILTER)
             }
             val body = request(encode(collage))
-            // A model Google has said is gone is not asked again: the
-            // answer would not change, and every page would wait for it.
-            val model = if (GeminiApi.isMissing(MODEL)) FALLBACK_MODEL else MODEL
             val reply = try {
                 transport.generate(model, body)
             } catch (e: GeminiModelMissing) {
@@ -159,8 +160,8 @@ class AiCleaner internal constructor(
         /** White gutter between crops in the collage. */
         private const val GUTTER = 24
 
-        /** Most regions sent in one collage; the busiest come first. */
-        private const val MAX_REGIONS = 8
+        /** Most regions to send in one collage, the busiest first; the caller keeps to it. */
+        internal const val MAX_REGIONS = 8
 
         /** Longest side of the collage; larger ones are scaled down to it. */
         private const val MAX_COLLAGE = 1280
@@ -204,7 +205,7 @@ class AiCleaner internal constructor(
          */
         internal fun plan(pageW: Int, pageH: Int, regions: List<Rect>): Plan? {
             val grown = ArrayList<Rect>()
-            for (r in regions.take(MAX_REGIONS)) {
+            for (r in regions) {
                 val m = margin(r)
                 val g = Rect(
                     (r.left - m).coerceAtLeast(0), (r.top - m).coerceAtLeast(0),
@@ -273,9 +274,17 @@ This image is a collage of separate crops cut from one comic page, laid out on a
 Change nothing else. Every crop stays exactly where it is, at the same size, with the same art, line weight and colours; balloon and box outlines stay as drawn, only empty; the white background stays white. Do not add, remove, move or restyle anything.
 """.trim()
 
-        /** Whether AI clean-up is available and switched on. */
+        /**
+         * The image model to ask: the newest one Google has not said is
+         * gone, or null when both are. A model that is gone is not asked
+         * again: the answer would not change, and every page would wait for it.
+         */
+        private fun model(): String? = listOf(MODEL, FALLBACK_MODEL).firstOrNull { !GeminiApi.isMissing(it) }
+
+        /** Whether AI clean-up is available, with an image model left to ask, and switched on. */
         fun supports(settings: AppSettings): Boolean =
-            settings.provider == LlmProvider.GEMINI && settings.aiCleanup && settings.apiKey.isNotBlank() && !resting()
+            settings.provider == LlmProvider.GEMINI && settings.aiCleanup && settings.apiKey.isNotBlank() && !resting() &&
+                model() != null
 
         /**
          * [erasure] with its reconstructed pixels taken from [cleaned] — but
@@ -296,10 +305,12 @@ Change nothing else. Every crop stays exactly where it is, at the same size, wit
             page.getPixels(orig, 0, w, r.left, r.top, w, h)
             cleaned.getPixels(redraw, 0, w, r.left, r.top, w, h)
             val mask = erasure.mask
-            val ring = ring(mask, w, h, RING)
+            // Cells within [RING] of the mask (Chebyshev) but outside it.
+            val grown = TextEraser.dilate(mask, w, h, RING)
+            val ring = BooleanArray(w * h) { grown[it] && !mask[it] }
 
             val ringDist = ArrayList<Int>()
-            for (i in 0 until w * h) if (ring[i]) ringDist.add(distance(orig[i], redraw[i]))
+            for (i in 0 until w * h) if (ring[i]) ringDist.add(TextEraser.dist(orig[i], redraw[i]))
             if (ringDist.size < 12) return null
             ringDist.sort()
             val median = ringDist[ringDist.size / 2]
@@ -311,7 +322,7 @@ Change nothing else. Every crop stays exactly where it is, at the same size, wit
             for (i in 0 until w * h) {
                 if (!mask[i]) continue
                 masked++
-                if (distance(orig[i], redraw[i]) < 20) unchanged++
+                if (TextEraser.dist(orig[i], redraw[i]) < 20) unchanged++
             }
             if (masked == 0 || unchanged > masked * MAX_UNCHANGED) return null
 
@@ -328,44 +339,6 @@ Change nothing else. Every crop stays exactly where it is, at the same size, wit
                 outlineColor = erasure.outlineColor,
                 busy = 0f,
             )
-        }
-
-        /** Largest per-channel difference between two colours. */
-        private fun distance(a: Int, b: Int): Int = max(
-            abs((a shr 16 and 0xFF) - (b shr 16 and 0xFF)),
-            max(abs((a shr 8 and 0xFF) - (b shr 8 and 0xFF)), abs((a and 0xFF) - (b and 0xFF))),
-        )
-
-        /** Cells within [radius] (Chebyshev) of the mask but outside it. */
-        private fun ring(mask: BooleanArray, w: Int, h: Int, radius: Int): BooleanArray {
-            // Two passes of a separable max filter: rows, then columns.
-            val rows = BooleanArray(w * h)
-            for (y in 0 until h) {
-                var last = -radius - 1
-                for (x in 0 until w) {
-                    if (mask[y * w + x]) last = x
-                    if (x - last <= radius) rows[y * w + x] = true
-                }
-                last = w + radius + 1
-                for (x in w - 1 downTo 0) {
-                    if (mask[y * w + x]) last = x
-                    if (last - x <= radius) rows[y * w + x] = true
-                }
-            }
-            val grown = BooleanArray(w * h)
-            for (x in 0 until w) {
-                var last = -radius - 1
-                for (y in 0 until h) {
-                    if (rows[y * w + x]) last = y
-                    if (y - last <= radius) grown[y * w + x] = true
-                }
-                last = h + radius + 1
-                for (y in h - 1 downTo 0) {
-                    if (rows[y * w + x]) last = y
-                    if (last - y <= radius) grown[y * w + x] = true
-                }
-            }
-            return BooleanArray(w * h) { grown[it] && !mask[it] }
         }
 
         private fun encode(collage: Bitmap): String {

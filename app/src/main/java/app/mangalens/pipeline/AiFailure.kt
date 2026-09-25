@@ -41,6 +41,11 @@ internal object AiFailure {
      * The provider turned the key itself away — wrong, revoked or not
      * allowed this API — as opposed to a busy server or a declined page.
      * Every page will fail the same way until the reader fixes it.
+     *
+     * A 403 alone is not the key: OpenRouter answers it for a page its
+     * moderation flagged, OpenAI for a country it does not serve, and the
+     * key works for the next page. Only a 403 that names the key's own
+     * permissions counts, as with Gemini.
      */
     fun keyRejected(e: Throwable): Boolean {
         if (e is GeminiModelMissing) return false
@@ -49,8 +54,8 @@ internal object AiFailure {
             return e.code == 401 || (e.code == 403 && "PERMISSION_DENIED" in m) ||
                 (e.code == 400 && ("API_KEY_INVALID" in m || "API key not valid" in m || "API key expired" in m))
         }
-        val code = statusOf(e)
-        return code == 401 || code == 403
+        val code = statusOf(e) ?: return false
+        return code == 401 || (code == 403 && "permission_error" in e.message.orEmpty())
     }
 
     private fun statusOf(e: Throwable): Int? =

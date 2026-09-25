@@ -153,6 +153,15 @@ class AiCleanerTest {
     }
 
     @Test
+    fun everyRegionGivenIsSent() {
+        // More regions than one collage is meant to hold: the caller keeps to
+        // the cap, so none may be dropped here while the caller refines it.
+        val regions = (0..AiCleaner.MAX_REGIONS).map { k -> Rect(100, 100 + 250 * k, 200, 140 + 250 * k) }
+        val plan = AiCleaner.plan(1080, 2400, regions)!!
+        for (r in regions) assertTrue("$r not sent", plan.crops.any { it.src.contains(r) })
+    }
+
+    @Test
     fun theRedrawLandsOnlyWhereTheRegionsAre() = runBlocking {
         val page = art()
         // A model that returns its collage at half size, every crop whitened.
@@ -270,6 +279,27 @@ class AiCleanerTest {
             assertNotNull(cleaner.cleanRegions(art(), listOf(rect)))
             val asked = server.exchanges.map { it.target.substringAfterLast('/').substringBefore(':') }
             assertEquals(listOf(AiCleaner.MODEL, AiCleaner.FALLBACK_MODEL, AiCleaner.FALLBACK_MODEL), asked)
+        } finally {
+            server.close()
+            GeminiApi.base = GeminiApi.BASE
+        }
+    }
+
+    @Test
+    fun withBothImageModelsRetiredNeitherIsAskedAgain() = runBlocking {
+        val server = FakeHttpServer { ex ->
+            ex.respond(404, "{\"error\":{\"code\":404,\"message\":\"model is not found\"}}")
+        }
+        GeminiApi.base = server.base
+        try {
+            val cleaner = AiCleaner(settings)
+            assertNull(cleaner.cleanRegions(art(), listOf(rect)))
+            // Both gone: the clean-up is not offered, and a page that asks
+            // anyway does not wait on a round trip whose answer is known.
+            assertFalse(AiCleaner.supports(settings))
+            assertNull(cleaner.cleanRegions(art(), listOf(rect)))
+            val asked = server.exchanges.map { it.target.substringAfterLast('/').substringBefore(':') }
+            assertEquals(listOf(AiCleaner.MODEL, AiCleaner.FALLBACK_MODEL), asked)
         } finally {
             server.close()
             GeminiApi.base = GeminiApi.BASE

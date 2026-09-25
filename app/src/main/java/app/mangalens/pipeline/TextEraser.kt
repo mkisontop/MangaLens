@@ -260,15 +260,14 @@ object TextEraser {
 
         val scene = Scene(px, chan, reg, background, ringShare)
         val grow = if (min(reg.boxR - reg.boxL, reg.boxB - reg.boxT) >= 20 || sfx) 2 else 1
-        var flat = true
         val strokes = (if (flatShare < FLAT_SHARE) null else {
             scene.onPaper(fit, percentile(resHist, ringCount, 0.9f), outlineColor, robustTexture)
         })
             ?: scene.onInnerPaper(outlineColor, texture)
-            ?: scene.onArt(textColor, outlineColor, grow, texture).also { flat = false }
+            ?: scene.onArt(textColor, outlineColor, grow, texture)
             ?: scene.onInk(textColor, grow)
             ?: return null
-        if (!strokes.exact) flat = false
+        val flat = strokes.exact
         if (strokes.tone > 0) retoned(chan, strokes, zone, w, h)?.let { (wide, out) ->
             return Cleaned(out, wide, true, background, strokes.fill or OPAQUE, strokes.outline?.or(OPAQUE), strokes.busy)
         }
@@ -297,7 +296,13 @@ object TextEraser {
         val tone: Int = 0,
         /** On a screentone, the pixels that are not tone: strokes and art the tone may not be copied from. */
         val untoned: BooleanArray? = null,
-        /** Rebuilt from paper, and so exactly; false where art was guessed at. */
+        /** On a screentone, the art that is not its dots — a panel border, a figure's outline — which stays. */
+        val lines: BooleanArray? = null,
+        /**
+         * Rebuilt from paper, and so exactly: lettering found on paper, the
+         * ring's or the box's own. False where art was guessed at — found by
+         * colour or by weight on the art, or taken with its halo.
+         */
         val exact: Boolean = true,
     )
 
@@ -308,6 +313,8 @@ object TextEraser {
      * period to take the halo, and all of it is filled with the tone's own
      * lattice — or, for a hand-stippled or generated tone that keeps no
      * strict lattice, with dots copied whole spacings away along the axes.
+     * Art that is not the tone's dots stays out of the widening: a panel
+     * border a few pixels off a glyph was cut through and filled with dots.
      */
     private fun retoned(chan: FloatArray, strokes: Strokes, zone: ByteArray, w: Int, h: Int): Pair<BooleanArray, IntArray>? {
         val n = w * h
@@ -316,8 +323,14 @@ object TextEraser {
             ?: intArrayOf(strokes.tone, 0, 0, strokes.tone)
         val period = sqrt(min(basis[0] * basis[0] + basis[1] * basis[1], basis[2] * basis[2] + basis[3] * basis[3]).toFloat())
         val wide = dilate(strokes.mask, w, h, max(1, period.roundToInt()))
+        // Lines stay out of it, but never the lettering's own pixels: its
+        // anti-aliased rim against a line, left, is a faint ghost of the text.
+        val lines = strokes.lines
+        if (lines != null) for (i in 0 until n) if (lines[i] && !strokes.mask[i]) wide[i] = false
         val band = dilate(wide, w, h, 1)
-        val known = BooleanArray(n) { !band[it] }
+        // Nor is a line the tone's ground: rebuilt from, right beside the
+        // hole, it smeared grey through the dots.
+        val known = BooleanArray(n) { !band[it] && lines?.get(it) != true }
         val filled = PushPull.fill(chan, weights(known), w, h) ?: return null
         val out = IntArray(n)
         for (i in 0 until n) if (wide[i]) out[i] = rgb(filled[3 * i], filled[3 * i + 1], filled[3 * i + 2])
@@ -453,6 +466,8 @@ object TextEraser {
                 if (dist[i] > faint) crowded++
             }
             val crowding = if (halo == 0) 0f else crowded.toFloat() / halo
+            // On a tone, the ink in pieces too big to be its dots: the strokes, and art.
+            val big = tone?.let { t -> pieces(ink, w, h) { it >= t.dot } }
             return Strokes(
                 mask = mask,
                 known = BooleanArray(n) { !band[it] && dist[it] < threshold },
@@ -460,7 +475,8 @@ object TextEraser {
                 outline = outline,
                 busy = max(((texture - 3f) / 24f).coerceIn(0f, 1f) * 0.5f, (crowding * 2.5f).coerceAtMost(1f)),
                 tone = tone?.spacing ?: 0,
-                untoned = tone?.let { t -> dilate(pieces(ink, w, h) { it >= t.dot }, w, h, 2) },
+                untoned = big?.let { dilate(it, w, h, 2) },
+                lines = big?.let { b -> dilate(BooleanArray(n) { art[it] && b[it] }, w, h, 1) },
             )
         }
 
@@ -705,6 +721,7 @@ object TextEraser {
                 fill = f,
                 outline = o,
                 busy = (0.35f + (texture - 3f) / 30f).coerceIn(0f, 1f),
+                exact = false,
             )
         }
 
@@ -749,6 +766,7 @@ object TextEraser {
                 fill = ink,
                 outline = null,
                 busy = 1f,
+                exact = false,
             )
         }
     }
