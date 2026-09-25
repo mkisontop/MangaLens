@@ -47,7 +47,7 @@ class SettingsRepositoryTest {
         assertEquals(7, saved.scrollLevel)
         assertEquals(false, saved.smartScroll)
         repo.setScrollLevel(99)
-        assertEquals(10, repo.current().scrollLevel)
+        assertEquals(15, repo.current().scrollLevel)
         repo.setScrollLevel(-2)
         assertEquals(1, repo.current().scrollLevel)
     }

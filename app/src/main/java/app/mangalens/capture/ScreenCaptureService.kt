@@ -45,6 +45,7 @@ import app.mangalens.pipeline.ScrollMatch
 import app.mangalens.pipeline.TranslatePipeline
 import app.mangalens.pipeline.UpgradeMerge
 import app.mangalens.scroll.AutoScroller
+import app.mangalens.scroll.ScrollPace
 import app.mangalens.settings.AppSettings
 import app.mangalens.settings.CaptureMode
 import app.mangalens.settings.SettingsRepository
@@ -1587,7 +1588,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
     override fun onScrollSpeed(step: Int) {
         val scroller = autoScroller ?: return
         // From the scroller's own level: taps faster than the store echoes each count.
-        val next = (scroller.level + step).coerceIn(1, 10)
+        val next = ScrollPace.level(scroller.level + step)
         scroller.level = next
         scroller.carryOn()
         scope.launch { settingsRepo.setScrollLevel(next) }

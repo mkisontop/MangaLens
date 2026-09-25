@@ -169,6 +169,24 @@ class AutoScrollerTest {
     }
 
     @Test
+    fun theTopSpeedRacesWithTheLiftsBetweenStrokesIncluded() {
+        // A plain strip, nothing to slow down for.
+        val strip = Strip(length = 60_000, balloon = Rect(0, 0, 0, 0), gap = -1..-1)
+        val said = Said()
+        val auto = scroller(strip, said)
+        auto.level = ScrollPace.MAX_LEVEL
+        auto.start()
+        run(1_000)
+        val from = strip.offset
+        run(10_000)
+        val perSecond = (strip.offset - from) / 10f
+        val chosen = ScrollPace.baseDpPerSecond(ScrollPace.MAX_LEVEL) * 3f
+        println("[speed] top level: $perSecond px/s of $chosen chosen")
+        assertTrue("most of the chosen speed, lifts included: $perSecond px/s of $chosen", perSecond > chosen * 0.65f)
+        auto.stop(null)
+    }
+
+    @Test
     fun itStopsByItselfAtTheEndOfThePage() {
         val strip = Strip(length = 4_000)
         val said = Said()

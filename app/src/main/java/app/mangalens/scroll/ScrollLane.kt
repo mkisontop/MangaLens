@@ -18,8 +18,8 @@ internal data class ScrollLane(val x: Float, val top: Float, val bottom: Float) 
 
     companion object {
         /** Highest and lowest the finger goes, as shares of the screen's height. */
-        const val TOP = 0.2f
-        const val BOTTOM = 0.8f
+        const val TOP = 0.15f
+        const val BOTTOM = 0.85f
 
         /** Positions tried across the screen, in order of preference. */
         private val ACROSS = floatArrayOf(0.5f, 0.64f, 0.36f, 0.78f, 0.22f)

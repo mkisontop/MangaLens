@@ -65,6 +65,7 @@ import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import app.mangalens.scroll.ScrollPace
 import app.mangalens.settings.AiReasoning
 import app.mangalens.settings.AiVisionMode
 import app.mangalens.settings.AppSettings
@@ -326,7 +327,7 @@ private fun AutoScrollSection(
         PopSlider(
             "Speed",
             settings.scrollLevel.toFloat(),
-            1f..10f,
+            ScrollPace.MIN_LEVEL.toFloat()..ScrollPace.MAX_LEVEL.toFloat(),
             { "${it.roundToInt()}" },
             { sink.setScrollLevel(it.roundToInt()) },
             startLabel = "slow",

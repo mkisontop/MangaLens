@@ -20,13 +20,16 @@ import kotlin.math.pow
 internal object ScrollPace {
 
     const val MIN_LEVEL = 1
-    const val MAX_LEVEL = 10
+    const val MAX_LEVEL = 15
     const val DEFAULT_LEVEL = 4
 
     /** Speed at level 1, in dp per second: a slow crawl. */
     private const val SLOWEST_DP = 18f
 
-    /** Each level is this much faster than the one below it; level 10 is about 13 times level 1. */
+    /**
+     * Each level is this much faster than the one below it: level 10 skims
+     * at about 230 dp a second, and level 15 races at nearly a thousand.
+     */
     private const val LEVEL_STEP = 1.33f
 
     /** The rows a balloon is read in, as shares of the screen's height. */

@@ -104,8 +104,10 @@ class ScrollPaceTest {
             last = v
         }
         assertEquals(ScrollPace.baseDpPerSecond(1), ScrollPace.baseDpPerSecond(-3), 0f)
-        assertEquals(ScrollPace.baseDpPerSecond(10), ScrollPace.baseDpPerSecond(40), 0f)
-        assertTrue(ScrollPace.baseDpPerSecond(10) / ScrollPace.baseDpPerSecond(1) > 10f)
+        assertEquals(ScrollPace.baseDpPerSecond(ScrollPace.MAX_LEVEL), ScrollPace.baseDpPerSecond(40), 0f)
+        // Level 10 is where 1.0.5 topped out, a skim; the fastest now goes about four times as fast.
+        assertEquals(234f, ScrollPace.baseDpPerSecond(10), 5f)
+        assertTrue(ScrollPace.baseDpPerSecond(ScrollPace.MAX_LEVEL) > 900f)
     }
 
     @Test

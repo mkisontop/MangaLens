@@ -19,7 +19,7 @@ about 1.5–2 s after you stop.
 · [all releases](https://github.com/mkisontop/mangalens/releases)
 · [changelog](CHANGELOG.md)
 
-Current release: **1.0.5**. Still on 0.9.1? Follow the
+Current release: **1.0.6**. Still on 0.9.1? Follow the
 [one-time update instructions](#one-time-update-from-091) instead of using
 the normal APK.
 
@@ -63,8 +63,9 @@ anything that scrolls — with translation on or napping.
   **App info** (the link under the button), tap ⋮ → **Allow restricted
   settings**, and switch it on again.
 - **Tap ▼** beside the 文A bubble and the page starts moving. **−** and **+**
-  change the speed as it goes (Tweaks → Auto-scroll → Speed sets where it
-  starts); **❚❚** stops it. **Touch the screen** and it pauses; it carries on
+  change the speed as it goes, from 1, a slow crawl, to 15, about a screen
+  a second on a phone (Tweaks → Auto-scroll → Speed sets where it starts);
+  **❚❚** stops it. **Touch the screen** and it pauses; it carries on
   a couple of seconds after you let go and the page has come to rest. At the
   end of the page it stops by itself.
 - **It slows down for big balloons.** MangaLens looks at the page on your

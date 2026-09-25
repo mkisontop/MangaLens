@@ -11,6 +11,7 @@ import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import app.mangalens.scroll.ScrollPace
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -89,7 +90,7 @@ data class AppSettings(
     val ignoreBottomPct: Float = 0.02f,
     /** Whether auto-scroll's button sits beside the 文A button. */
     val autoScrollButton: Boolean = true,
-    /** Auto-scroll's speed, 1 (a slow crawl) to 10 (a skim). See ScrollPace. */
+    /** Auto-scroll's speed, 1 (a slow crawl) to 15 (a race). See ScrollPace. */
     val scrollLevel: Int = 4,
     /** Whether auto-scroll slows down for big balloons and hurries through empty gaps. */
     val smartScroll: Boolean = true,
@@ -294,7 +295,7 @@ internal fun settingsFromPreferences(p: Preferences, credentials: Preferences = 
         ignoreTopPct = p[Keys.IGNORE_TOP] ?: d.ignoreTopPct,
         ignoreBottomPct = p[Keys.IGNORE_BOTTOM] ?: d.ignoreBottomPct,
         autoScrollButton = p[Keys.AUTO_SCROLL_BUTTON] ?: d.autoScrollButton,
-        scrollLevel = (p[Keys.SCROLL_LEVEL] ?: d.scrollLevel).coerceIn(1, 10),
+        scrollLevel = ScrollPace.level(p[Keys.SCROLL_LEVEL] ?: d.scrollLevel),
         smartScroll = p[Keys.SMART_SCROLL] ?: d.smartScroll,
     )
 }
@@ -345,6 +346,6 @@ class SettingsRepository(private val context: Context) {
     suspend fun setIgnoreTopPct(v: Float) = context.settingsStore.edit { it[Keys.IGNORE_TOP] = v }
     suspend fun setIgnoreBottomPct(v: Float) = context.settingsStore.edit { it[Keys.IGNORE_BOTTOM] = v }
     suspend fun setAutoScrollButton(v: Boolean) = context.settingsStore.edit { it[Keys.AUTO_SCROLL_BUTTON] = v }
-    suspend fun setScrollLevel(v: Int) = context.settingsStore.edit { it[Keys.SCROLL_LEVEL] = v.coerceIn(1, 10) }
+    suspend fun setScrollLevel(v: Int) = context.settingsStore.edit { it[Keys.SCROLL_LEVEL] = ScrollPace.level(v) }
     suspend fun setSmartScroll(v: Boolean) = context.settingsStore.edit { it[Keys.SMART_SCROLL] = v }
 }

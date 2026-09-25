@@ -1,5 +1,19 @@
 # Changelog
 
+## 1.0.6
+
+Faster auto-scroll.
+
+**Download:** `MangaLens.apk` below updates 0.9.2 and newer in place.
+
+- **Auto-scroll goes much faster now.** The speed runs from 1 to 15 instead
+  of 1 to 10: levels 1–10 are as they were, and each new level is about a
+  third faster than the one before, so 15 moves about three times as fast
+  as 10 did. The finger also drags a longer stretch of the screen before it
+  lifts, so fast speeds run more smoothly.
+- Installing still needs Play Protect's scanning switched off for a moment
+  (auto-scroll's Accessibility switch is what it blocks); see the README.
+
 ## 1.0.5
 
 Auto-scroll: MangaLens scrolls the page for you, in any app, and slows down
