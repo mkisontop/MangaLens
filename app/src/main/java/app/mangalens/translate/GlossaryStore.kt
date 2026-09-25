@@ -22,9 +22,17 @@ class GlossaryStore(context: Context) {
      * Which work these terms belong to. One shared glossary across everything
      * read is actively harmful: 先生 is "Doctor" in one series and "Teacher" in
      * the next, and a glossary is obeyed exactly, so whichever was learned
-     * first wins forever in the wrong story.
+     * first wins forever in the wrong story. Until the work is known, that is
+     * the pending scope [WorkMemory] folds into it once it has a name.
      */
-    private var scope = DEFAULT_SCOPE
+    private var scope = WorkMemory.PENDING
+
+    init {
+        // Before memory was kept per work, every series shared one glossary
+        // under the bare key. Nothing reads it any more, and a pooled
+        // glossary is exactly what a request must not carry.
+        if (prefs.contains(KEY)) prefs.edit().remove(KEY).apply()
+    }
 
     /** Switches to another work's glossary, saving the current one first. */
     @Synchronized
@@ -36,11 +44,6 @@ class GlossaryStore(context: Context) {
         loaded = false
     }
 
-    /**
-     * Folds [from]'s terms into [to] without overwriting what [to] already
-     * established — used when a session that began unidentified turns out to
-     * be a work already known.
-     */
     /** Forgets a work's glossary entirely, when it is evicted. */
     @Synchronized
     fun dropScope(id: String) {
@@ -51,6 +54,11 @@ class GlossaryStore(context: Context) {
         }
     }
 
+    /**
+     * Folds [from]'s terms into [to] without overwriting what [to] already
+     * established — used when a session that began unidentified turns out to
+     * be a work already known.
+     */
     @Synchronized
     fun mergeScope(from: String, to: String) {
         if (from == to) return
@@ -118,7 +126,7 @@ class GlossaryStore(context: Context) {
         write(scope, LinkedHashMap(terms))
     }
 
-    private fun keyFor(id: String) = if (id == DEFAULT_SCOPE) KEY else "$KEY:$id"
+    private fun keyFor(id: String) = "$KEY:$id"
 
     private fun read(id: String): LinkedHashMap<String, String> {
         val out = LinkedHashMap<String, String>()
@@ -142,6 +150,5 @@ class GlossaryStore(context: Context) {
     private companion object {
         const val KEY = "terms"
         const val MAX_TERMS = 140
-        const val DEFAULT_SCOPE = "default"
     }
 }

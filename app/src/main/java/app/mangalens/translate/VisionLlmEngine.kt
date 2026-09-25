@@ -63,6 +63,8 @@ class VisionLlmEngine(
     ): List<VisionBubble> =
         withContext(Dispatchers.IO) {
             LlmHttp.requireConfig(settings)
+            // Noted before the memory is taken: see the learning below.
+            val generation = StoryContext.generation
 
             // The page the model sees carries a numbered badge per region, so
             // "region 7" is visible rather than inferred from coordinates.
@@ -112,13 +114,13 @@ class VisionLlmEngine(
                 .put("expected_source_language", langHint)
                 .put("story_so_far", JSONArray(StoryContext.snapshot()))
                 .put("detected_regions", regions)
-                .put("closeups", JSONArray(closeups.take(crops.size)))
+                .put("closeups", JSONArray(crops.map { it.first }))
                 .toString()
 
             val stream = if (onBubble == null) null else BubbleStream()
             val streamed = HashSet<Int>()
             val raw = LlmHttp.complete(
-                settings, SYSTEM_PROMPT, stable, listOf(jpegB64) + crops, page,
+                settings, SYSTEM_PROMPT, stable, listOf(jpegB64) + crops.map { it.second }, page,
                 effort = LlmHttp.effortLevel(settings, vision = true),
                 vision = true,
                 onDelta = if (stream == null) null else { delta ->
@@ -134,13 +136,18 @@ class VisionLlmEngine(
                 val o = arr.optJSONObject(i) ?: continue
                 entry(o, anchors, seenIds)?.let { out.add(it) }
             }
-            reply.optJSONObject("new_terms")?.let { terms ->
-                val learned = HashMap<String, String>()
-                for (k in terms.keys()) learned[k] = terms.optString(k, "")
-                glossary?.learn(learned)
+            // A reply that lands after the reader moved on to another work (a
+            // long pause, "New series") still letters its page, but what it
+            // would teach belongs to the work it was asked about.
+            if (generation == StoryContext.generation) {
+                reply.optJSONObject("new_terms")?.let { terms ->
+                    val learned = HashMap<String, String>()
+                    for (k in terms.keys()) learned[k] = terms.optString(k, "")
+                    glossary?.learn(learned)
+                }
+                cast?.learn(CastBook.parse(reply.optJSONObject("characters")))
+                out.forEach { if (!it.sfx) StoryContext.remember(it.en, it.who) }
             }
-            cast?.learn(CastBook.parse(reply.optJSONObject("characters")))
-            out.forEach { if (!it.sfx) StoryContext.remember(it.en, it.who) }
             out
         }
 

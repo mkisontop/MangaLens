@@ -1,8 +1,14 @@
 package app.mangalens.translate
 
+import android.graphics.Bitmap
+import android.graphics.Color
+import android.graphics.Rect
+import app.mangalens.ocr.Bubble
 import app.mangalens.settings.AiReasoning
 import app.mangalens.settings.AppSettings
 import app.mangalens.settings.LlmProvider
+import app.mangalens.settings.SourceLang
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
@@ -35,7 +41,9 @@ import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 
 /**
  * The request each provider actually receives. A wrong field here fails
@@ -276,6 +284,58 @@ class LlmRequestTest {
     ).toString()
 
     private fun modelOf(target: String) = target.substringAfterLast('/').substringBefore(':')
+
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun `a reply that lands after a new series began teaches it nothing, on the region paths too`() = runBlocking {
+        val ctx = RuntimeEnvironment.getApplication()
+        val glossary = GlossaryStore(ctx)
+        val cast = CastBook(ctx)
+        StoryContext.reset()
+        val newSeries = AtomicBoolean(false)
+        val reply = JSONObject()
+            .put("bubbles", JSONArray().put(JSONObject().put("id", 0).put("en", "Hello.").put("who", "Kaito")))
+            .put("new_terms", JSONObject().put("海斗", "Kaito"))
+            .put("characters", JSONObject().put("Kaito", JSONObject().put("pronoun", "he")))
+            .toString()
+        serve { ex ->
+            // The reader taps "New series" while the page is out.
+            if (newSeries.get()) StoryContext.reset()
+            ex.respond(200, answer(reply))
+        }
+        val s = settings(LlmProvider.GEMINI, "gemini-test-flash")
+        val page = Bitmap.createBitmap(400, 600, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.WHITE) }
+        val anchors = listOf(Bubble("こんにちは", Rect(40, 60, 200, 160), false))
+        val paths = listOf<suspend () -> String>(
+            { LlmEngine(s, glossary, cast).translate(listOf("こんにちは"), SourceLang.JA).single() },
+            { VisionLlmEngine(s, glossary, cast).translatePage(page, SourceLang.JA, anchors).single().en },
+        )
+        try {
+            for (read in paths) {
+                // Answered in time, the page teaches what it established...
+                newSeries.set(false)
+                assertEquals("Hello.", read())
+                assertEquals("Kaito", glossary.snapshot()["海斗"])
+                assertEquals("he", cast.snapshot()["Kaito"]?.pronoun)
+                assertEquals(listOf("Kaito: Hello."), StoryContext.snapshot())
+                glossary.clear()
+                cast.clear()
+                StoryContext.reset()
+
+                // ...answered after the reader moved on, it still translates
+                // its own page, and teaches the new series nothing.
+                newSeries.set(true)
+                assertEquals("Hello.", read())
+                assertTrue(glossary.snapshot().isEmpty())
+                assertTrue(cast.snapshot().isEmpty())
+                assertTrue(StoryContext.snapshot().isEmpty())
+            }
+        } finally {
+            glossary.clear()
+            cast.clear()
+            StoryContext.reset()
+        }
+    }
 
     @Test
     fun `a retired gemini model falls back to the newest flash on the text path too`() = runBlocking {

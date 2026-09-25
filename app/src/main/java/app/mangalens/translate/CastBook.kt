@@ -55,9 +55,17 @@ class CastBook(context: Context) {
      * held once set: a "Yuu" established as *he* in one series would fix the
      * pronoun of an unrelated "Yuu" in the next, and the stickiness that keeps
      * a character consistent within a story is exactly what carries the error
-     * across stories.
+     * across stories. Until the work is known, that is the pending scope
+     * [WorkMemory] folds into it once it has a name.
      */
-    private var scope = DEFAULT_SCOPE
+    private var scope = WorkMemory.PENDING
+
+    init {
+        // Before memory was kept per work, every series shared one cast
+        // under the bare key. Nothing reads it any more, and a pooled cast
+        // is exactly what a request must not carry.
+        if (prefs.contains(KEY)) prefs.edit().remove(KEY).apply()
+    }
 
     /** Switches to another work's cast, saving the current one first. */
     @Synchronized
@@ -176,7 +184,7 @@ class CastBook(context: Context) {
         write(scope, LinkedHashMap(cast))
     }
 
-    private fun keyFor(id: String) = if (id == DEFAULT_SCOPE) KEY else "$KEY:$id"
+    private fun keyFor(id: String) = "$KEY:$id"
 
     private fun read(id: String): LinkedHashMap<String, Member> {
         val out = LinkedHashMap<String, Member>()
@@ -212,7 +220,6 @@ class CastBook(context: Context) {
     companion object {
         private const val KEY = "cast"
         private const val MAX_CAST = 24
-        private const val DEFAULT_SCOPE = "default"
 
         /** Parses the `characters` object the translator returns. */
         fun parse(obj: JSONObject?): Map<String, Member> {

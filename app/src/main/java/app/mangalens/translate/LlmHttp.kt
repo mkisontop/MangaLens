@@ -309,7 +309,7 @@ internal object LlmHttp {
     ): String {
         val body = geminiBody(settings, system, stable, images, page, effort, vision, model)
         return if (onDelta != null) {
-            GeminiApi.stream(settings.apiKey, model, body, onDelta)
+            GeminiApi.stream(settings.apiKey, model, body, onDelta = onDelta)
         } else {
             GeminiApi.text(GeminiApi.generate(settings.apiKey, model, body))
         }

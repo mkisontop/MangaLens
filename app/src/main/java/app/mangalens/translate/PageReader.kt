@@ -138,7 +138,7 @@ class PageReader internal constructor(
         if (items != null) {
             for (i in 0 until items.length()) items.optJSONObject(i)?.let { o -> page.item(o)?.let { read.emit(it) } }
         } else if (!read.hasItems) {
-            throw RuntimeException("Gemini reply had no readable items")
+            throw EmptyReply()
         }
         // Whole only when the model said it was done and its JSON closed.
         // A filter that trips part-way, or the token cap, leaves items that
@@ -148,7 +148,10 @@ class PageReader internal constructor(
             items == null -> "incomplete JSON"
             else -> null
         }
-        if (reply != null && !read.cutOff) learn(reply, read.items)
+        // A reply that lands after the reader moved on to another work (a
+        // long pause, "New series") still letters its page, but what it
+        // would teach belongs to the work it was asked about.
+        if (reply != null && !read.cutOff && page.generation == StoryContext.generation) learn(reply, read.items)
         read.finish(null)
     }
 
@@ -164,7 +167,8 @@ class PageReader internal constructor(
      * bandwidth. If the upload never reports back, the hedge goes
      * [uploadGraceMs] later than it would have. Either way a spare still
      * held back is sent at once when everything already sent has failed in
-     * a way a second try could survive, and when none is left one more
+     * a way a second try could survive — a reply that ends with no items
+     * in it, not even an empty list, counts — and when none is left one more
      * request goes out [retryMs] later: a dropped connection usually clears
      * in a moment, and a page that fails outright stays untranslated until
      * the reader scrolls.
@@ -193,11 +197,23 @@ class PageReader internal constructor(
             contenders += launch {
                 val stream = BubbleStream("items")
                 var finish = ""
+                var streamed = false
                 try {
                     val text = transport.stream(m, body, { read.sent(); events.trySend(Event.Sent(id)) }, { finish = it }) { delta ->
-                        for (o in stream.feed(delta)) page.item(o)?.let { events.trySend(Event.Item(id, it)) }
+                        for (o in stream.feed(delta)) {
+                            page.item(o)?.let {
+                                streamed = true
+                                events.trySend(Event.Item(id, it))
+                            }
+                        }
                     }
-                    events.trySend(Event.Done(id, Reply(text, finish, m)))
+                    // A reply that ends cleanly with no items in it — nothing
+                    // visible at all, or prose — answers nothing. It is a
+                    // failure a second request could get past, not a win that
+                    // cancels the rest; only an items array, empty on a page
+                    // with no lettering, is an answer.
+                    val answered = streamed || hasItems(text)
+                    events.trySend(if (answered) Event.Done(id, Reply(text, finish, m)) else Event.Failed(id, EmptyReply()))
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Throwable) {
@@ -306,6 +322,9 @@ class PageReader internal constructor(
     /** A request's whole reply text, the model's reason for stopping ("" when it gave none), and the model. */
     private class Reply(val text: String, val finish: String, val model: String)
 
+    /** A reply that ended with no items in it: neither streamed nor in its full text. */
+    private class EmptyReply : RuntimeException("Gemini reply had no readable items")
+
     private sealed interface Event {
         class Sent(val id: Int) : Event
         class Item(val id: Int, val item: PageItem) : Event
@@ -351,6 +370,9 @@ class PageReader internal constructor(
      */
     private inner class PageRequest(val width: Int, val height: Int, val jpeg: String, lang: SourceLang, unread: IntArray? = null) {
 
+        /** The work the memory below was taken from; read first, so a reset part-way through only drops the learning. */
+        val generation = StoryContext.generation
+
         private val stable = JSONObject()
             .put("glossary", JSONObject(glossary?.snapshot() ?: emptyMap<String, String>()))
             .put("characters", JSONObject(cast?.describeAll() ?: emptyMap<String, String>()))
@@ -370,24 +392,17 @@ class PageReader internal constructor(
             }
             .toString()
 
+        /**
+         * Google's native request as every Gemini path builds it — stable
+         * first, page last, so the implicit prefix cache covers the prompt
+         * and the series memory from page to page — with the reply's shape
+         * added.
+         */
         fun body(model: String): JSONObject {
-            val effort = if (settings.aiReasoning == AiReasoning.THOROUGH) "high" else "low"
-            val config = JSONObject()
-                .put("responseMimeType", "application/json")
-                .put("responseSchema", JSONObject(RESPONSE_SCHEMA))
-                .put("maxOutputTokens", LlmHttp.outputCap(anthropic = false, vision = true, effort = effort))
-            GeminiApi.thinkingConfig(model, settings.aiReasoning)?.let { config.put("thinkingConfig", it) }
-            if (GeminiApi.takesTemperature(model)) config.put("temperature", 0)
-            // Stable first, page last, so Gemini's implicit prefix cache
-            // covers the prompt and the series memory from page to page.
-            val parts = JSONArray()
-                .put(JSONObject().put("text", stable))
-                .put(JSONObject().put("inlineData", JSONObject().put("mimeType", "image/jpeg").put("data", jpeg)))
-                .put(JSONObject().put("text", pageText))
-            return JSONObject()
-                .put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", SYSTEM_PROMPT))))
-                .put("contents", JSONArray().put(JSONObject().put("role", "user").put("parts", parts)))
-                .put("generationConfig", config)
+            val effort = LlmHttp.effortLevel(settings, vision = true)
+            val body = LlmHttp.geminiBody(settings, SYSTEM_PROMPT, stable, listOf(jpeg), pageText, effort, vision = true, model = model)
+            body.getJSONObject("generationConfig").put("responseSchema", JSONObject(RESPONSE_SCHEMA))
+            return body
         }
 
         fun item(o: JSONObject): PageItem? = toItem(o, width, height)
@@ -568,9 +583,16 @@ class PageReader internal constructor(
             SourceLang.AUTO -> "Japanese, Korean or Chinese"
         }
 
-        /** A failure a second, identical request could get past: the network, or Google overloaded. */
+        /**
+         * A failure a second, identical request could get past: the network,
+         * Google overloaded, or a reply that came back with nothing in it.
+         */
         private fun transient(e: Throwable): Boolean =
-            e is IOException || (e is GeminiHttpException && e !is GeminiRateLimited && e.code >= 500)
+            e is IOException || e is EmptyReply || (e is GeminiHttpException && e !is GeminiRateLimited && e.code >= 500)
+
+        /** Whether the finished reply [text] holds an items array, however few items the stream could split out. */
+        private fun hasItems(text: String): Boolean =
+            runCatching { LlmHttp.extractJsonObject(text) }.getOrNull()?.optJSONArray("items") != null
 
         /** Google turning the model away for want of capacity, not this request. */
         private fun overloaded(e: Throwable): Boolean = e is GeminiHttpException && e.code == 503

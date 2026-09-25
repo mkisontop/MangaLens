@@ -36,17 +36,16 @@ object ModelCatalog {
 
     private suspend fun fetchGemini(apiKey: String): List<LiveModel> {
         val builder = Request.Builder()
-            .url("https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000")
+            .url(GeminiApi.base.removeSuffix("/") + "?pageSize=1000")
         // Header, not query parameter: keys don't belong in URLs or logs.
         val request = LlmHttp.keyHeader(builder, "x-goog-api-key", apiKey)
             .get()
             .build()
-        LlmHttp.await(LlmHttp.client.newCall(request)).use { resp ->
-            val text = resp.body?.string() ?: ""
-            if (!resp.isSuccessful) {
-                throw RuntimeException("Gemini HTTP " + resp.code + ": " + text.take(160))
-            }
-            return parseGemini(text)
+        LlmHttp.await(GeminiApi.client.newCall(request)).use { resp ->
+            // The picker shows this message as it is: Google's own words
+            // ("API key not valid"), not its error envelope.
+            if (!resp.isSuccessful) throw GeminiApi.httpError("", resp)
+            return parseGemini(resp.body?.string() ?: "")
         }
     }
 

@@ -1,7 +1,10 @@
 package app.mangalens.translate
 
+import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertEquals
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
@@ -139,5 +142,36 @@ class ModelCatalogTest {
     @Test
     fun `garbage in, empty list out`() {
         assertEquals(emptyList<ModelCatalog.LiveModel>(), ModelCatalog.parseGemini("""{"error":"nope"}"""))
+    }
+
+    @Test
+    fun `the live list comes from Google's models endpoint, and a refusal is said in Google's words`() = runBlocking {
+        val server = FakeHttpServer { ex ->
+            if (ex.headers["x-goog-api-key"] == "good") {
+                ex.respond(200, payload(model("gemini-2.5-flash", "Gemini 2.5 Flash"), model("gemini-embedding-001")))
+            } else {
+                // Google's envelope, pretty-printed as it sends it.
+                ex.respond(
+                    400,
+                    "{\n  \"error\": {\n    \"code\": 400,\n    \"message\": \"API key not valid. Please pass a valid API key.\",\n" +
+                        "    \"status\": \"INVALID_ARGUMENT\"\n  }\n}",
+                )
+            }
+        }
+        GeminiApi.base = server.base
+        try {
+            assertEquals(listOf("gemini-2.5-flash"), ModelCatalog.gemini("good").map { it.id })
+            assertEquals("/v1beta/models?pageSize=1000", server.exchanges.single().target)
+            try {
+                ModelCatalog.gemini("bad")
+                fail("expected the refusal")
+            } catch (e: GeminiHttpException) {
+                assertEquals("Gemini HTTP 400: API key not valid. Please pass a valid API key.", e.message)
+            }
+            assertFalse("a failed listing marks no model missing", GeminiApi.isMissing(""))
+        } finally {
+            server.close()
+            GeminiApi.base = GeminiApi.BASE
+        }
     }
 }
