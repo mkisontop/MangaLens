@@ -195,7 +195,7 @@ internal class ReadResolver(
             // each line keeps its own lobe: the interior is shared out
             // between them and each is lettered into its share, so neither
             // wipes the other and no line straddles the join.
-            val clusters = clusters(group.map { usable[it] })
+            val clusters = clusters(group.map { usable[it] }, balloon)
             if (clusters.size == 1) {
                 out.add(inBalloon(clusters[0][0], balloon, clusters[0]))
             } else {
@@ -250,11 +250,12 @@ internal class ReadResolver(
         System.identityHashCode(balloon).toString() + boxes.joinToString("|") { it.flattenToString() }
 
     /**
-     * Groups the items of one detection into balloons' worth of lettering:
+     * Groups the items of [balloon] into balloons' worth of lettering:
      * items one voice speaks whose boxes nearly touch — closer than about
-     * a line's height — are the pieces of one balloon.
+     * a line's height — and carry on from one another are the pieces of
+     * one balloon.
      */
-    private fun clusters(members: List<PageItem>): List<List<PageItem>> {
+    private fun clusters(members: List<PageItem>, balloon: Balloon): List<List<PageItem>> {
         val parent = IntArray(members.size) { it }
         fun root(i: Int): Int {
             var r = i
@@ -266,7 +267,7 @@ internal class ReadResolver(
                 val x = members[a]
                 val y = members[b]
                 val sameVoice = x.who.isBlank() || y.who.isBlank() || x.who.trim().equals(y.who.trim(), ignoreCase = true)
-                if (!sameVoice) continue
+                if (!sameVoice || !carriesOn(x, y, balloon)) continue
                 val line = minOf(lineOf(x), lineOf(y))
                 if (gap(x.box, y.box) <= line * 0.8f) parent[root(b)] = root(a)
             }
@@ -287,6 +288,24 @@ internal class ReadResolver(
         val lines = item.src.lines().count { it.isNotBlank() }.coerceAtLeast(1)
         val across = if (item.vertical) item.box.width() else item.box.height()
         return minOf(across / lines, minOf(item.box.width(), item.box.height()))
+    }
+
+    /**
+     * Whether [b] could carry on [a]'s lettering in [balloon]: rows set
+     * under one another share columns, and columns set side by side share
+     * rows. Two joined balloons' lines meet only at a corner or sit side by
+     * side along the line, each centred in its own lobe. A line lettered
+     * beside the balloon rather than in it is no lobe's: it goes with the
+     * balloon's own lettering, as before.
+     */
+    private fun carriesOn(a: PageItem, b: PageItem, balloon: Balloon): Boolean {
+        if (a.vertical != b.vertical) return true
+        if (!onMask(balloon, a.box.centerX(), a.box.centerY()) || !onMask(balloon, b.box.centerX(), b.box.centerY())) return true
+        return if (a.vertical) {
+            minOf(a.box.bottom, b.box.bottom) > maxOf(a.box.top, b.box.top)
+        } else {
+            minOf(a.box.right, b.box.right) > maxOf(a.box.left, b.box.left)
+        }
     }
 
     /** Distance between two boxes, 0 when they touch or overlap. */

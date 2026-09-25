@@ -92,6 +92,45 @@ class ReadResolverTest {
         assertTrue("and only along it, got $both cells", both < joined.mask.count { it } / 10)
     }
 
+    /**
+     * Two cloud balloons joined on a diagonal, one line centred in each:
+     * their boxes meet at a corner, closer than a line's height, but share
+     * no columns. Taken for one balloon's pieces, both lines were set as
+     * one block straddling the join (a real Korean page, md02_0).
+     */
+    @Test
+    fun linesMeetingOnlyAtACornerKeepALobeEach() {
+        val upper = Rect(300, 100, 700, 420)
+        val lower = Rect(60, 340, 420, 660)
+        val joined = detection(Rect(60, 100, 700, 660), upper, lower)
+        val a = PageItem(
+            Rect(420, 180, 560, 370), ItemKind.SPEECH, "아앗\n신체 한정인\n이야기는\n하지 말아\n주세요!",
+            "Aah! Please don't talk about my body!", who = "Matsuri",
+        )
+        val b = PageItem(Rect(160, 360, 410, 470), ItemKind.SPEECH, "주로\n체중 이야기는\n금구니까요!", "Especially my weight!", who = "Matsuri")
+
+        val out = resolver(joined).resolve(listOf(a, b))
+        assertEquals(2, out.size)
+        val la = out.single { it.translated == a.en }.balloon!!
+        val lb = out.single { it.translated == b.en }.balloon!!
+        assertNotSame(la, lb)
+        assertTrue(la.box.contains(a.box.centerX(), a.box.centerY()))
+        assertTrue(lb.box.contains(b.box.centerX(), b.box.centerY()))
+    }
+
+    @Test
+    fun rowsAnsweredInPiecesUnderOneAnotherStayOneBalloon() {
+        val oval = Rect(200, 200, 600, 520)
+        val balloon = detection(oval, oval)
+        val top = PageItem(Rect(320, 280, 480, 350), ItemKind.SPEECH, "그러니까\n내 말은", "What I mean is,", who = "Yuu")
+        val bottom = PageItem(Rect(300, 360, 500, 430), ItemKind.SPEECH, "그게 아니라\n진짜야!", "it's for real!", who = "Yuu")
+
+        val out = resolver(balloon).resolve(listOf(top, bottom))
+        assertEquals(1, out.size)
+        assertEquals("What I mean is, it's for real!", out[0].translated)
+        assertTrue(out[0].balloon === balloon)
+    }
+
     /** True when page point (x, y) falls on [b]'s mask. */
     private fun onMask(b: Balloon, x: Int, y: Int): Boolean {
         if (!b.box.contains(x, y)) return false
