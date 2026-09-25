@@ -198,6 +198,84 @@ class BalloonHardCasesTest {
         assertTrue("the page background must not be reported", found.none { it.box.width() > 880 })
     }
 
+    /**
+     * Joined balloons sliding in from the bottom of the screen, the lower
+     * one cut by the frame edge. The pair splits into its two balloons, and
+     * only the cut one may be partial: split off the pair, it came back
+     * whole, was trusted as whole, and was lettered into the fragment on
+     * screen with the rest of its line left on the page.
+     */
+    @Test
+    fun `joined balloons cut by the screen edge mark only the cut one partial`() {
+        val bmp = Bitmap.createBitmap(1000, 1500, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp)
+        canvas.drawColor(Color.WHITE)
+        val a = Rect(400, 1000, 600, 1300)
+        val b = Rect(400, 1280, 600, 1580)
+        val stroke = outline(5f)
+        canvas.drawOval(RectF(a), stroke)
+        canvas.drawOval(RectF(b), stroke)
+        canvas.drawOval(RectF(a).apply { inset(3f, 3f) }, white)
+        canvas.drawOval(RectF(b).apply { inset(3f, 3f) }, white)
+        lettering(canvas, a)
+        // Rows in the lower balloon's part that is still on screen.
+        for (r in 0 until 3) {
+            val top = 1360 + r * 38
+            canvas.drawRect(Rect(460, top, 540, top + 16), black)
+        }
+
+        val found = BalloonFinder.findDetailed(bmp)
+        writePreview("joined-cut.png", bmp, found)
+
+        val visible = Rect(b.left, b.top, b.right, 1500)
+        val upper = found.firstOrNull { matches(it.box, a) }
+        val lower = found.firstOrNull { iou(it.box, visible) > 0.5f && it !== upper }
+        assertTrue("the upper balloon must be found on its own (found ${found.map { it.box }})", upper != null)
+        assertTrue("the cut balloon at $visible must be found on its own (found ${found.map { it.box }})", lower != null)
+        assertFalse("the upper balloon is on screen whole", upper!!.partial)
+        assertTrue("the lower balloon runs off the frame edge", lower!!.partial)
+    }
+
+    /**
+     * A joined pair only the sealed passes find — a break in one outline
+     * lets the plain flood out into the page — with a line set close to the
+     * outline, as dense balloons are lettered. Each split part must be
+     * flooded out over the unsealed paper as a whole sealed find is, or the
+     * line fused with the thickened outline stays out of the mask and on the
+     * page. That flood reaches a few cells across the waist and no further:
+     * each mask still stops short of its partner.
+     */
+    @Test
+    fun `a joined pair only sealing finds keeps a line set close to its outline`() {
+        val bmp = Bitmap.createBitmap(900, 600, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp)
+        canvas.drawColor(Color.WHITE)
+        val a = Rect(150, 200, 450, 400)
+        val b = Rect(420, 200, 720, 400)
+        val stroke = outline(5f)
+        canvas.drawOval(RectF(a), stroke)
+        canvas.drawOval(RectF(b), stroke)
+        canvas.drawOval(RectF(a).apply { inset(3f, 3f) }, white)
+        canvas.drawOval(RectF(b).apply { inset(3f, 3f) }, white)
+        canvas.drawRect(Rect(296, 390, 304, 412), white)
+        val lines = listOf(Rect(255, 216, 345, 230), Rect(200, 262, 400, 278), Rect(200, 312, 400, 328))
+        for (l in lines) canvas.drawRect(l, black)
+        lettering(canvas, b)
+
+        val found = BalloonFinder.findDetailed(bmp)
+        writePreview("joined-sealed-close.png", bmp, found)
+
+        val left = found.firstOrNull { matches(it.box, a) }
+        val right = found.firstOrNull { matches(it.box, b) }
+        assertTrue("left balloon must be found on its own (found ${found.map { it.box }})", left != null)
+        assertTrue("right balloon must be found on its own (found ${found.map { it.box }})", right != null)
+        for (l in lines) {
+            assertTrue("the line at $l must be inside the cleaned interior", inMask(left!!, l.centerX(), l.centerY()))
+        }
+        assertFalse("left mask stops short of the right balloon", inMask(left!!, b.centerX() + 60, b.centerY()))
+        assertFalse("right mask stops short of the left balloon", inMask(right!!, a.centerX() - 60, a.centerY()))
+    }
+
     /** A white panel full of art is not a balloon, whatever its shape. */
     @Test
     fun `a white panel holding shaded art is not taken for a balloon`() {

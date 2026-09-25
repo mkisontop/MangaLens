@@ -120,10 +120,16 @@ object ReadingOrder {
      * reliable tell: a Japanese page typeset in columns is traditional manga,
      * while a Japanese webtoon sets its dialogue horizontally and scrolls like
      * a Korean one. Korean and Chinese webtoons stay left-to-right.
+     *
+     * Only balloons OCR read lettering in vote. One it read nothing in comes
+     * back blank and marked horizontal only because it has to be marked
+     * something — it carries no evidence of direction, and vertical lettering
+     * OCR could not resolve is the usual reason it is blank, so counting it
+     * would outvote the columns on exactly the pages that run right-to-left.
      */
     fun isRightToLeft(bubbles: List<Bubble>, lang: SourceLang): Boolean {
         if (lang == SourceLang.KO) return false
-        val dialogue = bubbles.filter { it.kind == BubbleKind.DIALOGUE }
+        val dialogue = bubbles.filter { it.kind == BubbleKind.DIALOGUE && it.text.isNotBlank() }
         if (dialogue.isEmpty()) return false
         val vertical = dialogue.count { it.vertical }
         return vertical * 3 >= dialogue.size

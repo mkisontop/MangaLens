@@ -12,6 +12,8 @@ import com.google.mlkit.vision.text.japanese.JapaneseTextRecognizerOptions
 import com.google.mlkit.vision.text.korean.KoreanTextRecognizerOptions
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import kotlinx.coroutines.tasks.await
 
 /**
@@ -21,20 +23,22 @@ import kotlinx.coroutines.tasks.await
  * the strongest script signature wins. After the same language wins twice in a
  * row it is "pinned" so subsequent frames only pay for a single recognizer; the
  * pin is dropped again whenever a frame produces almost no text in that script.
+ *
+ * [client] makes the recognizer for a language the first time one is needed:
+ * ML Kit's own on a device, a stand-in under test.
  */
-open class OcrEngine {
+open class OcrEngine internal constructor(private val client: (SourceLang) -> TextRecognizer) {
+
+    constructor() : this(::mlKitClient)
 
     data class Result(val lines: List<OcrLine>, val lang: SourceLang)
 
-    private val korean: TextRecognizer by lazy {
-        TextRecognition.getClient(KoreanTextRecognizerOptions.Builder().build())
-    }
-    private val japanese: TextRecognizer by lazy {
-        TextRecognition.getClient(JapaneseTextRecognizerOptions.Builder().build())
-    }
-    private val chinese: TextRecognizer by lazy {
-        TextRecognition.getClient(ChineseTextRecognizerOptions.Builder().build())
-    }
+    private val koreanClient = lazy { client(SourceLang.KO) }
+    private val japaneseClient = lazy { client(SourceLang.JA) }
+    private val chineseClient = lazy { client(SourceLang.ZH) }
+    private val korean: TextRecognizer by koreanClient
+    private val japanese: TextRecognizer by japaneseClient
+    private val chinese: TextRecognizer by chineseClient
 
     private var pinned: SourceLang? = null
     private var lastWinner: SourceLang? = null
@@ -55,10 +59,19 @@ open class OcrEngine {
         return race(bitmap)
     }
 
-    fun reset() {
-        pinned = null
-        lastWinner = null
-        winStreak = 0
+    /**
+     * Releases the recognizers this engine made. ML Kit shares one
+     * reference-counted model per language across the whole process, and a
+     * client never closed keeps its model loaded for as long as the process
+     * lives — which, with the auto-scroll accessibility service enabled, is
+     * indefinitely. A recognizer never used was never made, and is not made
+     * now just to be closed. The engine is done once this is called: a
+     * closed recognizer fails any later read, which reads as empty.
+     */
+    fun close() {
+        for (c in listOf(koreanClient, japaneseClient, chineseClient)) {
+            if (c.isInitialized()) runCatching { c.value.close() }
+        }
     }
 
     /**
@@ -146,7 +159,12 @@ open class OcrEngine {
 
     private suspend fun run(recognizer: TextRecognizer, bitmap: Bitmap): List<OcrLine> {
         val image = InputImage.fromBitmap(bitmap, 0)
-        val text = runCatching { recognizer.process(image).await() }.getOrNull() ?: return emptyList()
+        val text = runCatching { recognizer.process(image).await() }.getOrNull()
+        // runCatching also swallows the cancellation a cancelled caller's
+        // await throws. Read as a page with no text, it would drop the pin
+        // (recognize) every time a scroll cancels a pass mid-read; only a
+        // recognizer that itself failed reads as empty.
+        currentCoroutineContext().ensureActive()
         return toLines(text)
     }
 
@@ -164,4 +182,10 @@ open class OcrEngine {
         }
         return out
     }
+}
+
+private fun mlKitClient(lang: SourceLang): TextRecognizer = when (lang) {
+    SourceLang.KO -> TextRecognition.getClient(KoreanTextRecognizerOptions.Builder().build())
+    SourceLang.JA -> TextRecognition.getClient(JapaneseTextRecognizerOptions.Builder().build())
+    else -> TextRecognition.getClient(ChineseTextRecognizerOptions.Builder().build())
 }
