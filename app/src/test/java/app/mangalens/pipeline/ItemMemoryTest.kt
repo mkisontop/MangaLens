@@ -316,4 +316,48 @@ class ItemMemoryTest {
         assertTrue(found.isNotEmpty())
         assertTrue("recall took $ms ms", ms < 400)
     }
+
+    @Test
+    fun aColumnIsFoundAgainWhateverSliverItsBoxLeavesAtTheEdge() {
+        // A narrow column's box rarely spans whole glyph-sized tiles: the
+        // last tile can be a column of cells or two holding only a stroke's
+        // anti-aliased rim, which the recall's threshold tips either way on
+        // pixels that did not change. Such a sliver lost the line, and the
+        // stop fell back to reading the whole screen.
+        val thin = Paint(ink).apply { strokeWidth = 2.5f }
+        val (page, c) = blank()
+        val items = ArrayList<PageItem>()
+        var n = 0
+        for (row in 0 until 4) {
+            for (col in 0 until 6) {
+                val x = 40f + col * 110f
+                val y = 400f + row * 300f
+                val size = 22f
+                val glyphs = 3 + n % 3
+                for (i in 0 until glyphs) {
+                    val rnd = Random((n * 31 + i) * 7919)
+                    val top = y + i * (size + 4)
+                    repeat(4) {
+                        c.drawLine(
+                            x + rnd.nextFloat() * size, top + rnd.nextFloat() * size,
+                            x + rnd.nextFloat() * size, top + rnd.nextFloat() * size, thin,
+                        )
+                    }
+                }
+                // Tight on the strokes, give or take a pixel or three.
+                val box = Rect(x.toInt() - 2, y.toInt() - 2, (x + size).toInt() + 1 + n % 4, (y + glyphs * (size + 4)).toInt())
+                items += PageItem(box, ItemKind.SPEECH, "column $n", "line $n", vertical = true)
+                n++
+            }
+        }
+        val memory = ItemMemory()
+        memory.remember(page, items)
+        val found = memory.recall(scrolled(page, 302).first)
+        val lost = items.filter { item -> found.none { it.en == item.en } }
+        assertEquals("columns lost: ${lost.map { it.box.toShortString() }}", emptyList<PageItem>(), lost)
+        for (item in items) {
+            val f = found.single { it.en == item.en }
+            assertTrue("${item.en} moved up by the scroll", abs(f.box.top - (item.box.top - 302)) <= 2)
+        }
+    }
 }

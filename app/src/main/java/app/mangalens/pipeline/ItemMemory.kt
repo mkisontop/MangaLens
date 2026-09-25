@@ -423,7 +423,6 @@ internal class ItemMemory {
             while (tx < d.w) {
                 var inter = 0
                 var union = 0
-                var cells = 0
                 for (y in ty until minOf(ty + tile, to)) {
                     val gr = (y + sy) * gw + sx
                     val dr = y * d.w
@@ -432,10 +431,12 @@ internal class ItemMemory {
                         val b = ink[gr + x]
                         if (a && b) inter++
                         if (a || b) union++
-                        cells++
                     }
                 }
-                if (union * 100 >= cells * TILE_MIN_INK_PCT && inter.toFloat() / union < TILE_JACCARD) return false
+                // Measured against a whole tile: the sliver left at the
+                // lettering's edge holds a cell or two of a stroke's rim,
+                // which the threshold can tip either way on identical pixels.
+                if (union * 100 >= tile * tile * TILE_MIN_INK_PCT && inter.toFloat() / union < TILE_JACCARD) return false
                 tx += tile
             }
             ty += tile
@@ -576,7 +577,7 @@ internal class ItemMemory {
         /** Side of a glyph-sized tile, in page pixels. */
         const val GLYPH_PX = 22
 
-        /** A tile with at least this share of its cells inked counts as holding a glyph. */
+        /** A tile with at least this share of a whole tile's cells inked counts as holding a glyph. */
         const val TILE_MIN_INK_PCT = 6
 
         /** Overlap every glyph-sized tile must reach on its own. */
