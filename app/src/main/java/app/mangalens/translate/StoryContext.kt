@@ -25,6 +25,16 @@ object StoryContext {
 
     private val recent = ArrayDeque<String>()
 
+    /**
+     * Moves on at every [reset], which every change of work makes. A request
+     * notes it when it takes its memory, and a reply that comes back under
+     * another one teaches nothing: its names, cast and lines belong to the
+     * work it was asked about, not the one the reader has since moved to.
+     */
+    @Volatile
+    var generation = 0L
+        private set
+
     @Synchronized
     fun snapshot(): List<String> = recent.toList()
 
@@ -41,5 +51,8 @@ object StoryContext {
     }
 
     @Synchronized
-    fun reset() = recent.clear()
+    fun reset() {
+        recent.clear()
+        generation++
+    }
 }

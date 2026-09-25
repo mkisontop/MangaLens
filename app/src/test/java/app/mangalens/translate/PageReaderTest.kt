@@ -300,13 +300,41 @@ class PageReaderTest {
     fun `a reply with nothing readable is a failure, a page with no text is not`() = runBlocking {
         val garbage = FakeTransport { _, _, onDelta -> streamOut("I cannot help with that.", onDelta) }
         try {
-            reader(garbage, race = 1).read(page(), SourceLang.JA)
+            withTimeout(5_000) { reader(garbage, race = 1, hedgeMs = 100, retryMs = 50).read(page(), SourceLang.JA) }
             fail("expected a failure")
         } catch (e: RuntimeException) {
             assertTrue(e.message!!.contains("no readable items"))
         }
+        // Asked as often as a dropped connection would be: the request, its
+        // spare at once, and one retry after the pause.
+        assertEquals(3, garbage.calls.size)
         val empty = FakeTransport { _, _, onDelta -> streamOut("{\"items\":[]}", onDelta) }
         assertEquals(emptyList<PageItem>(), reader(empty, race = 1).read(page(), SourceLang.JA))
+        assertEquals("a page with no lettering is an answer", 1, empty.calls.size)
+    }
+
+    @Test
+    fun `a reply with no items does not win the race over one about to deliver`() = runBlocking {
+        // Gemini now and then ends a stream cleanly with nothing visible in it.
+        val transport = FakeTransport { call, _, onDelta ->
+            if (call == 0) {
+                ""
+            } else {
+                delay(100)
+                streamOut(reply(hello), onDelta)
+            }
+        }
+        val items = withTimeout(5_000) { reader(transport, race = 2).read(page(), SourceLang.JA) }
+        assertEquals(listOf("Hello."), items.map { it.en })
+        assertEquals(2, transport.calls.size)
+        assertEquals("the racer with the page is not cancelled", 0, transport.cancelled.get())
+
+        // A lone request's spare goes at once, not after the hedge.
+        val lone = FakeTransport { call, _, onDelta -> if (call == 0) "{}" else streamOut(reply(hello), onDelta) }
+        val t0 = System.nanoTime()
+        assertEquals(listOf("Hello."), reader(lone, race = 1, hedgeMs = 10_000).read(page(), SourceLang.JA).map { it.en })
+        assertEquals(2, lone.calls.size)
+        assertTrue((System.nanoTime() - t0) / 1_000_000 < 2_000)
     }
 
     // ---- replay ----
@@ -803,6 +831,33 @@ class PageReaderTest {
         assertEquals("Japanese", pageText.getString("expected_source_language"))
         glossary.clear()
         cast.clear()
+    }
+
+    @Test
+    fun `a reply that lands after a new series began teaches the new one nothing`() = runBlocking {
+        val context = RuntimeEnvironment.getApplication()
+        val glossary = GlossaryStore(context)
+        val cast = CastBook(context)
+        val works = WorkMemory(context, glossary, cast)
+        val text = reply(
+            hello,
+            terms = JSONArray().put(JSONObject().put("src", "海斗").put("en", "Kaito")),
+            characters = JSONArray().put(JSONObject().put("name", "Kaito").put("pronoun", "he")),
+        )
+        val transport = FakeTransport { _, _, onDelta ->
+            val cut = text.indexOf("}", text.indexOf("Hello.")) + 1
+            streamOut(text.substring(0, cut), onDelta)
+            // The reader taps "New series" while the rest of the reply is on its way.
+            works.startNewWork()
+            streamOut(text.substring(cut), onDelta)
+            text
+        }
+        val read = PageReader(settings, glossary, cast, transport, 1, 10_000).start(this, page(), SourceLang.JA)
+        assertEquals("the page it was asked about is still lettered", listOf("Hello."), read.collect().map { it.en })
+        assertFalse("a whole reply, which would teach if it had come back in time", read.cutOff)
+        assertTrue(glossary.snapshot().isEmpty())
+        assertTrue(cast.snapshot().isEmpty())
+        assertTrue(StoryContext.snapshot().isEmpty())
     }
 
     @Test

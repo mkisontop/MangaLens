@@ -190,56 +190,26 @@ internal object GeminiApi {
      * One streamed `streamGenerateContent` call. Hands each piece of visible
      * (non-thought) text to [onDelta] as it arrives and returns the whole
      * text. Cancelling the caller aborts the request.
+     *
+     * @param silenceMs gives up with an IOException once the response has
+     *   been silent this long (0: the client's own read timeout).
+     * @param onSent is called once the request body has been handed to the
+     *   connection: the moment a duplicate can follow without halving this
+     *   one's upload.
+     * @param onFinish hears the reason the model gave for stopping, once the
+     *   reply has ended: "STOP" when it said all it meant to; anything else —
+     *   a filter tripping part-way, the token cap — when the text it returns
+     *   is only the start of an answer; empty when the stream never said. A
+     *   reply withheld before any text at all is still a [GeminiBlocked].
      */
     suspend fun stream(
         apiKey: String,
         model: String,
         body: JSONObject,
+        silenceMs: Long = 0L,
+        onSent: () -> Unit = {},
+        onFinish: (String) -> Unit = {},
         onDelta: (suspend (String) -> Unit)? = null,
-    ): String = stream(apiKey, model, body, onSent = {}, onDelta = onDelta)
-
-    /**
-     * [stream], calling [onSent] once the request body has been handed to
-     * the connection: the moment a duplicate can follow without halving
-     * this one's upload.
-     */
-    suspend fun stream(
-        apiKey: String,
-        model: String,
-        body: JSONObject,
-        onSent: () -> Unit,
-        onDelta: (suspend (String) -> Unit)?,
-    ): String = stream(apiKey, model, body, onSent, onFinish = {}, onDelta = onDelta)
-
-    /**
-     * [stream], also handing [onFinish] the reason the model gave for
-     * stopping, once the reply has ended: "STOP" when it said all it meant
-     * to; anything else — a filter tripping part-way, the token cap — when
-     * the text it returns is only the start of an answer; empty when the
-     * stream never said. A reply withheld before any text at all is still
-     * a [GeminiBlocked].
-     */
-    suspend fun stream(
-        apiKey: String,
-        model: String,
-        body: JSONObject,
-        onSent: () -> Unit,
-        onFinish: (String) -> Unit,
-        onDelta: (suspend (String) -> Unit)?,
-    ): String = stream(apiKey, model, body, 0L, onSent, onFinish, onDelta)
-
-    /**
-     * [stream], giving up with an IOException once the response has been
-     * silent for [silenceMs] (0: the client's own read timeout).
-     */
-    suspend fun stream(
-        apiKey: String,
-        model: String,
-        body: JSONObject,
-        silenceMs: Long,
-        onSent: () -> Unit,
-        onFinish: (String) -> Unit,
-        onDelta: (suspend (String) -> Unit)?,
     ): String = withContext(Dispatchers.IO) {
         val url = base + model + ":streamGenerateContent?alt=sse"
         withThinkingRetry(model, body) { b ->
@@ -478,7 +448,12 @@ internal object GeminiApi {
         return sb.toString()
     }
 
-    private fun httpError(model: String, resp: Response): GeminiHttpException {
+    /**
+     * The error [resp] reports, with Google's own message pulled out of its
+     * error envelope. [model] is recorded as missing when Google says it is
+     * gone; "" records nothing.
+     */
+    internal fun httpError(model: String, resp: Response): GeminiHttpException {
         val raw = runCatching { resp.body?.string() }.getOrNull().orEmpty()
         // Errors come as {"error":{...}}, or wrapped in an array on the streaming endpoint.
         val error = runCatching { JSONObject(raw).optJSONObject("error") }.getOrNull()

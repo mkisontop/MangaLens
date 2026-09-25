@@ -58,6 +58,8 @@ class LlmEngine(
         onEntry: (suspend (Int, String) -> Unit)? = null,
     ): List<String> = withContext(Dispatchers.IO) {
         LlmHttp.requireConfig(settings)
+        // Noted before the memory is taken: see the learning below.
+        val generation = StoryContext.generation
 
         val bubbles = JSONArray()
         items.forEachIndexed { i, t ->
@@ -110,15 +112,20 @@ class LlmEngine(
                 who[id] = o.optString("who", "").trim().take(24)
             }
         }
-        reply.optJSONObject("new_terms")?.let { terms ->
-            val learned = HashMap<String, String>()
-            for (k in terms.keys()) learned[k] = terms.optString(k, "")
-            glossary?.learn(learned)
-        }
-        cast?.learn(CastBook.parse(reply.optJSONObject("characters")))
-        out.forEachIndexed { i, en ->
-            if (en.isNotBlank() && kinds.getOrNull(i) != BubbleKind.SFX) {
-                StoryContext.remember(en, who[i])
+        // A reply that lands after the reader moved on to another work (a
+        // long pause, "New series") still translates its page, but what it
+        // would teach belongs to the work it was asked about.
+        if (generation == StoryContext.generation) {
+            reply.optJSONObject("new_terms")?.let { terms ->
+                val learned = HashMap<String, String>()
+                for (k in terms.keys()) learned[k] = terms.optString(k, "")
+                glossary?.learn(learned)
+            }
+            cast?.learn(CastBook.parse(reply.optJSONObject("characters")))
+            out.forEachIndexed { i, en ->
+                if (en.isNotBlank() && kinds.getOrNull(i) != BubbleKind.SFX) {
+                    StoryContext.remember(en, who[i])
+                }
             }
         }
         out

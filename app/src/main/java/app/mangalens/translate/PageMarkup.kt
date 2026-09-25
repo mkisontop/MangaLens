@@ -78,7 +78,10 @@ object PageMarkup {
 
     /**
      * Enlarged close-ups of the regions in [ids], each badged with its own
-     * id in the same style as the page marks, as base64 JPEGs.
+     * id in the same style as the page marks, as base64 JPEGs paired with
+     * the id each shows. A region that cannot be cut — off the page, or too
+     * thin to crop — is left out, so the ids that go with the request are
+     * the ones returned, never [ids] itself.
      *
      * The page goes up at 1400 pixels on its long side, which turns the
      * lettering of a balloon on a tablet capture into glyphs a dozen pixels
@@ -93,10 +96,10 @@ object PageMarkup {
         anchors: List<Bubble>,
         ids: List<Int>,
         dataSaver: Boolean,
-    ): List<String> {
+    ): List<Pair<Int, String>> {
         val maxDim = if (dataSaver) 384 else 768
         val quality = if (dataSaver) 62 else 80
-        val out = ArrayList<String>(ids.size)
+        val out = ArrayList<Pair<Int, String>>(ids.size)
         for (id in ids) {
             val box = anchors.getOrNull(id)?.box ?: continue
             val pad = (max(box.width(), box.height()) * 0.08f).toInt().coerceAtLeast(6)
@@ -117,7 +120,7 @@ object PageMarkup {
             if (canvasBitmap !== sized) sized.recycle()
             if (canvasBitmap == null) continue
             runCatching { drawBadge(canvasBitmap, id) }
-            out.add(encodeJpeg(canvasBitmap, quality))
+            out.add(id to encodeJpeg(canvasBitmap, quality))
             canvasBitmap.recycle()
         }
         return out
