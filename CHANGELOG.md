@@ -1,5 +1,56 @@
 # Changelog
 
+## Unreleased
+
+A full review of the app, with every finding checked and fixed.
+
+- **Auto-scroll**
+  - Translation no longer starts on a page that is still gliding slowly,
+    and a stop always waits for its own translation.
+  - MangaLens's own buttons no longer keep it from hurrying through the
+    gaps between panels, or pass for the end of the page.
+  - It also stops at the end of the page while translating.
+  - Turning its Accessibility switch off while it runs stops it with a
+    message instead of leaving it stuck.
+  - It waits while the long-press menu is open, and a speed tap no longer
+    stops your next touch from pausing it.
+- **Translation**
+  - Stop can no longer crash the app while a frame is being copied.
+  - A page with an animated banner or a video no longer translates over
+    and over.
+  - The last page's cards no longer come back over a new page after a
+    failed pass.
+  - Each series keeps its own names and story from the first page on, is
+    recognised again when you come back to it after a long read, and a
+    read still running when you tap New series no longer teaches the next
+    one. A few failed reads in a row (offline, rate-limited) no longer
+    make it forget the series.
+  - A reply with no lines no longer beats one with lines; the other
+    requests keep going.
+  - Small scroll nudges no longer leave rows unread, and a remembered
+    answer is reused only where the same words are found again.
+- **Cleaning the page**
+  - On screentone, panel borders and outlines beside the lettering are no
+    longer cut through and filled with dots.
+  - Art text is no longer wiped flat because a line once drifted into it.
+  - The AI clean-up sends at most eight regions and paints none of its
+    lettering back, and skips the request when no image model is left.
+- **Reading the page on the phone**
+  - Two joined balloons cut by the screen's edge are treated as cut.
+  - Korean lines ending in 야 or 라 are no longer run into the next
+    speaker's.
+  - The on-device reading models are released when you stop.
+- **The app**
+  - A leftover 1.0.1 Solid lettering switch no longer hides No ghosts.
+  - Allow it no longer crashes on phones without Android's overlay
+    permission page.
+  - The first Tweaks or scroll-button request after turning the phone is
+    no longer lost.
+  - OpenRouter and OpenAI refusals (HTTP 403) are no longer reported as a
+    bad key.
+- The release build signs the APK in a separate job that never runs build
+  code.
+
 ## 1.0.6
 
 Faster auto-scroll.
@@ -122,8 +173,8 @@ service does. That service is gone; everything else in 1.0.1 is here.
 
 - **No accessibility service.** The optional setup step **Make the English
   solid** and the **Solid lettering** row in Tweaks went with it. If you had
-  switched it on in 1.0.1, there is nothing to undo: Android forgets the
-  switch along with the service.
+  switched it on in 1.0.1, there is nothing to undo: without the service
+  the switch does nothing, even where Android still remembers it as on.
 - On Android 12 and later a faint trace of the original can show under the
   English again, as it did before 1.0.1: Android draws an overlay that lets
   your taps through at no more than 80% strength.
