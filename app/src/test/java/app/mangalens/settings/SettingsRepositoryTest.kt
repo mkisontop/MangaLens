@@ -31,4 +31,24 @@ class SettingsRepositoryTest {
         repo.setModel(LlmProvider.ANTHROPIC, "claude-model")
         assertEquals(LlmProvider.OPENAI, repo.current().provider)
     }
+
+    @Test
+    fun `auto-scroll's settings are kept, and its speed stays within its levels`() = runBlocking {
+        val repo = SettingsRepository(RuntimeEnvironment.getApplication())
+        val fresh = repo.current()
+        assertEquals(true, fresh.autoScrollButton)
+        assertEquals(4, fresh.scrollLevel)
+        assertEquals(true, fresh.smartScroll)
+        repo.setAutoScrollButton(false)
+        repo.setScrollLevel(7)
+        repo.setSmartScroll(false)
+        val saved = repo.current()
+        assertEquals(false, saved.autoScrollButton)
+        assertEquals(7, saved.scrollLevel)
+        assertEquals(false, saved.smartScroll)
+        repo.setScrollLevel(99)
+        assertEquals(10, repo.current().scrollLevel)
+        repo.setScrollLevel(-2)
+        assertEquals(1, repo.current().scrollLevel)
+    }
 }

@@ -5,4 +5,9 @@
     <!-- The lettering host's line and page in Accessibility settings (see LetteringHostService). -->
     <string name="lettering_host_summary">Draws MangaLens\'s English at full strength</string>
     <string name="lettering_host_description">Draws MangaLens\'s English over the page at full strength. Without it, Android keeps the lettering slightly see-through and the original text shows faintly underneath. This service only draws: it can\'t read your screen, see what you type, or act for you.</string>
+
+    <!-- Auto-scroll's line and page in Accessibility settings (see AutoScrollService). -->
+    <string name="auto_scroll_label">MangaLens auto-scroll</string>
+    <string name="auto_scroll_summary">Scrolls the page for you when you start auto-scroll</string>
+    <string name="auto_scroll_description">Lets MangaLens scroll the page for you in any app. It drags the page only while you have auto-scroll running, and stops when you touch the screen. This switch can do nothing else: it can\'t read what\'s on the screen, see what you type, or tap anything. (The slow-down for big balloons uses the screen capture you already allow MangaLens.)</string>
 </resources>

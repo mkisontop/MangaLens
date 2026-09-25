@@ -106,8 +106,11 @@ class OverlayScreenshotTest {
         canvas.restore()
     }
 
-    /** The controls row exactly as the overlay builds it: the button, then the pill. */
-    private fun controlsRow(message: String?, setup: FloatingButtonView.() -> Unit): LinearLayout {
+    /**
+     * The controls row exactly as the overlay builds it: the button, auto-scroll's
+     * button (with its speed buttons while [scrolling]), then the pill.
+     */
+    private fun controlsRow(message: String?, scrolling: Boolean = false, setup: FloatingButtonView.() -> Unit): LinearLayout {
         val row = LinearLayout(context).apply {
             orientation = LinearLayout.HORIZONTAL
             gravity = android.view.Gravity.CENTER_VERTICAL
@@ -117,6 +120,16 @@ class OverlayScreenshotTest {
             setup()
         }
         row.addView(btn)
+        val scroll = if (scrolling) {
+            listOf(ScrollButtonView.Glyph.PAUSE to 44f, ScrollButtonView.Glyph.SLOWER to 36f, ScrollButtonView.Glyph.FASTER to 36f)
+        } else {
+            listOf(ScrollButtonView.Glyph.SCROLL to 44f)
+        }
+        for ((glyph, size) in scroll) {
+            row.addView(ScrollButtonView(context, glyph).apply {
+                layoutParams = LinearLayout.LayoutParams(dp(size).toInt(), dp(size).toInt()).apply { marginStart = dp(2f).toInt() }
+            })
+        }
         if (message != null) {
             row.addView(OverlayStyle.statusPill(context).apply { OverlayStyle.showStatus(this, message) })
         }
@@ -135,7 +148,7 @@ class OverlayScreenshotTest {
     @Test
     fun `button and pill states over a white page and a black page`() {
         val w = dp(411f).toInt()
-        val half = dp(420f)
+        val half = dp(490f)
         val bmp = Bitmap.createBitmap(w, (half * 2).toInt(), Bitmap.Config.ARGB_8888)
         val canvas = Canvas(bmp)
         for ((i, dark) in listOf(false, true).withIndex()) {
@@ -147,6 +160,7 @@ class OverlayScreenshotTest {
                 controlsRow("napping · tap 文⁠A to wake me") { setPaused(true) },
                 controlsRow("⚠ AI couldn't read this page — rate limited") { setManual(true) },
                 controlsRow(null) { setBusy(true); setPaused(true) },
+                controlsRow("speed 5", scrolling = true) { setPaused(true) },
             )
             var y = top + dp(40f)
             for (row in rows) {

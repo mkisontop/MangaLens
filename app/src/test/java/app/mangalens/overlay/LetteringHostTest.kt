@@ -59,23 +59,25 @@ class LetteringHostTest {
     }
 
     @Test
-    fun `the download declares nothing Play Protect blocks a sideload for`() {
+    fun `the download declares only auto-scroll's accessibility service, and nothing else Play Protect blocks`() {
         // Enhanced fraud protection refuses a browser- or file-manager-installed
         // app with any of these, whatever it does with them: 1.0.1 could not
-        // be installed at all where it is on.
+        // be installed at all where it is on. Auto-scroll needs one (only an
+        // accessibility service may move another app's page), and the reader
+        // chose to have it at that price; nothing else is declared.
         val info = context.packageManager.getPackageInfo(
             context.packageName,
             PackageManager.GET_SERVICES or PackageManager.GET_PERMISSIONS,
         )
-        val guarded = setOf(
-            "android.permission.BIND_ACCESSIBILITY_SERVICE",
-            "android.permission.BIND_NOTIFICATION_LISTENER_SERVICE",
-        )
-        val services = info.services.orEmpty().filter { it.permission in guarded }.map { it.name }
-        assertEquals(emptyList<String>(), services)
+        val accessibility = info.services.orEmpty()
+            .filter { it.permission == "android.permission.BIND_ACCESSIBILITY_SERVICE" }
+            .map { it.name }
+        assertEquals(listOf("app.mangalens.scroll.AutoScrollService"), accessibility)
+        val listeners = info.services.orEmpty().filter { it.permission == "android.permission.BIND_NOTIFICATION_LISTENER_SERVICE" }
+        assertEquals(emptyList<Any>(), listeners)
         val sms = info.requestedPermissions.orEmpty().filter { it == "android.permission.RECEIVE_SMS" || it == "android.permission.READ_SMS" }
         assertEquals(emptyList<String>(), sms)
-        // So solid lettering is not offered: there is no service to switch on.
+        // Solid lettering is still not offered: its service is not declared.
         assertFalse(LetteringHost.declared(context))
     }
 

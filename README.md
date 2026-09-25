@@ -48,9 +48,42 @@ the normal APK.
 A floating **文A** button is always available, with a busy ring while a pass
 runs. **Tap** pauses and resumes in hands-free mode, and translates the page
 in tap-to-translate mode; **long-press** opens the quick menu (translate this
-page, pause, peek at the original art, tap-to-translate mode, Tweaks, stop).
-Every setting lives on one **Tweaks** page, which the quick menu opens
-directly.
+page, pause, auto-scroll, peek at the original art, tap-to-translate mode,
+Tweaks, stop). Beside it, **▼** starts [auto-scroll](#auto-scroll). Every
+setting lives on one **Tweaks** page, which the quick menu opens directly.
+
+## Auto-scroll
+
+MangaLens can scroll the page for you, in any app — Brave, a reader app,
+anything that scrolls — with translation on or napping.
+
+- **Turn it on once:** Tweaks → Auto-scroll → **Turn on**, and switch on
+  **MangaLens auto-scroll** in Accessibility. On Android 13 and later a
+  switch for an app installed from a download starts greyed out: open
+  **App info** (the link under the button), tap ⋮ → **Allow restricted
+  settings**, and switch it on again.
+- **Tap ▼** beside the 文A bubble and the page starts moving. **−** and **+**
+  change the speed as it goes (Tweaks → Auto-scroll → Speed sets where it
+  starts); **❚❚** stops it. **Touch the screen** and it pauses; it carries on
+  a couple of seconds after you let go and the page has come to rest. At the
+  end of the page it stops by itself.
+- **It slows down for big balloons.** MangaLens looks at the page on your
+  phone as it moves and slows right down while a big balloon passes through
+  the middle of the screen, the more the bigger it is, and hurries through
+  the empty gaps between panels. No AI and no connection are involved.
+  **Tweaks → Slow down for big balloons** switches that off for one steady
+  speed.
+- **Translation napping** (tap 文A): the page glides without stopping.
+  **Translation awake:** a page that never stops would never be translated,
+  so the page glides half a screen, holds while that stop is translated, and
+  holds on for as long as its new English takes to read, then glides on.
+  Tap 文A to switch between the two whenever you like.
+
+The drag goes through an accessibility service, because on Android only an
+accessibility service may touch another app's screen. It asks for nothing
+but gestures: it cannot read the screen's contents, see what you type or
+tap anything, and it moves the page only while auto-scroll runs. The
+slow-down reads the page through the screen capture MangaLens already has.
 
 ## Install
 
@@ -63,11 +96,14 @@ directly.
    apps", then get a free Gemini key and tap **Paste my key**. Fuki proves the
    key by lettering a Korean line, and you're ready to tap **GO!**.
 
-MangaLens asks for nothing Play Protect blocks a sideloaded app for: no
-accessibility service, no notification access, no SMS. 1.0.1 had an
-accessibility service, and where Play Protect's enhanced fraud protection is
-on it could not be installed at all ("App blocked to protect your device");
-1.0.2 and later install normally.
+Auto-scroll needs an accessibility service ("MangaLens auto-scroll"): only
+an accessibility service may move another app's page. Where Play Protect's
+enhanced fraud protection is on, Android refuses to install an app from a
+browser or file manager that declares one ("App blocked to protect your
+device"), whatever the service does — 1.0.1 hit the same wall. If that
+happens, switch enhanced fraud protection off in Play Protect's settings for
+the install, and back on afterwards. MangaLens asks for nothing else of that
+kind: no notification access, no SMS.
 
 ### No ghosts
 
@@ -567,9 +603,15 @@ for how it works.
 the original from ghosting through on Android 12 and later. It lifts while
 MangaLens naps, and **Tweaks → No ghosts** turns it off.
 
-**"App blocked to protect your device" when installing?** That was 1.0.1 and
-its accessibility service. Download the latest APK again: 1.0.2 and later
-install normally.
+**"App blocked to protect your device" when installing?** That is Play
+Protect's enhanced fraud protection refusing a downloaded app with an
+accessibility service, which [auto-scroll](#auto-scroll) needs. See
+[Install](#install) for the way round.
+
+**Auto-scroll doesn't move the page?** Check **MangaLens auto-scroll** is on
+in Accessibility (Tweaks → Auto-scroll says so). If ▼ keeps saying
+"couldn't scroll here", the app you are reading in may not scroll by drag;
+scroll it by hand once to check.
 
 **The browser bar gets translated?** Raise **Skip the top of the screen** in
 Tweaks → More options.

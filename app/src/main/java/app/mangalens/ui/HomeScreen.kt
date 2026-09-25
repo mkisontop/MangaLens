@@ -91,6 +91,7 @@ import androidx.compose.ui.window.DialogWindowProvider
 import androidx.lifecycle.compose.LifecycleResumeEffect
 import app.mangalens.capture.ScreenCaptureService
 import app.mangalens.overlay.LetteringHost
+import app.mangalens.scroll.AutoScrollHost
 import app.mangalens.overlay.OverlayStrength
 import app.mangalens.settings.AppSettings
 import app.mangalens.settings.CaptureMode
@@ -119,6 +120,8 @@ internal data class HomeUiState(
     val solidOffered: Boolean = false,
     /** MangaLens is on in Accessibility, so the lettering is drawn at full strength. */
     val solidLettering: Boolean = false,
+    /** "MangaLens auto-scroll" is on in Accessibility, so auto-scroll can move the page. */
+    val autoScrollOn: Boolean = false,
     /**
      * Whether "No ghosts" is offered: Android draws the lettering below
      * full strength (see OverlayStrength), so the original would show
@@ -145,6 +148,8 @@ internal class HomeActions(
     val onTurnOnSolid: () -> Unit = {},
     /** App info, where Android 13 and later allow a restricted setting. */
     val onOpenAppInfo: () -> Unit = {},
+    /** Accessibility settings, where auto-scroll is switched on. */
+    val onTurnOnAutoScroll: () -> Unit = {},
 )
 
 private enum class Page { HOME, TWEAKS }
@@ -155,10 +160,11 @@ private enum class Page { HOME, TWEAKS }
  * own, so every face of the screen can be rendered from a fixed state.
  */
 @Composable
-fun HomeScreen(
+internal fun HomeScreen(
     repo: SettingsRepository,
     browserName: String?,
     tweaksRequests: Int,
+    tweaksTarget: TweaksTarget = TweaksTarget.TOP,
     startRefused: Boolean,
     onStart: () -> Unit,
     onStop: () -> Unit,
@@ -167,6 +173,7 @@ fun HomeScreen(
     onOpenBrowser: () -> Unit,
     onTurnOnSolid: () -> Unit,
     onOpenAppInfo: () -> Unit,
+    onTurnOnAutoScroll: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
@@ -191,8 +198,10 @@ fun HomeScreen(
     // Solid lettering is switched on in Settings, so it is checked again
     // each time the reader comes back.
     var solidLettering by remember { mutableStateOf(LetteringHost.isOn(context)) }
+    var autoScrollOn by remember { mutableStateOf(AutoScrollHost.isOn(context)) }
     LifecycleResumeEffect(Unit) {
         solidLettering = LetteringHost.isOn(context)
+        autoScrollOn = AutoScrollHost.isOn(context)
         onPauseOrDispose { }
     }
 
@@ -215,8 +224,8 @@ fun HomeScreen(
     val sink = remember(repo, scope) { RepoSink(scope, repo) }
     val drafts = rememberAiDrafts(settings ?: AppSettings(), sink)
     val sayHi = remember(scope) { SayHi(scope) }
-    val actions = remember(onStart, onStop, onGrantOverlay, onTogglePause, onOpenBrowser, onTurnOnSolid, onOpenAppInfo) {
-        HomeActions(onStart, onStop, onGrantOverlay, onTogglePause, onOpenBrowser, onTurnOnSolid, onOpenAppInfo)
+    val actions = remember(onStart, onStop, onGrantOverlay, onTogglePause, onOpenBrowser, onTurnOnSolid, onOpenAppInfo, onTurnOnAutoScroll) {
+        HomeActions(onStart, onStop, onGrantOverlay, onTogglePause, onOpenBrowser, onTurnOnSolid, onOpenAppInfo, onTurnOnAutoScroll)
     }
     CompositionLocalProvider(LocalReducedMotion provides reducedMotion) {
         HomeContent(
@@ -227,6 +236,7 @@ fun HomeScreen(
                 overlayGranted = overlayGranted,
                 solidOffered = solidOffered,
                 solidLettering = solidLettering,
+                autoScrollOn = autoScrollOn,
                 ghostsOffered = ghostsOffered,
                 browserName = browserName,
                 startRefused = startRefused,
@@ -238,6 +248,7 @@ fun HomeScreen(
             sink = sink,
             actions = actions,
             tweaksRequests = tweaksRequests,
+            tweaksTarget = tweaksTarget,
         )
     }
 }
@@ -261,6 +272,7 @@ internal fun HomeContent(
     sink: SettingsSink,
     actions: HomeActions,
     tweaksRequests: Int = 0,
+    tweaksTarget: TweaksTarget = TweaksTarget.TOP,
 ) {
     val pop = LocalPop.current
     val reduced = LocalReducedMotion.current
@@ -270,7 +282,7 @@ internal fun HomeContent(
     LaunchedEffect(tweaksRequests) {
         if (tweaksRequests > 0 && tweaksRequests != seenRequests) {
             seenRequests = tweaksRequests
-            target = TweaksTarget.TOP
+            target = tweaksTarget
             page = Page.TWEAKS
         }
     }
@@ -350,6 +362,8 @@ internal fun HomeContent(
                         ghostsOffered = state.ghostsOffered,
                         onTurnOnSolid = actions.onTurnOnSolid,
                         onOpenAppInfo = actions.onOpenAppInfo,
+                        autoScrollOn = state.autoScrollOn,
+                        onTurnOnAutoScroll = actions.onTurnOnAutoScroll,
                         onClose = { page = Page.HOME },
                     )
                 }

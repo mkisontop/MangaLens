@@ -155,11 +155,20 @@ jobs:
           # Play Protect's enhanced fraud protection refuses to install a
           # sideloaded app that declares any of these, and MangaLens is only
           # ever sideloaded: 1.0.1 could not be installed where it is on.
-          blocked="$("$aapt" dump xmltree "$unsigned" AndroidManifest.xml |
-            grep -oE 'android\.permission\.(BIND_ACCESSIBILITY_SERVICE|BIND_NOTIFICATION_LISTENER_SERVICE|RECEIVE_SMS|READ_SMS)' |
+          # Auto-scroll's accessibility service is the one exception, by the
+          # reader's choice (only an accessibility service may move another
+          # app's page); no second one may slip in beside it.
+          manifest="$("$aapt" dump xmltree "$unsigned" AndroidManifest.xml)"
+          blocked="$(printf '%s\n' "$manifest" |
+            grep -oE 'android\.permission\.(BIND_NOTIFICATION_LISTENER_SERVICE|RECEIVE_SMS|READ_SMS)' |
             sort -u || true)"
           if [ -n "$blocked" ]; then
             echo "::error::The APK declares what Play Protect blocks sideloaded installs for: $blocked"
+            exit 1
+          fi
+          accessibility="$(printf '%s\n' "$manifest" | grep -c 'android\.permission\.BIND_ACCESSIBILITY_SERVICE' || true)"
+          if [ "$accessibility" -gt 1 ] || { [ "$accessibility" -eq 1 ] && ! printf '%s\n' "$manifest" | grep -q 'app\.mangalens\.scroll\.AutoScrollService\|\.scroll\.AutoScrollService'; }; then
+            echo "::error::The APK declares an accessibility service other than auto-scroll's."
             exit 1
           fi
 

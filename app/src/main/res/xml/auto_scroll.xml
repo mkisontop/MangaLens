@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+    Auto-scroll asks for no events (there is no accessibilityEventTypes)
+    and no window content: only to perform gestures, the drag that moves
+    the page while auto-scroll runs (see AutoScrollService).
+-->
+<accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
+    android:accessibilityFeedbackType="feedbackGeneric"
+    android:canPerformGestures="true"
+    android:canRetrieveWindowContent="false"
+    android:description="@string/auto_scroll_description"
+    android:isAccessibilityTool="false"
+    android:summary="@string/auto_scroll_summary" />

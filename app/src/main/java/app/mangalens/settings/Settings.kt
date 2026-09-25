@@ -87,6 +87,12 @@ data class AppSettings(
     val stabilityMs: Int = 350,
     val ignoreTopPct: Float = 0.03f,
     val ignoreBottomPct: Float = 0.02f,
+    /** Whether auto-scroll's button sits beside the 文A button. */
+    val autoScrollButton: Boolean = true,
+    /** Auto-scroll's speed, 1 (a slow crawl) to 10 (a skim). See ScrollPace. */
+    val scrollLevel: Int = 4,
+    /** Whether auto-scroll slows down for big balloons and hurries through empty gaps. */
+    val smartScroll: Boolean = true,
 ) {
     fun effectiveModel(): String = if (model.isNotBlank()) model else when (provider) {
         LlmProvider.ANTHROPIC -> "claude-sonnet-5"
@@ -131,6 +137,9 @@ private object Keys {
     val STABILITY_MS = intPreferencesKey("stability_ms")
     val IGNORE_TOP = floatPreferencesKey("ignore_top")
     val IGNORE_BOTTOM = floatPreferencesKey("ignore_bottom")
+    val AUTO_SCROLL_BUTTON = booleanPreferencesKey("auto_scroll_button")
+    val SCROLL_LEVEL = intPreferencesKey("scroll_level")
+    val SMART_SCROLL = booleanPreferencesKey("smart_scroll")
 
     private val API_KEY_ANTHROPIC = stringPreferencesKey("api_key_anthropic")
     private val API_KEY_OPENAI = stringPreferencesKey("api_key_openai")
@@ -284,6 +293,9 @@ internal fun settingsFromPreferences(p: Preferences, credentials: Preferences = 
         stabilityMs = p[Keys.STABILITY_MS] ?: d.stabilityMs,
         ignoreTopPct = p[Keys.IGNORE_TOP] ?: d.ignoreTopPct,
         ignoreBottomPct = p[Keys.IGNORE_BOTTOM] ?: d.ignoreBottomPct,
+        autoScrollButton = p[Keys.AUTO_SCROLL_BUTTON] ?: d.autoScrollButton,
+        scrollLevel = (p[Keys.SCROLL_LEVEL] ?: d.scrollLevel).coerceIn(1, 10),
+        smartScroll = p[Keys.SMART_SCROLL] ?: d.smartScroll,
     )
 }
 
@@ -332,4 +344,7 @@ class SettingsRepository(private val context: Context) {
     suspend fun setStabilityMs(v: Int) = context.settingsStore.edit { it[Keys.STABILITY_MS] = v }
     suspend fun setIgnoreTopPct(v: Float) = context.settingsStore.edit { it[Keys.IGNORE_TOP] = v }
     suspend fun setIgnoreBottomPct(v: Float) = context.settingsStore.edit { it[Keys.IGNORE_BOTTOM] = v }
+    suspend fun setAutoScrollButton(v: Boolean) = context.settingsStore.edit { it[Keys.AUTO_SCROLL_BUTTON] = v }
+    suspend fun setScrollLevel(v: Int) = context.settingsStore.edit { it[Keys.SCROLL_LEVEL] = v.coerceIn(1, 10) }
+    suspend fun setSmartScroll(v: Boolean) = context.settingsStore.edit { it[Keys.SMART_SCROLL] = v }
 }

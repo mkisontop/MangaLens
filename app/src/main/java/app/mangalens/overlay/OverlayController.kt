@@ -35,6 +35,14 @@ class OverlayController(private val context: Context, private val listener: List
         fun onStopRequested()
         fun isPaused(): Boolean
         fun isAutoMode(): Boolean
+
+        /** Starts auto-scroll, or stops it. */
+        fun onToggleAutoScroll() {}
+
+        /** Auto-scroll [step] levels faster (or slower, below zero). */
+        fun onScrollSpeed(step: Int) {}
+
+        fun isAutoScrolling(): Boolean = false
     }
 
     private val wm = context.getSystemService(WindowManager::class.java)
@@ -42,6 +50,11 @@ class OverlayController(private val context: Context, private val listener: List
 
     private var controls: LinearLayout? = null
     private var button: FloatingButtonView? = null
+    private var scrollButton: ScrollButtonView? = null
+    private var slower: ScrollButtonView? = null
+    private var faster: ScrollButtonView? = null
+    private var scrollShown = true
+    private var scrolling = false
     private var pill: TextView? = null
     private var menu: LinearLayout? = null
     private var controlsLp: WindowManager.LayoutParams? = null
@@ -177,7 +190,7 @@ class OverlayController(private val context: Context, private val listener: List
         val lp = controlsLp
         val row = controls
         if (lp != null && row != null) {
-            val w = if (row.width > 0) row.width else dp(220f)
+            val w = if (row.width > 0) row.width else dp(260f)
             val h = if (row.height > 0) row.height else dp(52f)
             val m = dp(6f)
             out.add(android.graphics.Rect(lp.x - m, lp.y - m, lp.x + w + m, lp.y + h + m))
@@ -217,6 +230,32 @@ class OverlayController(private val context: Context, private val listener: List
     }
 
     /**
+     * Whether auto-scroll's button is offered beside 文A. It stays while
+     * the page is moving, whatever the setting says: it is how the page is
+     * stopped.
+     */
+    fun setScrollButtonShown(shown: Boolean) {
+        scrollShown = shown
+        showScroll()
+    }
+
+    /** Auto-scroll started or stopped: the button says which, and the speed buttons come and go. */
+    fun setAutoScrolling(running: Boolean) {
+        scrolling = running
+        showScroll()
+    }
+
+    private fun showScroll() {
+        scrollButton?.let {
+            it.glyph = if (scrolling) ScrollButtonView.Glyph.PAUSE else ScrollButtonView.Glyph.SCROLL
+            it.visibility = if (scrollShown || scrolling) View.VISIBLE else View.GONE
+        }
+        val speed = if (scrolling) View.VISIBLE else View.GONE
+        slower?.visibility = speed
+        faster?.visibility = speed
+    }
+
+    /**
      * What a tap on the button does. Paused, it wakes translation up. In
      * hands-free mode it pauses; in tap-to-translate mode it translates the
      * page, because there a pause would do nothing the reader can see and
@@ -251,6 +290,7 @@ class OverlayController(private val context: Context, private val listener: List
         }
         val status = OverlayStyle.statusPill(context).apply { visibility = View.GONE }
         row.addView(btn)
+        for (v in buildScrollButtons()) row.addView(v)
         row.addView(status)
         row.addOnLayoutChangeListener { _, l, t, r, b, oldL, oldT, oldR, oldB ->
             if (l != oldL || t != oldT || r != oldR || b != oldB) footprintChanged()
@@ -318,6 +358,27 @@ class OverlayController(private val context: Context, private val listener: List
         controlsLp = lp
     }
 
+    /** Auto-scroll's start/stop button and its speed buttons, which show only while the page moves. */
+    private fun buildScrollButtons(): List<View> {
+        fun button(glyph: ScrollButtonView.Glyph, size: Float, action: () -> Unit) =
+            ScrollButtonView(context, glyph).apply {
+                layoutParams = LinearLayout.LayoutParams(dp(size), dp(size)).apply { marginStart = dp(2f) }
+                setOnClickListener { v ->
+                    v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                    action()
+                }
+            }
+        val go = button(ScrollButtonView.Glyph.SCROLL, 44f) { listener.onToggleAutoScroll() }
+        val down = button(ScrollButtonView.Glyph.SLOWER, 36f) { listener.onScrollSpeed(-1) }
+        val up = button(ScrollButtonView.Glyph.FASTER, 36f) { listener.onScrollSpeed(+1) }
+        scrollButton = go
+        slower = down
+        faster = up
+        scrolling = listener.isAutoScrolling()
+        showScroll()
+        return listOf(go, down, up)
+    }
+
     private fun showMenu() {
         if (menu != null) return
         val lpControls = controlsLp ?: return
@@ -373,6 +434,11 @@ class OverlayController(private val context: Context, private val listener: List
                 item("Wake up (resume)", R.drawable.ic_menu_play) { listener.onTogglePause() }
             } else {
                 item("Pause for a nap", R.drawable.ic_menu_pause) { listener.onTogglePause() }
+            }
+            if (listener.isAutoScrolling()) {
+                item("Stop auto-scroll", R.drawable.ic_menu_pause) { listener.onToggleAutoScroll() }
+            } else {
+                item("Auto-scroll the page", R.drawable.ic_menu_scroll) { listener.onToggleAutoScroll() }
             }
             if (listener.isAutoMode()) {
                 item("Switch to tap-to-translate", R.drawable.ic_menu_tap) { listener.onToggleMode() }

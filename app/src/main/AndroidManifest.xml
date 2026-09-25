@@ -37,11 +37,25 @@
             android:foregroundServiceType="mediaProjection" />
 
         <!--
-            No accessibility service (LetteringHostService, solid lettering):
-            Play Protect's enhanced fraud protection refuses to install a
-            sideloaded app that declares one, whatever it does, and MangaLens
-            is installed from its download link. LetteringHostTest and the
-            release workflow keep it that way.
+            Auto-scroll drags the page through this accessibility service:
+            only an accessibility service may touch another app's screen. It
+            asks for gestures alone (res/xml/auto_scroll.xml). The reader
+            chose to have it despite the price: Play Protect's enhanced
+            fraud protection refuses to install a sideloaded app that
+            declares an accessibility service, as it did 1.0.1.
+            LetteringHostService (solid lettering) stays undeclared.
         -->
+        <service
+            android:name=".scroll.AutoScrollService"
+            android:exported="true"
+            android:label="@string/auto_scroll_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/auto_scroll" />
+        </service>
     </application>
 </manifest>

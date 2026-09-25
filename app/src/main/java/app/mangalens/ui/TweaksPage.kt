@@ -73,15 +73,16 @@ import app.mangalens.settings.LlmProvider
 import app.mangalens.settings.SourceLang
 import app.mangalens.translate.LlmHttp
 import app.mangalens.translate.ModelCatalog
+import kotlin.math.roundToInt
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 
 /**
  * Where Tweaks opens: at the top, at the Your AI card (a missing or refused
- * key, a server to set up), or at the other providers, unfolded under More
- * options.
+ * key, a server to set up), at the other providers, unfolded under More
+ * options, or at Auto-scroll (its switch in Accessibility is off).
  */
-internal enum class TweaksTarget { TOP, AI, OTHER_AI }
+internal enum class TweaksTarget { TOP, AI, OTHER_AI, SCROLL }
 
 /**
  * Tweaks, kept to what a reader actually changes: the language, hands-free
@@ -107,9 +108,12 @@ internal fun TweaksPage(
     onTurnOnSolid: () -> Unit,
     onOpenAppInfo: () -> Unit,
     onClose: () -> Unit,
+    autoScrollOn: Boolean = false,
+    onTurnOnAutoScroll: () -> Unit = {},
 ) {
     val pop = LocalPop.current
     var moreOpen by rememberSaveable { mutableStateOf(target == TweaksTarget.OTHER_AI) }
+    val scrollRequester = remember { BringIntoViewRequester() }
     val aiRequester = remember { BringIntoViewRequester() }
     val otherAiRequester = remember { BringIntoViewRequester() }
     LaunchedEffect(target) {
@@ -123,6 +127,10 @@ internal fun TweaksPage(
                 moreOpen = true
                 delay(250)
                 otherAiRequester.bringIntoView()
+            }
+            TweaksTarget.SCROLL -> {
+                delay(250)
+                scrollRequester.bringIntoView()
             }
         }
     }
@@ -156,6 +164,10 @@ internal fun TweaksPage(
                 )
 
                 ReadingSection(settings, sink, columns = if (narrow) 2 else 4)
+                AutoScrollSection(
+                    settings, sink, autoScrollOn, onTurnOnAutoScroll, onOpenAppInfo,
+                    stacked = narrow, modifier = Modifier.bringIntoViewRequester(scrollRequester),
+                )
                 TextSizeSection(settings, sink)
                 if (solidOffered) SolidLetteringRow(solidLettering, onTurnOnSolid, onOpenAppInfo, stacked = narrow)
                 if (ghostsOffered && !solidLettering) NoGhostsRow(settings, sink)
@@ -249,6 +261,99 @@ private fun ReadingSection(settings: AppSettings, sink: SettingsSink, columns: I
         handsFree,
         { sink.setMode(if (it) CaptureMode.AUTO else CaptureMode.MANUAL) },
     )
+}
+
+/**
+ * Auto-scroll: whether its switch in Accessibility is on — only an
+ * accessibility service may move another app's page — and when it is not,
+ * the way there, with App info a tap away for a switch Android has greyed
+ * out; then how fast it goes, whether it slows down for balloons, and
+ * whether its button sits beside 文A.
+ */
+@Composable
+private fun AutoScrollSection(
+    settings: AppSettings,
+    sink: SettingsSink,
+    on: Boolean,
+    onTurnOn: () -> Unit,
+    onOpenAppInfo: () -> Unit,
+    stacked: Boolean,
+    modifier: Modifier = Modifier,
+) {
+    Column(modifier) {
+        SectionTitle("Auto-scroll")
+        val pop = LocalPop.current
+        PopSurface(Modifier.fillMaxWidth(), RoundedCornerShape(20.dp), color = pop.surface) {
+            val words: @Composable (Modifier) -> Unit = { m ->
+                Column(m) {
+                    Text(
+                        if (on) "Auto-scroll · ready ✓" else "Auto-scroll · one switch to go",
+                        style = MaterialTheme.typography.titleMedium,
+                        color = pop.ink,
+                    )
+                    Spacer(Modifier.height(2.dp))
+                    Helper(
+                        if (on) "Tap ▼ beside the $MARK bubble and I scroll the page for you, in any app."
+                        else "Only an Accessibility switch lets me move another app's page. Switch on \"MangaLens auto-scroll\"."
+                    )
+                }
+            }
+            val button: @Composable (Modifier) -> Unit = { m ->
+                StickerButton(
+                    "Turn on ↗", onTurnOn, modifier = m, style = StickerStyle.Surface, height = 48.dp,
+                    fillWidth = stacked, contentDescription = "Turn on auto-scroll in Accessibility",
+                )
+            }
+            when {
+                on -> words(Modifier.fillMaxWidth().padding(16.dp))
+                stacked -> Column(Modifier.fillMaxWidth().padding(16.dp)) {
+                    words(Modifier)
+                    Spacer(Modifier.height(12.dp))
+                    button(Modifier)
+                }
+                else -> Row(Modifier.fillMaxWidth().padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    words(Modifier.weight(1f))
+                    Spacer(Modifier.width(12.dp))
+                    button(Modifier)
+                }
+            }
+        }
+        if (!on && Build.VERSION.SDK_INT >= 33) {
+            Spacer(Modifier.height(4.dp))
+            TextLink("Auto-scroll greyed out? Allow it in App info ↗", onOpenAppInfo)
+        }
+        Spacer(Modifier.height(16.dp))
+        PopSlider(
+            "Speed",
+            settings.scrollLevel.toFloat(),
+            1f..10f,
+            { "${it.roundToInt()}" },
+            { sink.setScrollLevel(it.roundToInt()) },
+            startLabel = "slow",
+            endLabel = "fast",
+        )
+        Spacer(Modifier.height(12.dp))
+        PopToggleRow(
+            "Slow down for big balloons",
+            if (settings.smartScroll) "I watch the page and slow right down while a big balloon goes by, and hurry through empty gaps."
+            else "One steady speed, whatever is on the page.",
+            settings.smartScroll,
+            sink::setSmartScroll,
+        )
+        Spacer(Modifier.height(12.dp))
+        PopToggleRow(
+            "Scroll button",
+            if (settings.autoScrollButton) "▼ sits beside the $MARK bubble. Touch the screen to pause the scroll."
+            else "Hidden. Long-press the $MARK bubble for Auto-scroll instead.",
+            settings.autoScrollButton,
+            sink::setAutoScrollButton,
+        )
+        Spacer(Modifier.height(6.dp))
+        Helper(
+            "Translation napping: the page glides without stopping. Translation awake: I stop at each page, " +
+                "translate it, and give you time to read before I move on."
+        )
+    }
 }
 
 @Composable

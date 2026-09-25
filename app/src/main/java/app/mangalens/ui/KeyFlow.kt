@@ -68,6 +68,9 @@ internal interface SettingsSink {
     fun setNoGhosts(v: Boolean)
     fun setIgnoreTopPct(v: Float)
     fun setStabilityMs(v: Int)
+    fun setAutoScrollButton(v: Boolean) {}
+    fun setScrollLevel(v: Int) {}
+    fun setSmartScroll(v: Boolean) {}
 }
 
 /**
@@ -94,6 +97,9 @@ internal class RepoSink(private val scope: CoroutineScope, private val repo: Set
     override fun setNoGhosts(v: Boolean) = write { setNoGhosts(v) }
     override fun setIgnoreTopPct(v: Float) = write { setIgnoreTopPct(v) }
     override fun setStabilityMs(v: Int) = write { setStabilityMs(v) }
+    override fun setAutoScrollButton(v: Boolean) = write { setAutoScrollButton(v) }
+    override fun setScrollLevel(v: Int) = write { setScrollLevel(v) }
+    override fun setSmartScroll(v: Boolean) = write { setSmartScroll(v) }
 }
 
 /**

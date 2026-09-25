@@ -25,6 +25,7 @@ import android.os.HandlerThread
 import android.os.IBinder
 import android.os.SystemClock
 import android.util.DisplayMetrics
+import android.view.ViewConfiguration
 import android.view.WindowManager
 import android.content.pm.ServiceInfo
 import androidx.core.app.NotificationCompat
@@ -42,6 +43,9 @@ import app.mangalens.pipeline.AiFailure
 import app.mangalens.pipeline.ScrollMatch
 import app.mangalens.pipeline.TranslatePipeline
 import app.mangalens.pipeline.UpgradeMerge
+import app.mangalens.ocr.BalloonFinder
+import app.mangalens.scroll.AutoScrollHost
+import app.mangalens.scroll.AutoScroller
 import app.mangalens.settings.AppSettings
 import app.mangalens.settings.CaptureMode
 import app.mangalens.settings.SettingsRepository
@@ -442,6 +446,43 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
     private var capW = 0
     private var capH = 0
 
+    /** Translation passes finished so far: auto-scroll waits on the next one when stops are translated. */
+    private var passes = 0
+
+    private var autoScroller: AutoScroller? = null
+
+    /** What auto-scroll sees of the screen and of translation. Main thread, but for [balloons]. */
+    private val scrollPage = object : AutoScroller.Page {
+        override fun size(): Pair<Int, Int> = capW to capH
+
+        override fun obstacles(): List<Rect> = controller?.overlayExclusions() ?: emptyList()
+
+        override fun thumb(): IntArray? = latestThumb
+
+        override suspend fun balloons(): List<Rect>? {
+            val s = settings
+            val exclusions = controller?.overlayExclusions() ?: emptyList()
+            return withContext(Dispatchers.Default) {
+                val bmp = grabFrame() ?: return@withContext null
+                try {
+                    BalloonFinder.analyze(
+                        bmp, (bmp.height * s.ignoreTopPct).toInt(), (bmp.height * s.ignoreBottomPct).toInt(), exclusions,
+                    ).balloons.map { it.box }
+                } finally {
+                    bmp.recycle()
+                }
+            }
+        }
+
+        override fun translating(): Boolean =
+            !paused && settings.mode == CaptureMode.AUTO && LlmHttp.setupNeeded(settings) == null
+
+        override fun passes(): Int = passes
+
+        override fun englishBelow(y: Int): Int =
+            if (state != State.SHOWING) 0 else lastShown.filter { it.box.centerY() > y }.sumOf { it.translated.length }
+    }
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -459,6 +500,11 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                     v.bgOpacity = s.bgOpacity
                 }
                 controller?.setManual(s.mode == CaptureMode.MANUAL)
+                controller?.setScrollButtonShown(s.autoScrollButton)
+                autoScroller?.let { a ->
+                    a.level = s.scrollLevel
+                    a.smart = s.smartScroll
+                }
                 updateVeil()
             }
         }
@@ -525,6 +571,24 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
             v.bgOpacity = settings.bgOpacity
         }
         controller?.setManual(settings.mode == CaptureMode.MANUAL)
+        controller?.setScrollButtonShown(settings.autoScrollButton)
+        autoScroller = AutoScroller(
+            scope = scope,
+            handler = Handler(mainLooper),
+            touchSlop = ViewConfiguration.get(this).scaledTouchSlop,
+            density = resources.displayMetrics.density,
+            page = scrollPage,
+            listener = object : AutoScroller.Listener {
+                override fun onRunningChanged(running: Boolean) {
+                    controller?.setAutoScrolling(running)
+                }
+
+                override fun say(text: String, ms: Long) = answer(text, ms)
+            },
+        ).also {
+            it.level = settings.scrollLevel
+            it.smart = settings.smartScroll
+        }
         controller?.onFootprintChanged = { refreshOverlayMask() }
         controller?.bubbleView?.let { v -> v.onVeilChanged = { screenLevel = v.screenLevel } }
         updateVeil()
@@ -1099,6 +1163,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
             if (state == State.SCANNING) {
                 lastShown = emptyList()
                 state = State.SHOWING
+                passes++
             }
             setPill(missing, 4000)
             return
@@ -1258,6 +1323,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                 suppressUntil = SystemClock.uptimeMillis() + 500
                 paintCards(shown, bmp)
                 state = State.SHOWING
+                passes++
                 // A page with dialogue keeps the current work alive and feeds it
                 // the names that identify it; a run of pages without any means
                 // the reader has left the story — an index, a cover, a menu.
@@ -1310,6 +1376,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                 // Nothing else translates the page, so the reader is told
                 // why it stays raw. A rejected key fails every page alike
                 // and gets the one-time alert first.
+                passes++
                 val rejected = if (AiFailure.keyRejected(e)) {
                     LlmHttp.providerLabel(settings) + " rejected the API key — check it in MangaLens"
                 } else {
@@ -1492,6 +1559,42 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
 
     override fun isAutoMode() = settings.mode == CaptureMode.AUTO
 
+    override fun isAutoScrolling() = autoScroller?.running == true
+
+    override fun onToggleAutoScroll() {
+        val scroller = autoScroller ?: return
+        if (scroller.running) {
+            scroller.stop(null)
+            answer("auto-scroll off", 1200)
+            return
+        }
+        if (!scroller.start()) {
+            // Only an accessibility service may move another app's page.
+            answer("switch on \"MangaLens auto-scroll\" in Accessibility first", 5000)
+            startActivity(
+                Intent(this, MainActivity::class.java)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+                    .putExtra(MainActivity.EXTRA_OPEN_SCROLL, true)
+            )
+            return
+        }
+        answer(
+            if (scrollPage.translating()) "auto-scroll on · I stop at each page to translate it · tap 文\u2060A to nap and glide"
+            else "auto-scroll on · touch the screen to pause it",
+            2600,
+        )
+    }
+
+    override fun onScrollSpeed(step: Int) {
+        val scroller = autoScroller ?: return
+        // From the scroller's own level: taps faster than the store echoes each count.
+        val next = (scroller.level + step).coerceIn(1, 10)
+        scroller.level = next
+        scroller.carryOn()
+        scope.launch { settingsRepo.setScrollLevel(next) }
+        answer("speed $next", 900)
+    }
+
     // ---- notification ----
 
     private fun buildNotification(): Notification {
@@ -1522,6 +1625,8 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
     }
 
     override fun onDestroy() {
+        autoScroller?.stop(null)
+        autoScroller = null
         running.value = false
         pausedState.value = false
         translateJob?.cancel()

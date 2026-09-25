@@ -22,15 +22,20 @@ import androidx.compose.runtime.setValue
 import androidx.core.content.ContextCompat
 import app.mangalens.capture.ScreenCaptureService
 import app.mangalens.overlay.LetteringHostService
+import app.mangalens.scroll.AutoScrollService
 import app.mangalens.settings.SettingsRepository
 import app.mangalens.ui.HomeScreen
 import app.mangalens.ui.MangaLensTheme
+import app.mangalens.ui.TweaksTarget
 
 class MainActivity : ComponentActivity() {
 
     companion object {
         /** Set by the overlay's "Tweaks" item: open straight onto the Tweaks page. */
         const val EXTRA_OPEN_TWEAKS = "open_tweaks"
+
+        /** Set by the overlay's scroll button while auto-scroll is not switched on: open Tweaks at Auto-scroll. */
+        const val EXTRA_OPEN_SCROLL = "open_scroll"
 
         private const val BRAVE = "com.brave.browser"
 
@@ -46,6 +51,9 @@ class MainActivity : ComponentActivity() {
 
     /** Bumped for every request to open Tweaks; the screen opens it when the count changes. */
     private var tweaksRequests by mutableIntStateOf(0)
+
+    /** Where the last request asked Tweaks to open. */
+    private var tweaksTarget by mutableStateOf(TweaksTarget.TOP)
 
     /**
      * The last start ended at the screen-capture dialog's Cancel. Fuki
@@ -80,13 +88,14 @@ class MainActivity : ComponentActivity() {
         browserName = findBrowserName()
         // A recreated activity still holds the intent it was opened with;
         // only a fresh open is a new request.
-        if (savedInstanceState == null && intent.getBooleanExtra(EXTRA_OPEN_TWEAKS, false)) tweaksRequests++
+        if (savedInstanceState == null) openRequested(intent)
         setContent {
             MangaLensTheme {
                 HomeScreen(
                     repo = repo,
                     browserName = browserName,
                     tweaksRequests = tweaksRequests,
+                    tweaksTarget = tweaksTarget,
                     startRefused = startRefused,
                     onStart = { startFlow() },
                     onStop = { stopCapture() },
@@ -95,6 +104,7 @@ class MainActivity : ComponentActivity() {
                     onOpenBrowser = { openBrowser() },
                     onTurnOnSolid = { openSolidLetteringSettings() },
                     onOpenAppInfo = { openAppInfo() },
+                    onTurnOnAutoScroll = { openAutoScrollSettings() },
                 )
             }
         }
@@ -103,7 +113,17 @@ class MainActivity : ComponentActivity() {
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
-        if (intent.getBooleanExtra(EXTRA_OPEN_TWEAKS, false)) tweaksRequests++
+        openRequested(intent)
+    }
+
+    /** Tweaks, when [intent] asks for it: at the top, or at Auto-scroll. */
+    private fun openRequested(intent: Intent) {
+        when {
+            intent.getBooleanExtra(EXTRA_OPEN_SCROLL, false) -> tweaksTarget = TweaksTarget.SCROLL
+            intent.getBooleanExtra(EXTRA_OPEN_TWEAKS, false) -> tweaksTarget = TweaksTarget.TOP
+            else -> return
+        }
+        tweaksRequests++
     }
 
     override fun onResume() {
@@ -152,8 +172,22 @@ class MainActivity : ComponentActivity() {
      * toast, as for the overlay switch.
      */
     private fun openSolidLetteringSettings() {
-        Toast.makeText(this, "Find MangaLens, switch it on and tap Allow, then come back.", Toast.LENGTH_LONG).show()
-        val service = ComponentName(this, LetteringHostService::class.java).flattenToString()
+        openAccessibility(
+            ComponentName(this, LetteringHostService::class.java).flattenToString(),
+            "Find MangaLens, switch it on and tap Allow, then come back.",
+        )
+    }
+
+    /** Where auto-scroll is switched on: its own page in Accessibility, as for solid lettering. */
+    private fun openAutoScrollSettings() {
+        openAccessibility(
+            ComponentName(this, AutoScrollService::class.java).flattenToString(),
+            "Find \"MangaLens auto-scroll\", switch it on and tap Allow, then come back.",
+        )
+    }
+
+    private fun openAccessibility(service: String, hint: String) {
+        Toast.makeText(this, hint, Toast.LENGTH_LONG).show()
         if (Build.VERSION.SDK_INT >= 33) {
             val page = Intent(ACCESSIBILITY_DETAILS).putExtra(Intent.EXTRA_COMPONENT_NAME, service)
             if (runCatching { startActivity(page) }.isSuccess) return
