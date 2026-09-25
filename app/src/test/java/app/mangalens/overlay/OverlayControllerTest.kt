@@ -8,7 +8,9 @@ import android.graphics.PixelFormat
 import android.graphics.Rect
 import android.os.Looper
 import android.view.Gravity
+import android.view.MotionEvent
 import android.view.View
+import android.view.ViewGroup
 import android.view.WindowManager
 import org.junit.After
 import org.junit.Assert.assertEquals
@@ -24,6 +26,7 @@ import org.robolectric.annotation.Config
 import org.robolectric.annotation.GraphicsMode
 import org.robolectric.shadow.api.Shadow
 import org.robolectric.shadows.ShadowWindowManagerImpl
+import java.time.Duration
 
 /**
  * Where the lettering's window goes. With the accessibility host connected
@@ -187,6 +190,21 @@ class OverlayControllerTest {
         LetteringHost.disconnect(host)
         idle()
         assertEquals(c.overlayExclusions(), c.bubbleView.keepClear)
+    }
+
+    @Test
+    fun `the menu is open from a long press on the button until a touch outside closes it`() {
+        val c = attach()
+        assertFalse(c.menuOpen)
+        val row = ownWindows.views.single { it !== c.bubbleView } as ViewGroup
+        val button = (0 until row.childCount).map { row.getChildAt(it) }.single { it is FloatingButtonView }
+        button.dispatchTouchEvent(MotionEvent.obtain(0L, 0L, MotionEvent.ACTION_DOWN, 10f, 10f, 0))
+        shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(600))
+        assertTrue("held open for auto-scroll to wait on", c.menuOpen)
+        // Any touch outside it closes it, auto-scroll's own strokes included.
+        val menu = ownWindows.views.single { it !== c.bubbleView && it !== row }
+        menu.dispatchTouchEvent(MotionEvent.obtain(0L, 0L, MotionEvent.ACTION_OUTSIDE, 0f, 0f, 0))
+        assertFalse(c.menuOpen)
     }
 
     @Test

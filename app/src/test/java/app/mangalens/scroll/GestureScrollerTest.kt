@@ -31,15 +31,24 @@ class GestureScrollerTest {
 
     /**
      * Performs every gesture in the time it takes, as the system does, or
-     * cancels the next when told to.
+     * cancels the next when told to, or leaves them unanswered, as a
+     * service that has gone does.
      */
     private class Recorder(private val handler: Handler = Handler(Looper.getMainLooper())) : GestureScroller.GestureSink {
         val strokes = ArrayList<Stroke>()
         var cancelNext = false
         var refuse = false
+        var hang = false
+
+        /** The results held back while [hang] was set. */
+        val unanswered = ArrayList<(Boolean) -> Unit>()
 
         override fun dispatch(gesture: GestureDescription, done: (Boolean) -> Unit): Boolean {
             if (refuse) return false
+            if (hang) {
+                unanswered += done
+                return true
+            }
             val s = gesture.getStroke(0)
             val m = PathMeasure(s.path, false)
             val a = FloatArray(2)
@@ -175,6 +184,33 @@ class GestureScrollerTest {
         val sent = sink.strokes.size
         run()
         assertEquals("nothing more is sent", sent, sink.strokes.size)
+    }
+
+    @Test
+    fun aStrokeLeftUnansweredIsAbandonedAndTheNextDragStarts() {
+        val sink = Recorder()
+        val ev = Events()
+        val g = GestureScroller(sink, Handler(main), touchSlop = 24, listener = ev)
+        g.start()
+        run(500)
+        sink.hang = true
+        run(500)
+        assertTrue("waiting on a result that never comes", g.running)
+        g.abandon()
+        assertFalse(g.running)
+        sink.hang = false
+        val sent = sink.strokes.size
+        g.start()
+        run(500)
+        assertTrue("dragging again", sink.strokes.size > sent + 1)
+        // Should the old result come after all, it belongs to nothing now.
+        sink.unanswered.forEach { it(false) }
+        run(500)
+        assertEquals(0, ev.interrupted)
+        assertEquals(0, ev.failed)
+        assertTrue(g.running)
+        g.stop()
+        run()
     }
 
     @Test

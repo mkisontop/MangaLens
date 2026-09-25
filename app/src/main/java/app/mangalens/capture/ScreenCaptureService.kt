@@ -459,6 +459,10 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
 
         override fun thumb(): IntArray? = latestThumb
 
+        override fun mask(): BooleanArray? = overlayMask
+
+        override fun holding(): Boolean = controller?.menuOpen == true
+
         override suspend fun balloons(): List<Rect>? {
             val s = settings
             val exclusions = controller?.overlayExclusions() ?: emptyList()
@@ -998,8 +1002,21 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
             while (isActive) {
                 delay(untilNextTick())
                 if (paused || settings.mode == CaptureMode.MANUAL) continue
-                if (projection == null || state != State.SCANNING) continue
                 val now = SystemClock.uptimeMillis()
+                // Auto-scroll dragging the page is motion, from the finger
+                // coming down to its lift, as a reader's own scroll is. A
+                // glide slow enough to read along with moves the page too
+                // little between frames for frame differencing to see on a
+                // sparse strip, and a blank gutter shows no change at all.
+                // Unseen, it would have a pass read a page on the move, and
+                // one finishing mid-glide would pass for the stop's own.
+                if (autoScroller?.moving == true) {
+                    pipeline.warm(settings, afterIdle = now - lastMotionAt >= LONG_LOOK_MS)
+                    lastMotionAt = now
+                    if (state != State.SCANNING || preparing || midPassCancels > 0) onMotion()
+                    continue
+                }
+                if (projection == null || state != State.SCANNING) continue
                 // The reader is scrolling toward the next stop: have the
                 // connection open by the time they get there.
                 if (now - lastMotionAt < 200) pipeline.warm(settings)
@@ -1625,7 +1642,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
     }
 
     override fun onDestroy() {
-        autoScroller?.stop(null)
+        autoScroller?.close()
         autoScroller = null
         running.value = false
         pausedState.value = false

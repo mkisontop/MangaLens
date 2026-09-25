@@ -98,6 +98,14 @@ internal class GestureScroller(
         stopping = true
     }
 
+    /**
+     * Forgets the stroke in flight at once, without lifting: the service
+     * sending it has gone, and its result may never come back to end it.
+     */
+    fun abandon() {
+        if (running) reset()
+    }
+
     /** Forgets the run at once, without lifting: for when the system has already ended it. */
     private fun reset() {
         running = false

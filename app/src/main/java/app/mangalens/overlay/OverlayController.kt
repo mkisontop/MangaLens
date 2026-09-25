@@ -84,6 +84,12 @@ class OverlayController(private val context: Context, private val listener: List
      */
     var onFootprintChanged: (() -> Unit)? = null
 
+    /**
+     * Whether the quick menu is open. Auto-scroll waits while it is: any
+     * touch outside the menu closes it, the drag's own strokes included.
+     */
+    val menuOpen: Boolean get() = menu != null
+
     private fun dp(v: Float): Int = (v * context.resources.displayMetrics.density).toInt()
 
     fun attach() {

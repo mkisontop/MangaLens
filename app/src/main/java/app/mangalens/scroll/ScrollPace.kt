@@ -95,15 +95,33 @@ internal object ScrollPace {
      * at all: the gutter between two panels, a white or black stretch of a
      * webtoon. Nearly every cell must be within a few levels of the
      * stretch's middle grey; one line of small text is not.
+     *
+     * The cells [mask] covers are left out: MangaLens's own controls and
+     * cards are captured with the page, and on an empty gutter they are
+     * all there is to see. Rows mostly under them show too little of the
+     * page to call it empty.
      */
-    fun blank(thumb: IntArray?, size: Int, from: Float = ZONE_TOP, to: Float = ZONE_BOTTOM): Boolean {
+    fun blank(
+        thumb: IntArray?,
+        size: Int,
+        from: Float = ZONE_TOP,
+        to: Float = ZONE_BOTTOM,
+        mask: BooleanArray? = null,
+    ): Boolean {
         if (thumb == null || size <= 0 || thumb.size < size * size) return false
         val y0 = (size * from).toInt()
         val y1 = (size * to).toInt().coerceAtMost(size)
         if (y1 <= y0) return false
+        fun ours(i: Int) = mask != null && i < mask.size && mask[i]
         val hist = IntArray(256)
-        for (y in y0 until y1) for (x in 0 until size) hist[thumb[y * size + x].coerceIn(0, 255)]++
-        val cells = (y1 - y0) * size
+        var cells = 0
+        for (y in y0 until y1) for (x in 0 until size) {
+            val i = y * size + x
+            if (ours(i)) continue
+            hist[thumb[i].coerceIn(0, 255)]++
+            cells++
+        }
+        if (cells * 2 < (y1 - y0) * size) return false
         var acc = 0
         var median = 0
         for (v in 0..255) {
@@ -114,7 +132,10 @@ internal object ScrollPace {
             }
         }
         var off = 0
-        for (y in y0 until y1) for (x in 0 until size) if (abs(thumb[y * size + x] - median) > BLANK_TOLERANCE) off++
+        for (y in y0 until y1) for (x in 0 until size) {
+            val i = y * size + x
+            if (!ours(i) && abs(thumb[i] - median) > BLANK_TOLERANCE) off++
+        }
         return off <= cells * BLANK_SHARE
     }
 
