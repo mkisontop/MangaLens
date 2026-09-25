@@ -491,7 +491,7 @@ object BalloonFinder {
             // One component can be two balloons drawn touching. Erode it
             // until it falls into separate cores; if both cores are real
             // balloons in their own right, report each on its own.
-            val parts = splitJoined(mask, boxW, boxH, pass, g, minX, minY)
+            val parts = splitJoined(mask, boxW, boxH, pass, g, minX, minY, known)
             if (parts != null) {
                 out.addAll(parts)
                 continue
@@ -666,7 +666,8 @@ object BalloonFinder {
      * a tail or a waist that erodes into a "core" without lettering of its
      * own does not count, and the whole component is kept as one.
      *
-     * Returns null when the component is one balloon.
+     * Returns null when the component is one balloon, and otherwise its
+     * parts less any that are the same balloon as one in [known].
      */
     private fun splitJoined(
         mask: BooleanArray,
@@ -676,6 +677,7 @@ object BalloonFinder {
         g: Geometry,
         minX: Int,
         minY: Int,
+        known: List<Balloon>,
     ): List<Balloon>? {
         var filled = 0
         for (m in mask) if (m) filled++
@@ -726,7 +728,7 @@ object BalloonFinder {
             if (neck > narrowest * MAX_NECK_RATIO) return null
             if (r > narrowest * 0.3f) return null
 
-            val out = ArrayList<Balloon>(parts.size)
+            val masks = ArrayList<BooleanArray>(parts.size)
             for ((k, box) in parts.withIndex()) {
                 val pw = box.width()
                 val ph = box.height()
@@ -749,7 +751,23 @@ object BalloonFinder {
                 // holding lettering of its own.
                 val rawFill = raw.toFloat() / (pw * ph)
                 if (!judge(pm, pw, ph, minX + box.left, minY + box.top, rawFill, pass, g)) return null
-                out.add(Balloon(pageRect(minX + box.left, minY + box.top, pw, ph, g), pw, ph, pm, pass.inverted, false))
+                masks.add(pm)
+            }
+            // From here each part is a find like any other: dropped when an
+            // earlier pass already has it, flooded out again when a sealed
+            // pass found it ([balloonOf]), and partial when the frame edge
+            // cuts it. That is judged part by part: the component passed the
+            // edge gate whole, and only the part whose own box runs to that
+            // edge is cut — its partner clear of the edge is on screen whole.
+            val out = ArrayList<Balloon>(parts.size)
+            for ((k, box) in parts.withIndex()) {
+                val px = minX + box.left
+                val py = minY + box.top
+                val pw = box.width()
+                val ph = box.height()
+                if (known.any { sameBalloon(it.box, pageRect(px, py, pw, ph, g)) }) continue
+                val cut = px == 0 || py == 0 || px + pw == g.w || py + ph == g.h
+                out.add(balloonOf(masks[k], pw, ph, px, py, pass, cut, g))
             }
             return out
         }
