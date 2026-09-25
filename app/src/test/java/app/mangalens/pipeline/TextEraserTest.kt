@@ -280,6 +280,49 @@ class TextEraserTest {
     }
 
     @Test
+    fun `a panel border beside lettering on screentone is not re-toned with the dots`() {
+        val page = blank()
+        screentone(page, 8f, 1.1f)
+        // A border a few pixels under the glyphs, running across the whole region.
+        val paint = textPaint(80f, Color.BLACK)
+        val glyphs = Rect().also { paint.getTextBounds("ahh", 0, 3, it) }
+        val y = 190f + glyphs.bottom + 5.5f
+        val border = blank()
+        val pen = Paint().apply { color = Color.BLACK; strokeWidth = 3f }
+        for (b in listOf(page, border)) Canvas(b).drawLine(0f, y, 480f, y, pen)
+        val unlettered = page.copyOf()
+        val box = letter(page, "ahh", 150f, 190f, paint)
+        val e = TextEraser.erase(page, box, ItemKind.NARRATION)!!
+        val after = applied(page, e)
+        preview("screentone_border", page, after, e)
+        val line = pixels(border, e.rect)
+        var cut = 0
+        for (i in line.indices) if (lum(line[i]) < 100 && e.mask[i]) cut++
+        assertEquals("border pixels re-toned", 0, cut)
+        // Right above the border the hole is tone again, not the border smeared grey through it.
+        val want = pixels(unlettered, e.rect)
+        val got = pixels(after, e.rect)
+        val a = ArrayList<Int>()
+        val b = ArrayList<Int>()
+        for (i in want.indices) {
+            val row = e.rect.top + i / e.rect.width()
+            if (e.mask[i] && row < y - 1.5f && row >= y - 9.5f) { a += lum(want[i]); b += lum(got[i]) }
+        }
+        assertTrue("tone level ${b.average()} vs ${a.average()} over the border", abs(a.average() - b.average()) < 12)
+        // The lettering is still gone: nothing as solidly dark as a 4x4 run of ink.
+        val w = box.width()
+        val inBox = pixels(after, box)
+        var solid = 0
+        for (yy in 0 until box.height() - 4) for (x in 0 until w - 4) {
+            var all = true
+            for (dy in 0..3) for (dx in 0..3) if (lum(inBox[(yy + dy) * w + x + dx]) > 110) all = false
+            if (all) solid++
+        }
+        assertEquals("ink left", 0, solid)
+        assertOutsideMaskUntouched(page, after, e)
+    }
+
+    @Test
     fun `art in the lettering's own colour is not swallowed`() {
         val page = blank()
         val c = Canvas(page)

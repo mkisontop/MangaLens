@@ -53,6 +53,12 @@ internal class ReadResolver(
     private val fills = IdentityHashMap<Balloon, Bitmap?>()
     private val interiors = IdentityHashMap<Balloon, Int>()
 
+    /** Each balloon's [BalloonTrust.letteringBlock], null ones too. */
+    private val blockCache = IdentityHashMap<Balloon, Rect?>()
+
+    /** [scant]'s verdict, by the erasure it was counted on: one upgraded since is counted afresh. */
+    private val scants = IdentityHashMap<Erasure, Boolean>()
+
     /**
      * OCR's lines, once read: they back up a line the model reported where
      * the eraser found no lettering. Lines already resolved keep their
@@ -70,11 +76,32 @@ internal class ReadResolver(
         erasures[item] = erasure
     }
 
+    /** [item]'s erasure, made the first time it is asked for; one that failed is kept too. */
+    private fun erasureFor(item: PageItem): Erasure? {
+        if (erasures.containsKey(item)) return erasures[item]
+        return runCatching { TextEraser.erase(bitmap, item.box, item.kind, item.textColor, item.outlineColor) }
+            .getOrNull().also { erasures[item] = it }
+    }
+
+    /**
+     * [balloon]'s block of lettering, looked for once: a line [drifted]
+     * off its balloon asks after every unclaimed balloon near it on every
+     * [resolve], and the answer depends on nothing but the page.
+     */
+    private fun blockOf(balloon: Balloon): Rect? {
+        if (blockCache.containsKey(balloon)) return blockCache[balloon]
+        return BalloonTrust.letteringBlock(bitmap, balloon).also { blockCache[balloon] = it }
+    }
+
     /** Items lettered on the art rather than into a balloon, as of the last [resolve]. */
     var freeItems: List<PageItem> = emptyList()
         private set
 
     fun resolve(items: List<PageItem>): List<RenderBubble> {
+        // Only this pass's drifted lines vouch for a balloon: one a line
+        // drifted into on an earlier pass, and has since left for another
+        // line to claim, would otherwise be trusted for that line too.
+        drift.clear()
         val usable = items.filter(::usable)
         val home = usable.map(::balloonFor).toMutableList()
         val claimed = java.util.Collections.newSetFromMap(IdentityHashMap<Balloon, Boolean>())
@@ -411,7 +438,7 @@ internal class ReadResolver(
                 kotlin.math.hypot((b.box.exactCenterX() - box.exactCenterX()).toDouble(), (b.box.exactCenterY() - box.exactCenterY()).toDouble()) <= reach
         }
         if (near.isEmpty()) return null
-        val blocks = near.mapNotNull { b -> BalloonTrust.letteringBlock(bitmap, b)?.let { b to it } }
+        val blocks = near.mapNotNull { b -> blockOf(b)?.let { b to it } }
         // A box that slid along its own column, from the last glyphs of a
         // balloon no line claims on out over the art, holds some of that
         // balloon's lettering: the line is that balloon's however little of
@@ -425,16 +452,13 @@ internal class ReadResolver(
                 drift[b] = block
                 return b
             }
-        val here = if (erasures.containsKey(item)) erasures[item] else {
-            runCatching { TextEraser.erase(bitmap, item.box, item.kind, item.textColor, item.outlineColor) }
-                .getOrNull().also { erasures[item] = it }
-        }
+        val here = erasureFor(item)
         // Clean lettering where the box says: the box was right after all —
         // unless it is far too little of it. A face in line art on white
         // skin reads as clean lettering too, but as a handful of marks
         // where the line has a character for each.
         val clean = here != null && here.flat && here.busy < 0.3f
-        if (clean && !scant(here!!, item)) return null
+        if (clean && !scants.getOrPut(here!!) { scant(here, item) }) return null
         // The nearest, counting lettering of another size as further off:
         // a box drifts with its line's size, and when a whole panel's boxes
         // slid, the balloon nearest a line's box can be its neighbour's.
@@ -534,11 +558,11 @@ internal class ReadResolver(
                 kotlin.math.hypot((b.exactCenterX() - box.exactCenterX()).toDouble(), (b.exactCenterY() - box.exactCenterY()).toDouble()) <= reach
             }
             val shift = agreed(near) ?: continue
-            if (BalloonTrust.letteringBlock(bitmap, held) != null) continue
+            if (blockOf(held) != null) continue
             val moved = Rect(box).apply { offset(shift.first, shift.second) }
             val to = holding(whole, moved) ?: continue
             if (to in claimed || to.inverted) continue
-            val block = BalloonTrust.letteringBlock(bitmap, to) ?: continue
+            val block = blockOf(to) ?: continue
             if (sizeGap(block, box) > SAME_SIZE) continue
             home[i] = to
             claimed.add(to)
@@ -594,7 +618,7 @@ internal class ReadResolver(
      */
     private fun stoppedShort(balloon: Balloon, items: List<PageItem>): Boolean {
         if (items.any { it.kind == ItemKind.SFX || it.kind == ItemKind.ART_TEXT }) return false
-        val block = BalloonTrust.letteringBlock(bitmap, balloon) ?: return false
+        val block = blockOf(balloon) ?: return false
         return items.any { Rect.intersects(it.box, block) }
     }
 
@@ -650,7 +674,11 @@ internal class ReadResolver(
         return if (union <= 0L) 0f else inter.toFloat() / union
     }
 
-    /** The lettering found in a balloon a drifted line was put back into, for its trust check. */
+    /**
+     * The lettering found in a balloon a drifted line was put back into in
+     * this [resolve], for its trust check. Not a cache: it is cleared at
+     * the start of every pass.
+     */
     private val drift = IdentityHashMap<Balloon, Rect>()
 
     /** True when (x, y) falls on or right beside the balloon's interior mask. */
@@ -700,11 +728,7 @@ internal class ReadResolver(
         // English is noted beside it. Only a small one on plain ground is
         // taken off and re-lettered.
         if (item.kind == ItemKind.SFX && !smallSfx(item)) return sfxNote(item)
-        val erasure = if (erasures.containsKey(item)) erasures[item] else {
-            runCatching {
-                TextEraser.erase(bitmap, item.box, item.kind, item.textColor, item.outlineColor)
-            }.getOrNull().also { erasures[item] = it }
-        }
+        val erasure = erasureFor(item)
         val kind = if (item.kind == ItemKind.SFX) BubbleKind.SFX else BubbleKind.DIALOGUE
         if (item.kind == ItemKind.SFX && (erasure == null || !erasure.flat)) return sfxNote(item)
         if (erasure != null) {

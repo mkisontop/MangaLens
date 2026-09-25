@@ -47,4 +47,14 @@ class AiFailureTest {
         assertFalse(AiFailure.keyRejected(GeminiHttpException(403, "location not supported")))
         assertFalse(AiFailure.keyRejected(IOException("offline")))
     }
+
+    @Test
+    fun `another provider's 403 is the key only when it says so`() {
+        // A flagged page or a region the provider does not serve: the key is fine.
+        val flagged = RuntimeException("OpenRouter HTTP 403: {\"error\":{\"message\":\"gpt-5 requires moderation. Your input was flagged\"}}")
+        assertFalse(AiFailure.keyRejected(flagged))
+        assertEquals("HTTP 403", AiFailure.cause(flagged))
+        assertFalse(AiFailure.keyRejected(RuntimeException("OpenAI HTTP 403: unsupported_country_region_territory")))
+        assertTrue(AiFailure.keyRejected(RuntimeException("Claude HTTP 403: {\"type\":\"error\",\"error\":{\"type\":\"permission_error\"}}")))
+    }
 }
