@@ -166,6 +166,55 @@ class ShapedTypesetTest {
         assertEquals("no lettering outside the balloon's interior", 0, outside)
     }
 
+    /**
+     * A shout drawn in two offset halves, the upper to the right, the lower
+     * to the left: the lines' common centre falls on the edge of both, no
+     * centred block fits at any size, and the English spilled over both
+     * edges onto the art. It is set whole in the larger half instead.
+     */
+    @Test
+    fun `text in a staggered shout stays inside one of its halves`() {
+        val pageW = 600
+        val pageH = 900
+        val box = Rect(200, 100, 400, 800)
+        val mw = 50
+        val mh = 175
+        val inside = { x: Int, y: Int -> if (y < mh / 2) x in 23..47 else x in 3..26 }
+        val mask = BooleanArray(mw * mh) { i -> inside(i % mw, i / mw) }
+        val balloon = Balloon(box, mw, mh, mask, false)
+        val v = BubbleOverlayView(RuntimeEnvironment.getApplication()).apply { layout(0, 0, pageW, pageH) }
+        v.setBubbles(
+            listOf(
+                RenderBubble(
+                    box = Rect(box),
+                    translated = "Hey, stop right now! What do you think you're doing?!",
+                    original = "喂快停下",
+                    bgColor = Color.WHITE,
+                    textColor = Color.BLACK,
+                    vertical = true,
+                    balloon = balloon,
+                )
+            )
+        )
+        val out = Bitmap.createBitmap(pageW, pageH, Bitmap.Config.ARGB_8888)
+        Canvas(out).drawColor(Color.rgb(200, 200, 200))
+        v.draw(Canvas(out))
+        writePreview("staggered-shout.png", out)
+        var text = 0
+        var outside = 0
+        val px = IntArray(pageW * pageH)
+        out.getPixels(px, 0, pageW, 0, 0, pageW, pageH)
+        for (y in 0 until pageH) for (x in 0 until pageW) {
+            if (luminance(px[y * pageW + x]) > 90) continue
+            text++
+            val cx = (x - box.left) / 4
+            val cy = (y - box.top) / 4
+            if (cx !in 0 until mw || cy !in 0 until mh || !inside(cx, cy)) outside++
+        }
+        assertTrue("lettering was painted ($text dark px)", text > 200)
+        assertEquals("no lettering outside the balloon", 0, outside)
+    }
+
     // ---- Inpainting: a gradient balloon keeps its gradient ----
 
     @Test

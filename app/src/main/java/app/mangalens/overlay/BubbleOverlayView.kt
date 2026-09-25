@@ -1186,6 +1186,34 @@ class BubbleOverlayView(context: Context) : View(context) {
         // where they cross the outline and the art beyond.
         var spills = false
         if (layout == null) {
+            // No centred block fits: the balloon may be drawn in two offset
+            // halves, a shout staggered down the page, whose lines' common
+            // centre falls on the edge of both. The words may still fit
+            // whole in its largest clear rectangle, off that centre.
+            BalloonShape.largestRect(balloon.mask, balloon.maskW, balloon.maskH)?.let { r ->
+                val cellW = box.width().toFloat() / balloon.maskW
+                val cellH = box.height().toFloat() / balloon.maskH
+                val roomW = (r[2] - r[0]) * cellW * SHAPE_MARGIN
+                val roomH = (r[3] - r[1]) * cellH * SHAPE_MARGIN
+                var size = startSize
+                while (size >= BALLOON_MIN_TYPE_SIZE) {
+                    tp.textSize = dp(size)
+                    val words = TypeSet.hyphenate(text, measure, roomW)
+                    val lines = TypeSet.breakLines(words, measure, roomW)
+                    var widest = 0f
+                    for (line in lines) widest = max(widest, tp.measureText(line))
+                    val candidate = blockOf(lines, tp, spacing)
+                    if (widest <= roomW && candidate.height <= roomH) {
+                        layout = candidate
+                        textX = box.left + (r[0] + r[2]) / 2f * cellW - candidate.width / 2f
+                        textY = box.top + (r[1] + r[3]) / 2f * cellH - candidate.height / 2f
+                        break
+                    }
+                    size -= 1.25f
+                }
+            }
+        }
+        if (layout == null) {
             // Elliptical taper into the box: the shape could not be read, or
             // the words will not fit it at any size.
             val maxTextW = box.width() * 0.78f

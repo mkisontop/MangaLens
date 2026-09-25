@@ -104,6 +104,40 @@ class BalloonShape private constructor(
             return BalloonShape(h, centerX, centerY, span)
         }
 
+        /**
+         * The largest rectangle of interior cells, as left, top, right and
+         * bottom (exclusive) in cells, or null for an empty mask: where a
+         * block of text fits whole in a balloon no centred block does — a
+         * shout drawn in two offset halves, the lines' common centre on the
+         * edge of both.
+         */
+        fun largestRect(mask: BooleanArray, w: Int, h: Int): IntArray? {
+            if (w < 1 || h < 1 || mask.size < w * h) return null
+            val heights = IntArray(w)
+            val stack = IntArray(w + 1)
+            var best = 0L
+            var out: IntArray? = null
+            for (y in 0 until h) {
+                for (x in 0 until w) heights[x] = if (mask[y * w + x]) heights[x] + 1 else 0
+                // Largest rectangle under the histogram of this row's heights.
+                var top = 0
+                for (x in 0..w) {
+                    val cur = if (x == w) 0 else heights[x]
+                    while (top > 0 && heights[stack[top - 1]] >= cur) {
+                        val hh = heights[stack[--top]]
+                        val left = if (top == 0) 0 else stack[top - 1] + 1
+                        val area = hh.toLong() * (x - left)
+                        if (area > best) {
+                            best = area
+                            out = intArrayOf(left, y + 1 - hh, x, y + 1)
+                        }
+                    }
+                    stack[top++] = x
+                }
+            }
+            return out
+        }
+
         /** 4-neighbour distance from each mask cell to the nearest cell outside it. */
         private fun distance(mask: BooleanArray, w: Int, h: Int): IntArray {
             val inf = w + h
