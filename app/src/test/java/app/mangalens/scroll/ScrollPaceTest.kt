@@ -85,6 +85,28 @@ class ScrollPaceTest {
     }
 
     @Test
+    fun ourOwnControlsOnAnEmptyGutterLeaveItEmpty() {
+        val size = FrameStability.SIZE
+        val gutter = IntArray(size * size) { 250 }
+        val ours = BooleanArray(size * size)
+        // The controls' discs, in the reading rows where they sit by default.
+        for (row in 18..23) for (x in 1..17) {
+            gutter[row * size + x] = if (x <= 5) 199 else 60
+            ours[row * size + x] = true
+        }
+        assertFalse("seen, they are something drawn", ScrollPace.blank(gutter, size))
+        assertTrue("but they are ours", ScrollPace.blank(gutter, size, mask = ours))
+        assertTrue("on the whole screen too", ScrollPace.blank(gutter, size, 0f, 1f, ours))
+        // A line of text beside them still counts.
+        val line = gutter.copyOf()
+        for (x in 30 until 66) line[(size / 2) * size + x] = 150
+        assertFalse(ScrollPace.blank(line, size, mask = ours))
+        // Rows mostly under our menu show too little of the page to call it empty.
+        val menu = BooleanArray(size * size) { it % size < 60 }
+        assertFalse(ScrollPace.blank(IntArray(size * size) { 250 }, size, mask = menu))
+    }
+
+    @Test
     fun theSpeedEasesDownQuicklyAndUpGently() {
         val down = ScrollPace.ease(1f, 0.2f, 200)
         val up = ScrollPace.ease(0.2f, 1f, 200)

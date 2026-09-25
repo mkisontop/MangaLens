@@ -5,6 +5,7 @@ import android.graphics.PathMeasure
 import android.graphics.Rect
 import android.os.Handler
 import android.os.Looper
+import android.os.SystemClock
 import app.mangalens.capture.FrameStability
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -26,7 +27,8 @@ import java.time.Duration
  * Auto-scroll over a make-believe webtoon: a long strip that moves exactly
  * as far as the finger drags it, with a big balloon on it, an empty gap,
  * and an end. The strip's thumbnail and balloons are what the capture
- * would show at each moment.
+ * would show at each moment, MangaLens's own controls included, and its
+ * translation passes come when the capture would run them.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -38,8 +40,18 @@ class AutoScrollerTest {
     private val main = Looper.getMainLooper()
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Main.immediate)
 
+    /** Every auto-scroll made here, closed after each test: they listen to the one [AutoScrollHost]. */
+    private val made = ArrayList<AutoScroller>()
+    private val services = ArrayList<AutoScrollService>()
+
+    /** How long the capture waits for a still page, and how long a pass takes. */
+    private val quietMs = 350L
+    private val passMs = 1_000L
+
     @After
     fun tearDown() {
+        made.forEach { it.close() }
+        services.forEach { AutoScrollHost.disconnect(it) }
         scope.cancel()
     }
 
@@ -52,16 +64,79 @@ class AutoScrollerTest {
         /** Rows of the strip scrolled off the top of the screen. */
         var offset = 0f
         var cancelNext = false
+
+        /** Every stroke from now on goes unanswered, as one sent to a service that has gone. */
+        var hang = false
         var translating = false
+        var holding = false
         var passes = 0
         var english = 0
+
+        /** With it, one pass a glide finishes mid-glide, as one did before the capture felt the finger. */
+        var strayPasses = false
+
+        /** The auto-scroll dragging this strip: the capture feels its finger. */
+        var auto: AutoScroller? = null
 
         /** Each beat: when it ended, how far the page moved in it. */
         val beats = ArrayList<Pair<Long, Float>>()
         var lifts = 0
+        var sent = 0
+
+        /** Beats that moved the page while auto-scroll said its finger was not moving it. */
+        var movedUnfelt = 0
         private val handler = Handler(main)
 
+        /** MangaLens's controls on the thumbnail, in the reading rows where they sit by default. */
+        private val ours = BooleanArray(FrameStability.SIZE * FrameStability.SIZE).also {
+            for (row in 18..23) for (col in 1..17) it[row * FrameStability.SIZE + col] = true
+        }
+
+        private var quietSince = 0L
+        private var passDue = -1L
+        private var read = false
+        private var strayed = false
+
+        /**
+         * The capture, as the service runs it: a pass starts once the page
+         * has been still a while and finishes a while later, unless the
+         * page moves first, and each stop is read once. A glide is too slow
+         * for its frames to show, so the page is moving exactly while
+         * auto-scroll says its finger is.
+         */
+        private val capture = object : Runnable {
+            override fun run() {
+                val now = SystemClock.uptimeMillis()
+                if (auto?.moving == true) {
+                    quietSince = now
+                    passDue = -1L
+                    read = false
+                    if (strayPasses && translating && !strayed) {
+                        strayed = true
+                        passes++
+                    }
+                } else {
+                    strayed = false
+                    if (translating && !read) {
+                        if (passDue < 0 && now - quietSince >= quietMs) passDue = now + passMs
+                        if (passDue in 0..now) {
+                            passDue = -1L
+                            read = true
+                            passes++
+                        }
+                    }
+                }
+                handler.postDelayed(this, 50)
+            }
+        }
+
+        init {
+            handler.post(capture)
+        }
+
         override fun dispatch(gesture: GestureDescription, done: (Boolean) -> Unit): Boolean {
+            sent++
+            if (hang) return true
             val s = gesture.getStroke(0)
             val m = PathMeasure(s.path, false)
             val a = FloatArray(2)
@@ -78,12 +153,9 @@ class AutoScrollerTest {
                 if (ok) {
                     val before = offset
                     offset = (offset + dy).coerceAtMost((length - h).toFloat())
-                    beats += android.os.SystemClock.uptimeMillis() to (offset - before)
-                    if (!s.willContinue()) {
-                        lifts++
-                        // The page is still: the stop is translated a second later.
-                        if (translating) handler.postDelayed({ passes++ }, 1_000)
-                    }
+                    beats += SystemClock.uptimeMillis() to (offset - before)
+                    if (offset != before && auto?.moving != true) movedUnfelt++
+                    if (!s.willContinue()) lifts++
                 }
                 done(ok)
             }, s.duration)
@@ -98,9 +170,16 @@ class AutoScrollerTest {
             return IntArray(size * size) { i ->
                 val row = i / size
                 val y = (offset + row * h / size).toInt()
-                if (y in gap) 250 else ((y / 40) * 37 + (i % size) * 11) % 180 + 40
+                when {
+                    ours[i] -> if (i % size <= 5) 199 else 60
+                    y in gap -> 250
+                    else -> ((y / 40) * 37 + (i % size) * 11) % 180 + 40
+                }
             }
         }
+
+        override fun mask() = ours
+        override fun holding() = holding
 
         override suspend fun balloons(): List<Rect> {
             val screen = Rect(0, offset.toInt(), w, offset.toInt() + h)
@@ -123,11 +202,41 @@ class AutoScrollerTest {
         }
     }
 
-    private fun scroller(strip: Strip, said: Said, sink: GestureScroller.GestureSink? = strip) =
-        AutoScroller(scope, Handler(main), touchSlop = 24, density = 3f, page = strip, listener = said, sinkOf = { sink })
+    private fun scroller(
+        strip: Strip,
+        said: Said,
+        sink: GestureScroller.GestureSink? = strip,
+        sinkOf: () -> GestureScroller.GestureSink? = { sink },
+    ) = AutoScroller(scope, Handler(main), touchSlop = 24, density = 3f, page = strip, listener = said, sinkOf = sinkOf)
+        .also {
+            strip.auto = it
+            made += it
+        }
 
     private fun run(ms: Long) {
         shadowOf(main).idleFor(Duration.ofMillis(ms))
+    }
+
+    /** Runs until [done], or [limitMs] has gone by. */
+    private fun runUntil(limitMs: Long, done: () -> Boolean) {
+        var left = limitMs
+        while (!done() && left > 0) {
+            run(100)
+            left -= 100
+        }
+    }
+
+    /** The pauses between the glides: from each glide's last moving beat to the next one's first. */
+    private fun holds(strip: Strip): List<Long> {
+        val out = ArrayList<Long>()
+        var lastEnd = -1L
+        for ((at, d) in strip.beats) {
+            if (d <= 0f) continue
+            val pause = at - lastEnd - GestureScroller.BEAT_MS
+            if (lastEnd >= 0 && pause > 500) out += pause
+            lastEnd = at
+        }
+        return out
     }
 
     /** The page's speed, in px/s, over the beats that ended while the strip's offset was in [rows]. */
@@ -204,6 +313,20 @@ class AutoScrollerTest {
     }
 
     @Test
+    fun anEmptyStretchWithOnlyItsOwnControlsOnItIsNotTheEndOfThePage() {
+        // White for well over a screen, with nothing on it but MangaLens's controls.
+        val strip = Strip(gap = 8_000..12_200)
+        val said = Said()
+        val auto = scroller(strip, said)
+        auto.level = 6
+        auto.start()
+        runUntil(150_000) { strip.offset > 12_500f || !auto.running }
+        assertTrue("still going: ${said.lines}", auto.running)
+        assertTrue("and across it: ${strip.offset}", strip.offset > 12_500f)
+        auto.stop(null)
+    }
+
+    @Test
     fun aTouchPausesItUntilTheReaderLetsGo() {
         val strip = Strip()
         val said = Said()
@@ -235,22 +358,70 @@ class AutoScrollerTest {
         auto.start()
         run(45_000)
         assertTrue("glided and stopped more than once: ${strip.lifts}", strip.lifts >= 2)
-        // Between glides the page holds for the translation and then the reading.
-        var moved = 0f
-        var lastEnd = -1L
-        var longestPause = 0L
-        for ((at, d) in strip.beats) {
-            if (d <= 0f) continue
-            if (lastEnd >= 0) longestPause = maxOf(longestPause, at - lastEnd - GestureScroller.BEAT_MS)
-            moved += d
-            lastEnd = at
-        }
+        assertEquals("the capture felt every beat that moved the page", 0, strip.movedUnfelt)
+        // Between glides the page holds for the stop's translation and then the reading.
         val hold = ScrollPace.holdMs(40, 6)
-        assertTrue("held for the translation and the reading: $longestPause vs ${1_000 + hold}", longestPause >= 1_000 + hold)
+        val holds = holds(strip)
+        assertTrue(holds.isNotEmpty())
+        assertTrue("held for the translation and the reading: $holds vs ${quietMs + passMs + hold}", holds.min() >= quietMs + passMs + hold)
         // Each glide moves half a screen (the last may still be under way).
+        val moved = strip.beats.sumOf { it.second.toDouble() }.toFloat()
         val glides = strip.lifts.toFloat()
         assertTrue("half a screen a glide: $moved over $glides", moved >= h * AutoScroller.GLIDE_SHARE * glides * 0.95f)
         assertTrue(moved <= h * AutoScroller.GLIDE_SHARE * (glides + 1) * 1.05f)
+        auto.stop(null)
+    }
+
+    @Test
+    fun aPassThatFinishesMidGlideIsNotTheStopsTranslation() {
+        val strip = Strip()
+        strip.translating = true
+        strip.english = 40
+        strip.strayPasses = true
+        val said = Said()
+        val auto = scroller(strip, said)
+        auto.level = 6
+        auto.start()
+        run(45_000)
+        // Every stop still waits for a pass of its own before the reading hold.
+        val hold = ScrollPace.holdMs(40, 6)
+        val holds = holds(strip)
+        assertTrue("glided more than once: $holds", holds.size >= 2)
+        assertTrue("waited for the stop's own pass: $holds vs ${quietMs + passMs + hold}", holds.min() >= quietMs + passMs + hold)
+        auto.stop(null)
+    }
+
+    @Test
+    fun whileStopsAreTranslatedItStillStopsAtTheEndOfThePage() {
+        val strip = Strip(length = 4_000)
+        strip.translating = true
+        strip.english = 40
+        val said = Said()
+        val auto = scroller(strip, said)
+        auto.level = 10
+        auto.start()
+        run(60_000)
+        assertEquals((4_000 - h).toFloat(), strip.offset, 1f)
+        assertFalse("stopped", auto.running)
+        assertFalse(said.running)
+        assertTrue(said.lines.any { it.contains("end of the page") })
+        val sent = strip.sent
+        run(30_000)
+        assertEquals("and sends nothing more", sent, strip.sent)
+    }
+
+    @Test
+    fun whileStopsAreTranslatedAnEmptyStretchIsNotTheEndOfThePage() {
+        // White for three screens: three glides in a row start and end on nothing at all.
+        val strip = Strip(balloon = Rect(0, 0, 0, 0), gap = 3_000..10_200)
+        strip.translating = true
+        val said = Said()
+        val auto = scroller(strip, said)
+        auto.level = 8
+        auto.start()
+        runUntil(120_000) { strip.offset > 10_500f || !auto.running }
+        assertTrue("still going: ${said.lines}", auto.running)
+        assertTrue("and across it: ${strip.offset}", strip.offset > 10_500f)
         auto.stop(null)
     }
 
@@ -270,6 +441,85 @@ class AutoScrollerTest {
         run(1_200)
         assertTrue("carried straight on", strip.offset > at)
         assertFalse(said.lines.any { it.startsWith("paused while you touch") })
+        auto.stop(null)
+    }
+
+    @Test
+    fun aSpeedTapWhileTheFingerIsUpDoesNotExcuseTheNextTouch() {
+        val strip = Strip()
+        strip.translating = true
+        val said = Said()
+        val auto = scroller(strip, said)
+        auto.level = 6
+        auto.start()
+        // A tap on + during the hold after a glide: there is no stroke for it to cancel.
+        runUntil(20_000) { strip.lifts >= 1 }
+        run(500)
+        auto.carryOn()
+        // On the next glide the reader touches the page.
+        val before = strip.beats.size
+        runUntil(20_000) { strip.beats.size >= before + 3 }
+        strip.cancelNext = true
+        run(1_000)
+        assertTrue("paused for the touch", said.lines.any { it.startsWith("paused while you touch") })
+        val paused = strip.offset
+        run(1_500)
+        assertEquals("and resting while the reader touches", paused, strip.offset, 0f)
+        auto.stop(null)
+    }
+
+    @Test
+    fun itWaitsWhileItsMenuIsOpen() {
+        val strip = Strip()
+        val said = Said()
+        val auto = scroller(strip, said)
+        auto.start()
+        run(2_000)
+        assertTrue(strip.offset > 0f)
+        // Opened by its accessibility action, which cancels no stroke.
+        strip.holding = true
+        run(1_000)
+        val held = strip.offset
+        val sent = strip.sent
+        run(5_000)
+        assertEquals("no stroke comes down outside the menu", sent, strip.sent)
+        assertEquals(held, strip.offset, 0f)
+        assertTrue("still on", auto.running)
+        strip.holding = false
+        run(2_000)
+        assertTrue("carried on once it closed", strip.offset > held)
+        auto.stop(null)
+    }
+
+    /** The scroll service, connected as the system connects it. */
+    private fun connect(): AutoScrollService = AutoScrollService().also {
+        services += it
+        AutoScrollHost.connect(it)
+    }
+
+    @Test
+    fun switchedOffMidStrokeItStopsAndSaysSoAndStartsAgainOnceBack() {
+        val strip = Strip()
+        val said = Said()
+        val service = connect()
+        val auto = scroller(strip, said, sinkOf = { if (AutoScrollHost.connected) strip else null })
+        assertTrue(auto.start())
+        run(2_000)
+        // The service goes with a stroke in flight whose result never comes.
+        strip.hang = true
+        run(500)
+        AutoScrollHost.disconnect(service)
+        run(100)
+        assertFalse("stopped", auto.running)
+        assertFalse(said.running)
+        assertTrue(said.lines.any { it.contains("switched off in Accessibility") })
+        // Switched on again: the page moves again.
+        strip.hang = false
+        connect()
+        val at = strip.offset
+        assertTrue(auto.start())
+        run(2_000)
+        assertTrue("dragging again", strip.offset > at)
         auto.stop(null)
     }
 

@@ -28,9 +28,10 @@ import kotlinx.coroutines.launch
  * Tapping 文A to nap or wake switches between the two at the next stroke.
  *
  * A real touch cancels the drag; auto-scroll then rests until the reader
- * has let go and the page has come to rest, and carries on. It stops by
- * itself at the end of the page: the finger drags and nothing moves.
- * Main thread only.
+ * has let go and the page has come to rest, and carries on. It waits while
+ * MangaLens's own menu is open, and stops by itself at the end of the
+ * page, where the finger drags and nothing moves, and when the scroll
+ * service is switched off. Main thread only.
  */
 internal class AutoScroller(
     private val scope: CoroutineScope,
@@ -53,6 +54,16 @@ internal class AutoScroller(
 
         /** A [FrameStability.SIZE]-square grey thumbnail of the newest frame, or null. */
         fun thumb(): IntArray?
+
+        /**
+         * The cells of [thumb] MangaLens's own windows cover, its controls,
+         * pill, menu and cards, which are captured along with the page; null
+         * when none are up.
+         */
+        fun mask(): BooleanArray?
+
+        /** Whether the reader has MangaLens's menu open: the page waits until it closes. */
+        fun holding(): Boolean
 
         /** The balloons on the newest frame, found on the phone; null when there is no frame. */
         suspend fun balloons(): List<Rect>?
@@ -87,6 +98,15 @@ internal class AutoScroller(
     var running = false
         private set
 
+    /**
+     * Whether the finger is on the page now, dragging it or holding still
+     * to lift. The capture takes this for motion: a glide slow enough to
+     * read along with moves the page too little between frames for frame
+     * differencing to see, and a stop read in the middle of one is not a
+     * stop at all.
+     */
+    val moving: Boolean get() = running && scroller.running
+
     private enum class Ending { NONE, GLIDED, INTERRUPTED, FAILED }
 
     private var ending = Ending.NONE
@@ -97,6 +117,9 @@ internal class AutoScroller(
     /** Distance dragged since auto-scroll started, in pixels. */
     private var travelled = 0f
 
+    /** Time spent on the glides in a row that moved nothing on screen; see [glideAndHold]. */
+    private var unmovedMs = 0L
+
     /** The balloons last found, and [travelled] when their frame was taken. */
     private var seen: List<Rect> = emptyList()
     private var seenAt = 0f
@@ -104,7 +127,12 @@ internal class AutoScroller(
     private var loop: Job? = null
     private var detector: Job? = null
 
-    /** Set when the touch that paused the drag was on MangaLens's own speed buttons. */
+    /**
+     * Set when the touch that paused the drag was on MangaLens's own speed
+     * buttons. It lasts for the stroke it was set in: a tap made while the
+     * finger was up cancelled nothing, and must not excuse a later touch
+     * from pausing the page.
+     */
     private var resumeNow = false
 
     private val scroller = GestureScroller(
@@ -140,9 +168,20 @@ internal class AutoScroller(
         ): Boolean = of()?.dispatch(gesture, done) ?: false
     }
 
-    fun toggle(): Boolean {
-        if (running) stop(null) else start()
-        return running
+    /**
+     * The scroll service connected or went. A stroke in flight was sent
+     * through the connection that changed, and its result may never come:
+     * without one the scroller would wait for it for good, and never drag
+     * again. So it is forgotten, and a drag still wanted starts afresh on
+     * the service there is now. With none, auto-scroll stops and says why.
+     */
+    private val serviceChanged: () -> Unit = {
+        scroller.abandon()
+        if (running && sinkOf() == null) stop("⚠ auto-scroll is switched off in Accessibility")
+    }
+
+    init {
+        AutoScrollHost.addListener(serviceChanged)
     }
 
     /** Starts scrolling. False when the scroll service is not switched on, and nothing starts. */
@@ -154,6 +193,7 @@ internal class AutoScroller(
         resumeNow = false
         factor = 1f
         travelled = 0f
+        unmovedMs = 0L
         seen = emptyList()
         listener.onRunningChanged(true)
         loop = scope.launch { run() }
@@ -177,14 +217,29 @@ internal class AutoScroller(
         detector?.cancel()
         loop = null
         detector = null
-        scroller.stop()
+        // With the service gone there is no lifting the finger, and no
+        // result coming for the stroke it was on.
+        if (sinkOf() == null) scroller.abandon() else scroller.stop()
         listener.onRunningChanged(false)
         why?.let { listener.say(it, 3000) }
     }
 
+    /** Stops for good, and stops listening for the scroll service: the capture is ending. */
+    fun close() {
+        stop(null)
+        AutoScrollHost.removeListener(serviceChanged)
+    }
+
     private suspend fun run() {
         while (running) {
+            // The reader has MangaLens's menu open. A stroke coming down
+            // outside it would close it, maybe under their finger.
+            if (page.holding()) {
+                delay(TICK_MS)
+                continue
+            }
             ending = Ending.NONE
+            resumeNow = false
             if (page.translating()) glideAndHold() else drag()
             when (ending) {
                 Ending.INTERRUPTED -> rest()
@@ -199,20 +254,22 @@ internal class AutoScroller(
 
     /**
      * Drags on without stopping until something ends it: the reader's
-     * touch, translation waking up, or the end of the page.
+     * touch, translation waking up, the menu opening, or the end of the
+     * page.
      */
     private suspend fun drag() {
         scroller.start()
         var last = SystemClock.uptimeMillis()
         var stillSince = last
         var stillThumb: IntArray? = page.thumb()
+        var stillMask = page.mask()
         var stillTravel = travelled
         while (running && scroller.running) {
             delay(TICK_MS)
             val now = SystemClock.uptimeMillis()
             pace(now - last)
             last = now
-            if (page.translating()) {
+            if (page.translating() || page.holding()) {
                 scroller.stop()
                 awaitLifted()
                 return
@@ -220,11 +277,14 @@ internal class AutoScroller(
             // The end of the page: the finger has been dragging a while
             // and the screen has not changed at all. An empty stretch shows
             // no change either, so on a screen with nothing on it only a
-            // much longer stillness counts.
+            // much longer stillness counts. Our own controls and cards are
+            // left out of both looks: on a gutter they alone would be
+            // something on the screen. An app's own bars are not, and
+            // outside a full-screen reader they still can be.
             val thumb = page.thumb()
             if (now - stillSince >= STUCK_MS) {
-                val same = stillThumb != null && thumb != null && FrameStability.meanDiff(stillThumb, thumb) < STILL_DIFF
-                val featureless = ScrollPace.blank(thumb, FrameStability.SIZE, 0f, 1f)
+                val same = unchanged(stillThumb, stillMask, thumb)
+                val featureless = ScrollPace.blank(thumb, FrameStability.SIZE, 0f, 1f, page.mask())
                 val dragged = travelled - stillTravel
                 if (same && dragged > 0f && (!featureless || now - stillSince >= BLANK_STUCK_MS)) {
                     scroller.stop()
@@ -235,27 +295,58 @@ internal class AutoScroller(
                 if (!same || !featureless) {
                     stillSince = now
                     stillThumb = thumb
+                    stillMask = page.mask()
                     stillTravel = travelled
                 }
             }
         }
     }
 
-    /** Glides half a screen, waits for that stop's translation, and holds while it is read. */
+    /**
+     * Glides half a screen, waits for that stop's translation, and holds
+     * while it is read. A glide that moved nothing on screen is the end of
+     * the page, as in [drag]. A glide across an empty stretch shows no
+     * change either, so on a screen with nothing on it the unmoved glides
+     * in a row must add up to [BLANK_STUCK_MS] of dragging.
+     */
     private suspend fun glideAndHold() {
         val (_, h) = page.size()
-        val before = page.passes()
+        val from = page.thumb()
+        val fromMask = page.mask()
+        val startedAt = SystemClock.uptimeMillis()
         scroller.start(distance = h * GLIDE_SHARE)
-        var last = SystemClock.uptimeMillis()
+        var last = startedAt
         while (running && scroller.running) {
             delay(TICK_MS)
             val now = SystemClock.uptimeMillis()
             pace(now - last)
             last = now
+            if (page.holding()) {
+                scroller.stop()
+                awaitLifted()
+                return
+            }
         }
         if (!running || ending != Ending.GLIDED) return
-        // The screen is still now: the stop is translated. Wait for it.
+        // Counted from here, not from when the glide began: a pass the
+        // capture finished mid-glide read a page still on the move, and is
+        // not this stop's translation.
+        val before = page.passes()
         val stoppedAt = SystemClock.uptimeMillis()
+        // Let the lift and any overscroll stretch settle, then look.
+        delay(SETTLE_MS)
+        if (!running) return
+        val thumb = page.thumb()
+        if (unchanged(from, fromMask, thumb)) {
+            unmovedMs += stoppedAt - startedAt
+            if (!ScrollPace.blank(thumb, FrameStability.SIZE, 0f, 1f, page.mask()) || unmovedMs >= BLANK_STUCK_MS) {
+                stop("that's the end of the page · tap ▼ to scroll again")
+                return
+            }
+        } else {
+            unmovedMs = 0L
+        }
+        // The screen is still now: the stop is translated. Wait for it.
         while (running && page.translating() && page.passes() <= before &&
             SystemClock.uptimeMillis() - stoppedAt < TRANSLATE_WAIT_MS
         ) {
@@ -283,13 +374,15 @@ internal class AutoScroller(
         listener.say("paused while you touch · I carry on when you let go", 2000)
         val from = SystemClock.uptimeMillis()
         var calm = page.thumb()
+        var calmMask = page.mask()
         var calmSince = from
         while (running) {
             delay(TICK_MS)
             val now = SystemClock.uptimeMillis()
             val thumb = page.thumb()
-            if (calm == null || thumb == null || FrameStability.meanDiff(calm, thumb) >= STILL_DIFF) {
+            if (!unchanged(calm, calmMask, thumb)) {
                 calm = thumb
+                calmMask = page.mask()
                 calmSince = now
             }
             if (resumeNow || (now - from >= RESUME_AFTER_MS && now - calmSince >= CALM_MS)) {
@@ -304,13 +397,23 @@ internal class AutoScroller(
         while (scroller.running && SystemClock.uptimeMillis() - from < 1_000) delay(20)
     }
 
+    /**
+     * Whether [thumb] shows the page as [was] did, taken while [wasMask]
+     * covered our own windows: compared only where none of ours was on top,
+     * then or now, so a card or the pill coming or going is not the page
+     * moving.
+     */
+    private fun unchanged(was: IntArray?, wasMask: BooleanArray?, thumb: IntArray?): Boolean =
+        was != null && thumb != null &&
+            FrameStability.meanDiff(was, thumb, FrameStability.union(wasMask, page.mask())) < STILL_DIFF
+
     /** Eases the speed toward what the screen calls for now. */
     private fun pace(dtMs: Long) {
         val target = if (!smart) 1f else {
             val (w, h) = page.size()
             val shift = (travelled - seenAt).toInt()
             val now = seen.map { Rect(it).apply { offset(0, -shift) } }
-            ScrollPace.factor(now, w, h, ScrollPace.blank(page.thumb(), FrameStability.SIZE))
+            ScrollPace.factor(now, w, h, ScrollPace.blank(page.thumb(), FrameStability.SIZE, mask = page.mask()))
         }
         factor = ScrollPace.ease(factor, target, dtMs)
     }
@@ -342,6 +445,9 @@ internal class AutoScroller(
 
         /** Longest wait for a stop's translation before gliding on. */
         const val TRANSLATE_WAIT_MS = 12_000L
+
+        /** After a glide, how long the page is given to come to rest before it is looked at. */
+        const val SETTLE_MS = 400L
 
         /** Dragging this long with the screen unchanged is the end of the page. */
         const val STUCK_MS = 2_500L
