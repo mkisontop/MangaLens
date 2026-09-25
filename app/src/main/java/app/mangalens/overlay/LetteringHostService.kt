@@ -23,9 +23,10 @@ import android.view.accessibility.AccessibilityEvent
  * [LetteringHost], and [OverlayController] letters through that.
  *
  * The published APK does not declare it (see [LetteringHost.declared]):
- * Play Protect blocks installing a sideloaded app with any accessibility
- * service. A build that declares it again in the manifest gets solid
- * lettering back, setup step and all.
+ * the No ghosts veil keeps the original from showing through without it,
+ * and auto-scroll's is the one accessibility service the release allows.
+ * A build that declares it again in the manifest gets solid lettering
+ * back, setup step and all.
  */
 class LetteringHostService : AccessibilityService() {
 

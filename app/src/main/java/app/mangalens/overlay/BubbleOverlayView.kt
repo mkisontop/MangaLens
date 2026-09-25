@@ -217,6 +217,14 @@ class BubbleOverlayView(context: Context) : View(context) {
         val inpainted: Boolean,
         val patched: Boolean,
         val busy: Boolean,
+        /**
+         * The panel free lettering is fitted and held to. It is the same for
+         * every repaint a read streams, but a card carried to the next stop
+         * brings the old frame's panel, shifted, where the stop's read finds
+         * the new frame's: the same line is then set again, once, for the
+         * panel the reader now sees.
+         */
+        val panel: Rect?,
         /** The room free lettering was held to off its neighbours ([laneFor]); null for none. */
         val lane: RectF? = null,
     )
@@ -672,6 +680,7 @@ class BubbleOverlayView(context: Context) : View(context) {
                 inpainted = stamp != null && b.fill != null,
                 patched = patch != null,
                 busy = busy,
+                panel = b.panel?.let(::Rect),
             )
             var l = if (letterings.containsKey(key)) letterings[key] else letter(b, stamp != null, patch != null, busy)
             nextLetterings[key] = l
@@ -861,8 +870,11 @@ class BubbleOverlayView(context: Context) : View(context) {
         invalidate()
     }
 
-    /** Ends any fade in progress: everything shows at full strength from the next draw. */
-    fun finishFades() {
+    /**
+     * Ends any fade in progress: everything shows at full strength from the
+     * next draw. For tests only; nothing in the app calls it.
+     */
+    internal fun finishFades() {
         if (placed.none { it.since != 0L }) return
         placed = placed.map { Placed(it.source, it.lettering, it.dy, it.bounds, it.stamp, it.stampDst, it.patch, it.patchDst, 0L) }
         for (k in shownSince.keys) shownSince[k] = 0L

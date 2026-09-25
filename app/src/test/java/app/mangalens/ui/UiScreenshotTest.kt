@@ -8,6 +8,7 @@ import androidx.activity.ComponentActivity
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -16,6 +17,7 @@ import androidx.compose.runtime.snapshots.Snapshot
 import androidx.compose.ui.platform.LocalConfiguration
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.semantics.SemanticsActions
+import androidx.compose.ui.test.junit4.StateRestorationTester
 import androidx.compose.ui.test.junit4.createAndroidComposeRule
 import androidx.compose.ui.test.onNodeWithContentDescription
 import androidx.compose.ui.test.onNodeWithText
@@ -374,6 +376,53 @@ class UiScreenshotTest {
     }
 
     @Test
+    fun `14j with the scroll button hidden, auto-scroll points to the long-press`() {
+        home(HomeUiState(keyed.copy(autoScrollButton = false), overlayGranted = true, autoScrollOn = true, browserName = "Brave"))
+        compose.onNodeWithContentDescription("Tweaks:", substring = true).performScrollTo().performClick()
+        // There is no ▼ to tap: the overlay shows it only while the setting is on.
+        compose.onNodeWithText("Long-press the $MARK bubble → Auto-scroll the page, in any app.").performScrollTo()
+        compose.onNodeWithText("Tap ▼", substring = true).assertDoesNotExist()
+        ui = ui.copy(settings = keyed)
+        compose.waitForIdle()
+        compose.onNodeWithText("Tap ▼ beside the $MARK bubble and I scroll the page for you, in any app.").performScrollTo()
+    }
+
+    @Test
+    fun `14k the first request after the activity is recreated still opens Tweaks`() {
+        // The activity counts the overlay's requests in a plain field, which
+        // starts again at 0 when a rotation or a dark-mode switch recreates
+        // it; the page on show comes back from saved state.
+        var requests by mutableIntStateOf(0)
+        val restoration = StateRestorationTester(compose)
+        restoration.setContent {
+            CompositionLocalProvider(LocalReducedMotion provides true) {
+                MangaLensTheme {
+                    val scope = rememberCoroutineScope()
+                    val hi = remember { SayHi(scope) { LETTERED } }
+                    val drafts = rememberAiDrafts(keyed, NoSink)
+                    HomeContent(
+                        HomeUiState(keyed, overlayGranted = true, browserName = "Brave"),
+                        drafts, hi, NoSink, HomeActions(),
+                        tweaksRequests = requests,
+                    )
+                }
+            }
+        }
+        val tweaks = "The defaults are good. Most people never need more than this."
+        requests = 1
+        compose.onNodeWithText(tweaks).assertExists()
+        compose.onNodeWithContentDescription("Close tweaks").performClick()
+        compose.onNodeWithText(tweaks).assertDoesNotExist()
+
+        requests = 0
+        restoration.emulateSavedInstanceStateRestore()
+        compose.onNodeWithText(tweaks).assertDoesNotExist()
+        // The overlay's next Tweaks, or ▼ with auto-scroll switched off: count 1 again.
+        requests = 1
+        compose.onNodeWithText(tweaks).assertExists()
+    }
+
+    @Test
     fun `14f tweaks, solid lettering off at double font size`() {
         // Large text stacks the button under the words instead of squeezing them.
         home(HomeUiState(keyed, overlayGranted = true, solidOffered = true, browserName = "Brave"), fontScale = 2f)
@@ -567,4 +616,7 @@ internal object NoSink : SettingsSink {
     override fun setNoGhosts(v: Boolean) = Unit
     override fun setIgnoreTopPct(v: Float) = Unit
     override fun setStabilityMs(v: Int) = Unit
+    override fun setAutoScrollButton(v: Boolean) = Unit
+    override fun setScrollLevel(v: Int) = Unit
+    override fun setSmartScroll(v: Boolean) = Unit
 }

@@ -43,7 +43,10 @@
             chose to have it despite the price: Play Protect's enhanced
             fraud protection refuses to install a sideloaded app that
             declares an accessibility service, as it did 1.0.1.
-            LetteringHostService (solid lettering) stays undeclared.
+            LetteringHostService (solid lettering) stays undeclared: the
+            No ghosts veil keeps the original from showing through without
+            it, and one switch in Accessibility is all a reader should
+            have to find.
         -->
         <service
             android:name=".scroll.AutoScrollService"

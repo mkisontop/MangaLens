@@ -150,16 +150,24 @@ class MainActivity : ComponentActivity() {
         projectionLauncher.launch(mpm.createScreenCaptureIntent())
     }
 
-    /** The system settings page covers the app, so its hint is a toast. */
+    /**
+     * The system settings page covers the app, so its hint is a toast. The
+     * page may not exist: some builds answer only the plain action, not the
+     * one that names MangaLens, and Android Go gives no app the switch at
+     * all. Where neither opens, the toast says so instead of sending the
+     * reader to look for a switch that is not there; App info would have
+     * none either.
+     */
     private fun openOverlaySettings() {
+        val opened = runCatching {
+            startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName")))
+        }.isSuccess || runCatching { startActivity(Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION)) }.isSuccess
         Toast.makeText(
             this,
-            "Find MangaLens and switch on “Display over other apps”, then come back.",
+            if (opened) "Find MangaLens and switch on “Display over other apps”, then come back."
+            else "This phone doesn’t let apps draw over other apps, so MangaLens can’t letter here.",
             Toast.LENGTH_LONG
         ).show()
-        startActivity(
-            Intent(Settings.ACTION_MANAGE_OVERLAY_PERMISSION, Uri.parse("package:$packageName"))
-        )
     }
 
     /**
