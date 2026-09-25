@@ -14,6 +14,7 @@ import app.mangalens.ocr.PageScan
 import app.mangalens.ocr.Script
 import app.mangalens.ocr.TextAnchor
 import app.mangalens.overlay.RenderBubble
+import app.mangalens.pipeline.ReadResolver.Companion.containedShare
 import app.mangalens.settings.AiVisionMode
 import app.mangalens.settings.AppSettings
 import app.mangalens.settings.SourceLang
@@ -141,14 +142,6 @@ class TranslatePipeline(
         const val STRIP_MARGIN = 0.25f
 
         /**
-         * A strip taller than this share of the screen is read as the whole
-         * screen. None is: told the rows it newly shows, the model reads a
-         * tall strip's new lines first all the same, and a strip up to the
-         * whole screen is still shorter to answer than a screen read afresh.
-         */
-        const val MAX_STRIP = 1.0f
-
-        /**
          * How far into the margin, as a share of the screen, the rows the
          * model is told are unread reach past the rows a scroll revealed:
          * more than a model's box is ever off by.
@@ -221,12 +214,15 @@ class TranslatePipeline(
         val revealed = kotlin.math.abs(d)
         if (revealed < h * NOTHING_NEW) return StripRead(null, Rect(), d, last, match)
         val margin = (h * STRIP_MARGIN).toInt()
+        // However tall, the strip is read as a strip: told the rows it newly
+        // shows, the model reads a tall strip's new lines first all the same,
+        // and a strip up to the whole screen is still shorter to answer than
+        // a screen read afresh.
         val strip = if (d > 0) {
             Rect(0, (h - revealed - margin).coerceAtLeast(0), bitmap.width, h)
         } else {
             Rect(0, 0, bitmap.width, (revealed + margin).coerceAtMost(h))
         }
-        if (strip.height() > h * MAX_STRIP) return null
         // The rows the scroll revealed. The margin above them is shown for
         // context and for a balloon the last stop's edge cut, not to be read
         // again: its lines were all read at that stop and come back from
@@ -249,15 +245,9 @@ class TranslatePipeline(
         } finally {
             if (crop !== bitmap) crop.recycle()
         }
-        return StripRead(inner, strip, d, last, match, revealedRows)
+        return StripRead(inner, strip, d, last, match)
     }
 
-    /**
-     * A frame read in full a little earlier, shown again exactly as it was
-     * — the reader turned back a page — needs no request: its lines come
-     * from the cache or from memory, and it is read afresh only when
-     * neither holds all of them.
-     */
     /** [strip]'s rows read again whole, the margin's lines included, as the strip read before it. */
     private fun wholeStrip(reader: PageReader, bitmap: Bitmap, strip: StripRead, lang: SourceLang, scope: CoroutineScope): StripRead {
         val rows = strip.strip
@@ -267,9 +257,14 @@ class TranslatePipeline(
         } finally {
             if (crop !== bitmap) crop.recycle()
         }
-        return StripRead(inner, rows, strip.scrolled, strip.since, strip.match, Rect(rows))
+        return StripRead(inner, rows, strip.scrolled, strip.since, strip.match)
     }
 
+    /**
+     * A frame read in full a little earlier, shown again exactly as it was
+     * — the reader turned back a page — needs no request: memory finds its
+     * lines again, and it is read afresh only when memory lost one.
+     */
     private fun earlierPage(match: ScrollMatch): StripRead? {
         val again = synchronized(recentSeen) { recentSeen.drop(1).firstOrNull { match.unmovedFrom(it.match) } } ?: return null
         return StripRead(null, Rect(), 0, again, match)
@@ -294,13 +289,6 @@ class TranslatePipeline(
             app.mangalens.translate.GeminiApi.warm(settings.apiKey, settings.effectiveModel(), afterIdle)
         }
     }
-
-    suspend fun process(
-        bitmap: Bitmap,
-        settings: AppSettings,
-        exclusions: List<Rect> = emptyList(),
-        onPartial: (suspend (PageResult) -> Unit)? = null,
-    ): PageResult = translate(analyze(bitmap, settings, exclusions), settings, onPartial)
 
     /**
      * Reads the page: balloons and panels from the pixels, lines from OCR,
@@ -342,11 +330,8 @@ class TranslatePipeline(
 
         // ML Kit misses small and stylized lettering it would read fine at
         // twice the size. A balloon it read nothing in is cropped from the
-        // full-resolution frame, enlarged, and read again on its own —
-        // unless the model is reading the page itself: then OCR only backs
-        // up the model, and the lettering remembered from the last stop
-        // should not wait on crops the model will read anyway.
-        val rereads = if (readsAiFirst(settings)) emptyList() else reread(bitmap, scan.balloons, firstPass, settings)
+        // full-resolution frame, enlarged, and read again on its own.
+        val rereads = reread(bitmap, scan.balloons, firstPass, settings)
         assemble(bitmap, settings, exclusions, scan, firstPass, rereads, useVision, pending = false)
     }
 
@@ -735,10 +720,15 @@ class TranslatePipeline(
         // once the page is shown to be the one the answer was for.
         val key = if (bubbles.isNotEmpty()) visionKey(reader.cacheNamespace, lang, bubbles, bitmap) else null
         key?.let { readCacheGet(it, bubbles, bitmap.width, bitmap.height) }?.let { cached ->
-            if (!replayable(cached, bubbles, analysis.detected, recall())) return@let
+            if (!replayable(cached, recall())) return@let
             pending?.cancel()
-            memory.remember(bitmap, cached)
-            seen = Seen(matchOf(bitmap), cached)
+            // The few rows a nudge revealed are no part of the answer
+            // replayed: as when nothing replays, the next stop still
+            // measures from the frame last read in full.
+            if ((pending as? StripRead)?.unreadNudge != true) {
+                memory.remember(bitmap, cached)
+                seen = Seen(matchOf(bitmap), cached)
+            }
             return@coroutineScope PageResult(resolver.resolve(cached), reader.label, null, diag = "cached")
         }
         var read = pending ?: reader.start(this, bitmap, lang)
@@ -771,9 +761,14 @@ class TranslatePipeline(
         val partial = (read as? StripRead)?.cutByEdge(remembered, bitmap.height, analysis.ignoreTop, analysis.ignoreBottom).orEmpty()
         fun keep(items: List<PageItem>): List<PageItem> = Wording.keep(remembered, items, partial)
 
+        // What streamed, as it is lettered however the read ends: every
+        // place that letters it trims the strip's halves first, or a failed
+        // read would put a half-balloon's English over the whole line.
+        fun lettered(items: List<PageItem>): List<PageItem> = keep(fresh(items))
+
         suspend fun paint() {
             val emit = onPartial ?: return
-            val shown = resolver.resolve(keep(fresh(streamed)))
+            val shown = resolver.resolve(lettered(streamed))
             if (shown.isNotEmpty()) emit(PageResult(shown, reader.label, null))
         }
 
@@ -808,7 +803,7 @@ class TranslatePipeline(
             // rather than waiting for the model to read it again. The
             // collector has stopped: nothing adds to the list any more.
             val shown = ArrayList(streamed)
-            if (shown.isNotEmpty()) runCatching { memory.remember(bitmap, keep(fresh(shown))) }
+            if (shown.isNotEmpty()) runCatching { memory.remember(bitmap, lettered(shown)) }
             throw e
         } catch (e: Exception) {
             failure = e
@@ -822,7 +817,7 @@ class TranslatePipeline(
             // knows why lettering stays raw rather than seeing some other
             // translation in the AI's place.
             val lined = withLines()
-            val partialShown = resolver.resolve(keep(streamed))
+            val partialShown = resolver.resolve(lettered(streamed))
             val text = try {
                 aiTextTranslate(bitmap, lined.bubbles, lined.ocr.lang, settings, lined.detected)
             } catch (e: CancellationException) {
@@ -851,13 +846,21 @@ class TranslatePipeline(
         // scroll-back say it in the same words. A reply that broke off is
         // shown, and remembered line by line, but never kept as the page's
         // whole answer.
-        if (!read.cutOff) {
+        //
+        // A nudge that sent nothing is no frame read in full: the rows it
+        // revealed were never read, so the next stop measures its scroll,
+        // and the rows it tells the model are new, from the frame that was.
+        // Memory is left as that frame left it too: remembering this one
+        // would put copies in place of the lines that frame's answer holds,
+        // and those of them the next stop's edge cuts would not be found.
+        val nudge = (read as? StripRead)?.unreadNudge == true
+        if (!read.cutOff && !nudge) {
             // Balloons a failed gap fill left in the original are not part
             // of the page's answer either: a scroll-back reads them again.
             if (gap.failure == null) key?.let { readCachePut(it, bubbles, finalItems, bitmap.width, bitmap.height) }
             seen = Seen((read as? StripRead)?.match ?: matchOf(bitmap), finalItems)
         }
-        memory.remember(bitmap, finalItems)
+        if (!nudge) memory.remember(bitmap, finalItems)
         lastItems = finalItems
         var rendered = resolver.resolve(finalItems)
 
@@ -905,19 +908,21 @@ class TranslatePipeline(
     }
 
     /**
-     * Whether a cached answer may be replayed onto this frame. The cache key
-     * holds only the OCR regions' text, and one short line ("뭐?") reads
-     * the same on many pages, so every line of the answer must be backed
-     * by this frame: a line in a region OCR read here, or in a balloon
-     * found here, is what the key already matched; any other — narration,
-     * text on the art, a sound — must be found again stroke by stroke by
-     * scroll memory. Otherwise the page is read afresh.
+     * Whether a cached answer may be replayed onto this frame. Read
+     * AI-first, OCR has read nothing yet, so the key is no more than each
+     * balloon's layout — an 8x8 hash of its pixels — and one short line
+     * ("뭐?") hashes like another of its shape ("왜?"): a balloon found
+     * where a cached line sits says nothing of what it holds. Every line of
+     * the answer must be found again, stroke by stroke, by scroll memory,
+     * and in the same words: a page read since under the same key has left
+     * its own answer there, and memory's word for the lettering is what
+     * tells the two apart. Otherwise the page is read afresh. A page
+     * scrolled back to from beyond memory's reach then costs a request, a
+     * smaller cost than English on the wrong balloon.
      */
-    private fun replayable(cached: List<PageItem>, bubbles: List<Bubble>, detected: List<Balloon>, recalled: List<PageItem>): Boolean =
+    private fun replayable(cached: List<PageItem>, recalled: List<PageItem>): Boolean =
         cached.all { item ->
-            bubbles.any { it.text.isNotBlank() && Rect.intersects(it.box, item.box) && containedShare(item.box, it.box) > 0.5f } ||
-                detected.any { containedShare(item.box, it.box) > 0.6f } ||
-                recalled.any { r -> Rect.intersects(r.box, item.box) && iou(r.box, item.box) > 0.5f }
+            recalled.any { r -> r.en == item.en && Rect.intersects(r.box, item.box) && iou(r.box, item.box) > 0.5f }
         }
 
     /** [bitmap]'s scroll signature: the one [startRead] measured when it was this frame's. */
@@ -940,7 +945,7 @@ class TranslatePipeline(
     ): Gap<PageItem> {
         val missing = bubbles.filter { b ->
             b.kind == BubbleKind.DIALOGUE && b.text.isNotBlank() &&
-                detected.any { ReadResolver.containedShare(b.box, it.box) > 0.8f } &&
+                detected.any { containedShare(b.box, it.box) > 0.8f } &&
                 answered.none { a ->
                     Rect.intersects(a.box, b.box) &&
                         (containedShare(a.box, b.box) > 0.3f || containedShare(b.box, a.box) > 0.3f)
@@ -1393,15 +1398,5 @@ class TranslatePipeline(
             b.box.contains(box.centerX(), box.centerY()) &&
                 (iou(b.box, box) > 0.2f || containedShare(box, b.box) > 0.8f)
         }
-    }
-
-    /** Fraction of [box] inside [within]. */
-    private fun containedShare(box: Rect, within: Rect): Float {
-        val ix = minOf(box.right, within.right) - maxOf(box.left, within.left)
-        val iy = minOf(box.bottom, within.bottom) - maxOf(box.top, within.top)
-        if (ix <= 0 || iy <= 0) return 0f
-        val area = box.width().toLong() * box.height()
-        if (area <= 0L) return 0f
-        return (ix.toLong() * iy).toFloat() / area
     }
 }

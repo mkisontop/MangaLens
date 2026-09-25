@@ -26,13 +26,14 @@ internal class StripRead(
     val scrolled: Int,
     val since: Seen,
     val match: ScrollMatch,
-    /**
-     * The rows the scroll revealed, in screen coordinates: the model reads
-     * the lettering reaching into them, and the strip's margin is left to
-     * memory. Empty when nothing was sent.
-     */
-    val revealed: Rect = Rect(),
 ) : PendingRead {
+
+    /**
+     * A nudge that sent nothing: the few rows it revealed were never read,
+     * so this frame is no frame read in full, and the next stop measures
+     * its scroll, and the rows it tells the model are new, from [since].
+     */
+    val unreadNudge: Boolean get() = inner == null && scrolled != 0
 
     override val isActive: Boolean get() = inner?.isActive ?: false
     override val firstItemMs: Long? get() = inner?.firstItemMs
@@ -55,14 +56,24 @@ internal class StripRead(
 
     /**
      * Whether memory found again, on this frame of [height] rows, every
-     * line [since] held that is still on screen and reaches no row the
-     * scroll revealed — the lines this read counts on memory for, the
-     * strip's margin included: the model is told to leave those. Lines in
-     * the ignored bands at the top and bottom are not expected. When one is
+     * line [since] held that is still on screen and is not this read's to
+     * read — the lines it counts on memory for, the strip's margin
+     * included: the model is told to leave those. A line the last stop's
+     * edge cut is the read's own when it lies wholly on the strip: the rows
+     * the model is told are new reach back over it ([told]). Lines in the
+     * ignored bands at the top and bottom are not expected. When one is
      * missing, only a read of the whole screen is sure to letter it.
      */
     fun covered(recalled: List<PageItem>, height: Int, ignoreTop: Int, ignoreBottom: Int): Boolean =
-        coveredBy(revealed, recalled, height, ignoreTop, ignoreBottom)
+        since.items.all { old ->
+            val box = Rect(old.box).apply { offset(0, -scrolled) }
+            when {
+                box.top < ignoreTop || box.bottom > height - ignoreBottom -> true
+                !strip.isEmpty && cutByLastEdge(old.box, scrolled, height, ignoreTop, ignoreBottom) &&
+                    box.top >= strip.top && box.bottom <= strip.bottom -> true
+                else -> recalled.any { sameSpot(it.box, box) }
+            }
+        }
 
     /**
      * Whether, [covered] failing, a read of the whole strip would do: every
@@ -79,16 +90,6 @@ internal class StripRead(
             }
         }
 
-    private fun coveredBy(read: Rect, recalled: List<PageItem>, height: Int, ignoreTop: Int, ignoreBottom: Int): Boolean =
-        since.items.all { old ->
-            val box = Rect(old.box).apply { offset(0, -scrolled) }
-            when {
-                box.top < ignoreTop || box.bottom > height - ignoreBottom -> true
-                !read.isEmpty && Rect.intersects(box, read) -> true
-                else -> recalled.any { sameSpot(it.box, box) }
-            }
-        }
-
     /**
      * Of [recalled], the lines the last stop's edge (or the band ignored
      * there) cut: read only as far as they showed, they are told to the
@@ -99,7 +100,7 @@ internal class StripRead(
     fun cutByEdge(recalled: List<PageItem>, height: Int, ignoreTop: Int, ignoreBottom: Int): Set<PageItem> {
         if (scrolled == 0) return emptySet()
         val cut = since.items
-            .filter { old -> if (scrolled > 0) old.box.bottom >= height - ignoreBottom - CUT_BY_EDGE_PX else old.box.top <= ignoreTop + CUT_BY_EDGE_PX }
+            .filter { cutByLastEdge(it.box, scrolled, height, ignoreTop, ignoreBottom) }
             .map { Rect(it.box).apply { offset(0, -scrolled) } }
         if (cut.isEmpty()) return emptySet()
         return recalled.filterTo(HashSet()) { r -> cut.any { sameSpot(it, r.box) } }
@@ -148,12 +149,25 @@ internal class StripRead(
             ignoreBottom: Int,
         ): Pair<Int, Int> = if (scrolled > 0) {
             var top = revealed.top - slack
-            for (old in since) if (old.box.bottom >= h - ignoreBottom - CUT_BY_EDGE_PX) top = minOf(top, old.box.top - scrolled)
+            for (old in since) if (cutByLastEdge(old.box, scrolled, h, ignoreTop, ignoreBottom)) top = minOf(top, old.box.top - scrolled)
             top.coerceAtLeast(strip.top) to strip.bottom
         } else {
             var bottom = revealed.bottom + slack
-            for (old in since) if (old.box.top <= ignoreTop + CUT_BY_EDGE_PX) bottom = maxOf(bottom, old.box.bottom - scrolled)
+            for (old in since) if (cutByLastEdge(old.box, scrolled, h, ignoreTop, ignoreBottom)) bottom = maxOf(bottom, old.box.bottom - scrolled)
             strip.top to bottom.coerceAtMost(strip.bottom)
+        }
+
+        /**
+         * Whether the last stop's edge (or the band ignored there) cut [box],
+         * a line read at that stop on a frame [h] rows tall: the edge the
+         * page has since scrolled away from. One test, so the lines the
+         * model is told to read again ([told]) are the ones counted as read
+         * only in part ([cutByEdge]) and as the read's own ([covered]).
+         */
+        private fun cutByLastEdge(box: Rect, scrolled: Int, h: Int, ignoreTop: Int, ignoreBottom: Int): Boolean = when {
+            scrolled > 0 -> box.bottom >= h - ignoreBottom - CUT_BY_EDGE_PX
+            scrolled < 0 -> box.top <= ignoreTop + CUT_BY_EDGE_PX
+            else -> false
         }
 
         private fun sameSpot(a: Rect, b: Rect): Boolean {

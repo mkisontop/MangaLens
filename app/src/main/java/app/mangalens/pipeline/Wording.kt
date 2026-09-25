@@ -1,6 +1,7 @@
 package app.mangalens.pipeline
 
 import android.graphics.Rect
+import app.mangalens.pipeline.ReadResolver.Companion.containedShare
 import app.mangalens.translate.PageItem
 
 /** Which English a line keeps when it is read again at a later stop. */
@@ -87,16 +88,6 @@ internal object Wording {
         if (inter == 0L) return 0f
         val union = a.width().toLong() * a.height() + b.width().toLong() * b.height() - inter
         return inter.toFloat() / union
-    }
-
-    /** Share of [box] that lies in [within]. */
-    private fun containedShare(box: Rect, within: Rect): Float {
-        val ix = minOf(box.right, within.right) - maxOf(box.left, within.left)
-        val iy = minOf(box.bottom, within.bottom) - maxOf(box.top, within.top)
-        if (ix <= 0 || iy <= 0) return 0f
-        val area = box.width().toLong() * box.height()
-        if (area <= 0L) return 0f
-        return (ix.toLong() * iy).toFloat() / area
     }
 
     /** Share of the longer transcription two readings of one line have in common. */
