@@ -170,12 +170,32 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
          * Two in a row is a reader skimming; from the third the pass runs
          * to the end, and the page is watched again once it has.
          *
+         * The watch must not be the banner's to trip again, or it would
+         * take down every finished pass within a frame, forever. What
+         * keeps changing while the third pass runs is learned as restless
+         * (see [learnRestless]) and judged no more, while a page turned
+         * under the cards still changes far more than that, and is caught.
+         *
          * Only a page seen to be replaced counts. A scroll is the reader
          * moving on, which no banner can pass for: it cancels a pass
          * whatever the count, and it starts the next stop with the full
-         * budget again.
+         * budget again and nothing learned restless.
          */
         private const val MAX_MID_PASS_CANCELS = 2
+
+        /**
+         * How long after a cell is first seen to change it must be seen
+         * changing again to be restless. A page turned by a tap changes each
+         * cell once, or over a fade a good deal shorter than this; a banner
+         * or a video keeps changing the same cells.
+         */
+        private const val RESTLESS_MS = 600L
+
+        /**
+         * How far a cell's grey must move between two frames to count as
+         * changing, as [FrameStability.changedFraction] counts it.
+         */
+        private const val RESTLESS_DELTA = 16
 
         /**
          * How long an alert holds the status pill. It is shown once, so it
@@ -247,6 +267,56 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                 else -> 1.0
             }
             return if (FrameStability.changedFraction(base, thumb, mask) > pageBar) PageCheck.REPLACED else PageCheck.SAME
+        }
+
+        /**
+         * The cells [mask] leaves that are restless as of [thumb], taken at
+         * [now]: seen changing from the frame before, [prev], at least
+         * [RESTLESS_MS] after [stirredAt] says they were first seen to. Cells
+         * seen changing for the first time are noted there. Null when no cell
+         * is restless yet.
+         *
+         * Frames are compared with each other, not with the page translated:
+         * a turned page differs from that on every frame after the turn, but
+         * it changes from one frame to the next only while it turns.
+         */
+        internal fun learnRestless(
+            prev: IntArray?,
+            thumb: IntArray,
+            mask: BooleanArray?,
+            stirredAt: LongArray,
+            now: Long,
+        ): BooleanArray? {
+            if (prev == null || prev.size != thumb.size || stirredAt.size != thumb.size) return null
+            var learned: BooleanArray? = null
+            for (i in thumb.indices) {
+                if (mask != null && i < mask.size && mask[i]) continue
+                if (kotlin.math.abs(prev[i] - thumb[i]) <= RESTLESS_DELTA) continue
+                val first = stirredAt[i]
+                if (first == 0L) {
+                    stirredAt[i] = now
+                } else if (now - first >= RESTLESS_MS) {
+                    (learned ?: BooleanArray(thumb.size).also { learned = it })[i] = true
+                }
+            }
+            return learned
+        }
+
+        /**
+         * Runs [action] on [handler]'s thread, the capture thread, after
+         * whatever that thread is already doing; at once when this is that
+         * thread, or when it has quit and nothing else will. The reader and
+         * the frame buffers are torn down only this way: the capture thread
+         * copies each frame straight out of the reader's buffer, and freeing
+         * either under that copy is a native crash, not an exception.
+         */
+        internal fun onCaptureThread(handler: Handler?, action: () -> Unit) {
+            val thread = handler?.looper?.thread
+            if (handler == null || thread == null || !thread.isAlive || thread === Thread.currentThread() ||
+                !handler.post(action)
+            ) {
+                action()
+            }
         }
     }
 
@@ -416,6 +486,24 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
      * see [MAX_MID_PASS_CANCELS]. Written on the main thread only.
      */
     @Volatile private var midPassCancels = 0
+
+    /**
+     * The cells seen to keep changing while a pass was left to finish over
+     * a page that would not stop changing (see [MAX_MID_PASS_CANCELS]): an
+     * animated banner, a video. Every judgement of the page leaves them out,
+     * as it leaves out our own overlays, until the reader scrolls. Written
+     * on the capture thread only, see [forgetRestless].
+     */
+    @Volatile private var restless: BooleanArray? = null
+
+    /**
+     * When each cell was first seen changing while the current pass is left
+     * to finish, and the page that pass translated: a new pass starts
+     * learning afresh. Capture thread only; see [learnRestless].
+     */
+    private var stirredAt: LongArray? = null
+    private var stirredFor: IntArray? = null
+
     @Volatile private var lastFrameAt = 0L
 
     /**
@@ -644,14 +732,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
             vd.resize(w, h, dpi)
             vd.surface = reader.surface
         }
-        imageReader?.let { old ->
-            val handler = captureHandler
-            if (handler != null && handler.looper.thread.isAlive) {
-                handler.post { runCatching { old.close() } }
-            } else {
-                runCatching { old.close() }
-            }
-        }
+        imageReader?.let { old -> onCaptureThread(captureHandler) { runCatching { old.close() } } }
         imageReader = reader
     }
 
@@ -660,11 +741,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         if (projection == null) return
         val (w, h, _) = displaySize()
         if (w != capW || h != capH) {
-            translateJob?.cancel()
-            discardPrepared()
-            state = State.SCANNING
-            shownThumb = null
-            clearCards()
+            takeDown()
             releaseFrameBuffers()
             setupDisplay()
         }
@@ -672,10 +749,10 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
 
     /** Runs on the capture HandlerThread. */
     private fun onFrame(reader: ImageReader) {
-        // Stop and rotation close the reader from the main thread while
-        // frames are still arriving here; a closed reader throws rather than
-        // returning null, and an already-acquired Image's buffer dies under
-        // the copy. Either way the frame is simply over.
+        // Stop and rotation close the reader on this thread, so never under a
+        // frame being copied, but a callback queued before the close still
+        // arrives for the closed reader, which throws rather than returning
+        // null. The frame is simply over.
         val image = try {
             reader.acquireLatestImage()
         } catch (_: IllegalStateException) {
@@ -771,7 +848,8 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
             // and the page repaints each time the model streams an item.
             // For as long as a stream lasted there was then no motion check
             // at all, and cards stayed painted over a page that had moved.
-            val moved = frameMoved(prevThumb, thumb, mask, ownPaintSettling = now < suppressUntil)
+            val prev = prevThumb
+            val moved = frameMoved(prev, thumb, mask, ownPaintSettling = now < suppressUntil)
             prevThumb = thumb
             latestThumb = thumb
             if (moved) {
@@ -804,7 +882,17 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
             val current = state
             if (current == State.SCANNING) return
             val base = shownThumb ?: return
-            when (judgeAgainstShown(base, thumb, mask)) {
+            if (current == State.TRANSLATING && midPassCancels >= MAX_MID_PASS_CANCELS) {
+                // The page is not judged while this pass runs to the end, and
+                // what keeps changing meanwhile is what spent the budget.
+                val stirred = stirredAt?.takeIf { stirredFor === base }
+                    ?: LongArray(base.size).also {
+                        stirredAt = it
+                        stirredFor = base
+                    }
+                learnRestless(prev, thumb, mask, stirred, now)?.let { restless = FrameStability.union(restless, it) }
+            }
+            when (judgeAgainstShown(base, thumb, FrameStability.union(mask, restless))) {
                 PageCheck.SCROLLED -> scrolled(now)
                 PageCheck.REPLACED -> if (current == State.SHOWING || midPassCancels < MAX_MID_PASS_CANCELS) {
                     lastMotionAt = now
@@ -838,9 +926,12 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         return target
     }
 
-    /** Serialized onto the capture thread so a buffer is never freed mid-write. */
+    /**
+     * Serialized onto the capture thread so a buffer is never freed
+     * mid-write. What the frames taught about the screen goes with them.
+     */
     private fun releaseFrameBuffers() {
-        val action = Runnable {
+        onCaptureThread(captureHandler) {
             dropHeld()
             synchronized(frameLock) { latestBitmap = null }
             frameA?.recycle()
@@ -850,14 +941,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
             prevThumb = null
             slowRefThumb = null
             slowRefAt = 0L
-        }
-        val handler = captureHandler
-        if (handler != null && handler.looper.thread.isAlive &&
-            Thread.currentThread() !== handler.looper.thread
-        ) {
-            handler.post(action)
-        } else {
-            action.run()
+            forgetRestless()
         }
     }
 
@@ -875,7 +959,16 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         // scroll, instead.
         if (now - lastMotionAt >= LONG_LOOK_MS) pipeline.warm(settings, afterIdle = true)
         lastMotionAt = now
+        // What never stopped changing moved with the page, or off it.
+        forgetRestless()
         if (state != State.SCANNING || preparing || midPassCancels > 0) scope.launch { onMotion() }
+    }
+
+    /** Forgets the cells learned [restless], and what was learning them. Capture thread only. */
+    private fun forgetRestless() {
+        restless = null
+        stirredAt = null
+        stirredFor = null
     }
 
     /**
@@ -890,22 +983,32 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         when (state) {
             State.TRANSLATING -> {
                 if (pageChanged) midPassCancels++
-                translateJob?.cancel()
-                state = State.SCANNING
-                shownThumb = null
-                clearCards()
+                takeDown()
                 setPill(null)
             }
             State.SHOWING -> {
-                state = State.SCANNING
-                shownThumb = null
-                clearCards()
+                takeDown()
                 setPill(null)
             }
             // Between stops the only thing left to throw away is a frame
             // read ahead, which the screen no longer shows.
             State.SCANNING -> if (!pageChanged) discardPrepared()
         }
+    }
+
+    /**
+     * Back to scanning from wherever the loop is: the pass stops, a frame
+     * read ahead is dropped, and the cards come down with the page they
+     * were written for. A step with nothing to do does nothing: a frame is
+     * read ahead only while scanning, and a pass has ended by the time its
+     * cards show. Main thread only.
+     */
+    private fun takeDown() {
+        translateJob?.cancel()
+        discardPrepared()
+        state = State.SCANNING
+        shownThumb = null
+        clearCards()
     }
 
     private fun pushBusy() {
@@ -1112,13 +1215,15 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
     /**
      * Whether the frame read ahead is still what the screen shows, judged
      * over the cells our own overlays do not cover — the button's busy ring
-     * and whatever the pill says, which must not count. Drift is measured
-     * two ways, as a page change is: by how far the cells moved on average,
-     * which a scroll makes obvious, and by how many moved at all, which a
-     * tap-to-turn between two mostly-white pages does and the average hides.
+     * and whatever the pill says, which must not count — nor the cells seen
+     * never to stop changing ([restless]), which would throw away every
+     * frame read ahead. Drift is measured two ways, as a page change is: by
+     * how far the cells moved on average, which a scroll makes obvious, and
+     * by how many moved at all, which a tap-to-turn between two
+     * mostly-white pages does and the average hides.
      */
     private fun stillOnScreen(read: IntArray, live: IntArray?): Boolean {
-        val mask = overlayMask
+        val mask = FrameStability.union(overlayMask, restless)
         return FrameStability.meanDiff(read, live, mask) <= PREPARED_MAX_DRIFT &&
             FrameStability.changedFraction(read, live, mask) <= PAGE_CHANGE_FRACTION
     }
@@ -1346,7 +1451,10 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                 // the reader has left the story — an index, a cover, a menu.
                 if (shown.isNotEmpty()) {
                     works.noteTranslated(System.currentTimeMillis(), glossary.snapshot().keys)
-                } else {
+                } else if (result.failure == null) {
+                    // A read that failed says nothing about whether the page
+                    // has dialogue, the same as a pass that threw (see the
+                    // catch below): a few stops offline must not end the series.
                     works.noteQuietPass()
                 }
                 controller?.bubbleView?.setDebugBalloons(
@@ -1390,6 +1498,11 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                 // frame (when the grab got that far) and the mask over
                 // whatever lines streamed in are both already in place.
                 state = State.SHOWING
+                // Nothing of this pass is on screen: the scroll cleared the
+                // last stop's cards, and a peek or a hold must not count
+                // them as shown. Carried or streamed lines are what
+                // lastShown already holds.
+                if (streamed.isEmpty() && carried.isEmpty()) lastShown = emptyList()
                 // Nothing else translates the page, so the reader is told
                 // why it stays raw. A rejected key fails every page alike
                 // and gets the one-time alert first.
@@ -1520,11 +1633,9 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
             // Cancelling the pass stops its AI read too: the pass gives
             // back everything it holds on the way out. A frame read ahead
             // and not yet taken is stopped here.
-            translateJob?.cancel()
-            discardPrepared()
-            state = State.SCANNING
-            shownThumb = null
-            clearCards()
+            takeDown()
+            // A nap may end anywhere; whatever is restless then is learned again.
+            onCaptureThread(captureHandler) { forgetRestless() }
             answer("napping · tap 文\u2060A to wake me", 1600)
         } else {
             answer("awake!", 1200)
@@ -1651,8 +1762,14 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         scope.cancel()
         runCatching { virtualDisplay?.release() }
         virtualDisplay = null
-        runCatching { imageReader?.close() }
+        // Releasing the display stops new frames, not the copy of one the
+        // capture thread may be making. Closing the reader frees the buffer
+        // that copy reads from, a native crash rather than an exception, so
+        // it waits its turn there, as it does on a rotation. The thread
+        // quits only once it has run what is already queued.
+        val reader = imageReader
         imageReader = null
+        onCaptureThread(captureHandler) { runCatching { reader?.close() } }
         runCatching { projection?.stop() }
         projection = null
         controller?.onFootprintChanged = null
