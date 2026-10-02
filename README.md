@@ -414,8 +414,12 @@ it works in any browser or reader. What it does with them:
 
 - **Only paper is ever painted.** A pixel counts as paper only if all three
   channels are at least 240, so pale art and compression ringing are never
-  touched. A region is a gutter only if it runs most of the strip's width at
-  some row; a balloon, enclosed by its outline, never does.
+  touched. A region is a gutter only if it reaches the edges of the reading
+  column — both of them for a band of any slant, one of them if a balloon or a
+  character has cut the gutter in two and a half still runs 40% of the way
+  across; a balloon, enclosed by its outline, reaches neither however wide it
+  is. The one-to-four-row hairlines that fractional scaling leaves between
+  stacked images are darkened too, when the page is at rest.
 - **Edges are followed down, not left as a pale line.** Where a black panel
   border meets the white, the anti-aliased pixels between them (242, 210, 146,
   61…) would stay light and glow against the dark. A fringe is a *ramp* — brightness
@@ -461,7 +465,10 @@ page in one frame leaves the old shade up for about three frames (the capture an
 display delay) before it is dropped and the new page's gaps are found. Art that
 *fades* slowly into the white (a soft vignette) leaves its pale fade un-darkened —
 only real white and sharp anti-aliased edges are painted. A light-grey page background (below
-240) is not treated as paper. Private-tab `FLAG_SECURE` pages capture as black,
+240) is not treated as paper, and neither is paper so noisy that much of it dips below 240.
+A pure-white patch *of the art itself* that runs into a gutter with no border between them —
+speed lines on white, a sky, the white of an eye at a panel's edge — cannot be told from the
+gutter by looking at pixels, and is darkened with it. Private-tab `FLAG_SECURE` pages capture as black,
 so there is nothing to find. Lettering that sits on the white gets a white card
 rather than being re-coloured.
 

@@ -191,9 +191,10 @@ object GapFinder {
                 // (Not merely a full bounding box: a word of lettering fills its box too, with
                 // the paper between its strokes.)
                 fill >= 0.85f && a >= solidMin && paperCount <= 0.2f * a -> Unit
-                // A big block is a panel whatever is inside it: a screentone is mostly paper between
-                // its dots. Lettering is never a tenth of the column deep.
-                fill >= 0.85f && a >= solidMin && min(bw, bh) >= 0.1f * colW -> Unit
+                // A big block is a panel whatever is inside it — a screentone is mostly paper between its
+                // dots — and whatever its shape: slanted, rounded. Lettering is never a tenth of the
+                // column deep.
+                fill >= 0.6f && a >= solidMin && min(bw, bh) >= 0.1f * colW -> Unit
                 // The same, rounded: an inset panel in a circle or an oval. Nothing a letterer draws
                 // is this big, this dense and this full of ink.
                 fill >= 0.7f && a >= solidMin && paperCount <= 0.2f * a && min(bw, bh) >= 0.15f * colW -> Unit

@@ -27,6 +27,16 @@ can now be painted dark, without touching the art, and kept dark while you scrol
   within a few frames.
 - **Invisible to translation.** OCR and the change detectors are given the page
   with the shade taken back off, so nothing about translating changes.
+- **Hardened on a corpus of harder pages.** Generated scenes with ground truth —
+  slanted and rounded panels, side-by-side panels, hairline seams, JPEG, soft and
+  off-white paper, thin and dashed balloons, sound effects, screentones, bars and
+  margins, plus 200 random pages and the two real screenshots degraded twelve ways —
+  judged on one rule: the shade covers paper and only paper. Slanted gutters, gutters
+  cut by a balloon, wide balloons in narrow strips, boxed white panels, rounded
+  panels, cut-off lettering, faint hairlines that flickered between passes and
+  hairline seams were all fixed this way. The two real screenshots come out with no
+  art or balloon touched in every degradation. Known limit: a pure-white patch of
+  art that reaches a gutter with no border between them is darkened with it.
 - New, Android-free, JVM-tested core in `app/mangalens/gaps/`: a bit-parallel
   region finder, a row-profile scroll tracker, the shade engine, and a latency
   simulation (60/120 Hz, random capture/display/detection delays) that scores the
