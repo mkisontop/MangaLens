@@ -421,4 +421,98 @@ class GapFinderTest {
         val r = GapFinder.extractRects(plane, 1, 2000, 64, 0)
         assertTrue("rects present: ${r.rectCount}", r.rectCount in 1..6000)
     }
+
+    @Test
+    fun `a slanted gutter is shaded from end to end`() {
+        // A band of white that rises one row in ten, thin enough that no row of it is wide.
+        val s = Strip(w, h)
+        s.art(0, 0, w, h)
+        val rise = 0.1
+        val top = IntArray(w) { x -> 500 - (x * rise).toInt() }
+        for (x in 0 until w) for (y in top[x] until top[x] + 70) s.px[y * w + x] = Strip.WHITE
+        for (x in 0 until w) for (k in 0 until 4) {
+            s.px[(top[x] - 1 - k) * w + x] = Strip.BLACK
+            s.px[(top[x] + 70 + k) * w + x] = Strip.BLACK
+        }
+        val f = find(s.px)
+        assertNoDamage(f, "slanted")
+        var paper = 0
+        var hit = 0
+        for (x in 0 until w) for (y in top[x] + 4 until top[x] + 66) {
+            paper++
+            if (f.isCovered(x, y)) hit++
+        }
+        assertTrue("slanted gutter shaded, was ${hit.toDouble() / paper}", hit.toDouble() / paper > 0.97)
+    }
+
+    @Test
+    fun `a balloon nearly as wide as a narrow strip is not mistaken for a gutter`() {
+        // White margins either side, and a balloon 87% as wide as the strip between them.
+        val s = Strip(w, h)
+        s.art(120, 0, 600, 300); s.solid(120, 294, 600, 300, Strip.BLACK)
+        s.balloon(360, 620, 210, 90)
+        s.art(120, 900, 600, h)
+        val f = find(s.px)
+        assertNoDamage(f, "narrow strip")
+        for (y in 540 until 700) for (x in 160 until 560) {
+            val dx = (x - 360).toDouble() / 205
+            val dy = (y - 620).toDouble() / 85
+            if (dx * dx + dy * dy <= 1.0) assertFalse("balloon pixel ($x,$y) shaded", f.isCovered(x, y))
+        }
+        assertTrue("the white margins and the gutter are dark", coverageOfPaper(f, 300, 900) { x, y ->
+            val dx = (x - 360).toDouble() / 250
+            val dy = (y - 620).toDouble() / 140
+            dx * dx + dy * dy <= 1.0
+        } > 0.98)
+    }
+
+    @Test
+    fun `a white panel boxed flush to the column is not a gutter`() {
+        val s = Strip(w, h)
+        s.art(0, 0, w, 300); s.rules(0, 0, w, 300)
+        // a flashback panel: white, a 5 px border all the way round, a scribble in it
+        s.solid(0, 420, w, 426, Strip.BLACK); s.solid(0, 900, w, 906, Strip.BLACK)
+        s.solid(0, 420, 5, 906, Strip.BLACK); s.solid(w - 5, 420, w, 906, Strip.BLACK)
+        s.text(200, 600, 520, 700)
+        s.art(0, 1100, w, h)
+        val f = find(s.px)
+        assertNoDamage(f, "boxed")
+        for (y in 440 until 890) for (x in 20 until w - 20) assertFalse("inside the white panel shaded at ($x,$y)", f.isCovered(x, y))
+    }
+
+    @Test
+    fun `a round inset panel in the gutter is not given a margin of white`() {
+        val s = simpleStrip()
+        val cx = 360
+        val cy = 650
+        val r = 170
+        for (y in cy - r - 5..cy + r + 5) for (x in cx - r - 5..cx + r + 5) {
+            val d2 = (x - cx) * (x - cx) + (y - cy) * (y - cy)
+            if (d2 <= (r + 5) * (r + 5)) s.px[y * w + x] = if (d2 <= r * r) Strip.rgb(60 + (x * 7 + y * 3) % 50, 40 + (x + y) % 60, 90 + (y * 5) % 40) else Strip.BLACK
+        }
+        val f = find(s.px)
+        assertNoDamage(f, "round")
+        // right up to the outline the gutter is dark: the panel is not lettering
+        var near = 0
+        var hit = 0
+        for (y in cy - r - 20..cy + r + 20) for (x in cx - r - 20..cx + r + 20) {
+            val d = Math.sqrt(((x - cx) * (x - cx) + (y - cy) * (y - cy)).toDouble())
+            if (d > r + 7 && d < r + 16 && Strip.isPaper(f.frame[y * w + x])) {
+                near++
+                if (f.isCovered(x, y)) hit++
+            }
+        }
+        assertTrue("gutter beside the round panel shaded, was ${hit.toDouble() / near}", hit.toDouble() / near > 0.95)
+    }
+
+    @Test
+    fun `a letter cut in half by the frame's edge keeps its margin`() {
+        val s = simpleStrip()
+        s.text(100, 500, 400, 620)
+        s.solid(w - 16, 560, w, 600, Strip.BLACK)
+        s.solid(w - 16, 560, w - 8, 600, Strip.BLACK)
+        val f = find(s.px)
+        assertNoDamage(f, "cut letter")
+        assertLetteringStaysOnLight(f, w - 40, 540, w, 620, 6)
+    }
 }

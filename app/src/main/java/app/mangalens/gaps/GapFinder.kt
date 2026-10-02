@@ -6,9 +6,10 @@ import kotlin.math.min
 /** Thresholds of the gap finder. Fractions are of the frame's area or of the reading column's width. */
 class GapParams(
     /**
-     * A white region is a gutter, not a balloon, when it runs this share of the reading
-     * column's width unbroken at some row. Balloons sit inside the white; the gutter is
-     * what the art above and below it is cut from.
+     * A white region that reaches only one edge of the reading column — art has cut into the
+     * gutter from the other side — is still a gutter when it runs this share of the column's
+     * width unbroken at some row. A region that reaches both edges is a gutter at any width,
+     * and one that reaches neither is a balloon.
      */
     val wideRun: Float = 0.75f,
 
@@ -71,8 +72,9 @@ class GapResult(
  *  2. The paper is eroded by two pixels before its regions are labelled. An outline with
  *     a hairline break would otherwise let the gutter flow into a balloon and darken its
  *     inside; eroded, any break under five pixels is sealed shut.
- *  3. A region is a gutter only if it runs most of the reading column's width at some row.
- *     A balloon is enclosed by its outline and never does.
+ *  3. A region is a gutter only if it reaches the reading column's edges — both of them for a
+ *     band of any slant, one of them if it runs most of the column's width. A balloon is shut
+ *     in by its outline and reaches neither, however wide it is.
  *  4. Everything that is not gutter — art, balloons, lettering — is labelled in turn. A
  *     balloon (an enclosed region that is mostly paper) is left exactly as drawn: the
  *     gutter stops at its outline. Solid panels and anything touching the frame's edge are
@@ -122,9 +124,20 @@ object GapFinder {
         val labels = label(core, connect8 = false)
         val wideMin = (params.wideRun * colW).toInt()
         val minArea = (params.minGapArea * area).toLong()
+        // A gutter is the page itself: it runs out to the reading column's edge, on both sides if
+        // it is a band, however slanted, and on one if art has cut into it. A balloon is shut in
+        // by its outline and reaches neither, however wide it is.
+        // (Not looser than the seal: a white panel boxed in a border flush with the column's edge
+        // would otherwise count as reaching it.)
+        val edge = 2 * sealR
+        val reachL = colL + edge
+        val reachR = w - colR - edge
         val picked = ArrayList<Int>()
         for (c in 0 until labels.compCount) {
-            if (labels.area[c] >= minArea && labels.maxRun[c] >= wideMin) picked.add(c)
+            if (labels.area[c] < minArea) continue
+            val left = labels.minX[c] <= reachL
+            val right = labels.maxX[c] >= reachR
+            if ((left && right) || ((left || right) && labels.maxRun[c] >= wideMin)) picked.add(c)
         }
         if (picked.isEmpty()) return GapResult(IntArray(0), 0, 0L, sawArt, 0)
 
@@ -144,10 +157,12 @@ object GapFinder {
         val balloonMin = (params.balloonArea * area).toLong()
         val roles = IntArray(rest.compCount)
         for (c in 0 until rest.compCount) {
-            if (rest.touchesFrame[c]) continue
             val a = rest.area[c]
             val bw = rest.maxX[c] - rest.minX[c]
             val bh = rest.maxY[c] - rest.minY[c] + 1
+            // Whatever runs off the frame is art — unless it is a fragment: a letter the edge has
+            // cut in half is still lettering, and wants its margin.
+            if (rest.touchesFrame[c] && (bw >= 0.5f * colW || bh >= 0.5f * colW)) continue
             val fill = a.toFloat() / (bw.toFloat() * bh).coerceAtLeast(1f)
             var paperCount = 0L
             var inkCount = 0L
@@ -164,6 +179,9 @@ object GapFinder {
                 // (Not merely a full bounding box: a word of lettering fills its box too, with
                 // the paper between its strokes.)
                 fill >= 0.85f && a >= solidMin && paperCount <= 0.2f * a -> Unit
+                // The same, rounded: an inset panel in a circle or an oval. Nothing a letterer draws
+                // is this big, this dense and this full of ink.
+                fill >= 0.7f && a >= solidMin && paperCount <= 0.2f * a && min(bw, bh) >= 0.15f * colW -> Unit
                 // A balloon holds a real stretch of paper — one that survives the erosion, which
                 // the paper between the strokes of lettering never does.
                 a >= balloonMin && coreCount >= 0.25f * a -> Unit
@@ -471,6 +489,9 @@ object GapFinder {
         val compCount: Int,
         val area: LongArray,
         val maxRun: IntArray,
+        /** Leftmost column and one past the rightmost column the component reaches. */
+        val minX: IntArray,
+        val maxX: IntArray,
         private val runX0: IntArray,
         private val runX1: IntArray,
         private val runRow: IntArray,
@@ -504,7 +525,7 @@ object GapFinder {
         return order to first
     }
 
-    private fun label(plane: BitPlane, connect8: Boolean): Labels {
+    internal fun label(plane: BitPlane, connect8: Boolean): Labels {
         val x0 = IntList()
         val x1 = IntList()
         val row = IntList()
@@ -567,15 +588,19 @@ object GapFinder {
         val comp = IntArray(n)
         val area = LongArray(count)
         val maxRun = IntArray(count)
+        val minX = IntArray(count) { Int.MAX_VALUE }
+        val maxX = IntArray(count)
         for (i in 0 until n) {
             val c = id[find(parent, i)]
             comp[i] = c
             val len = x1.a[i] - x0.a[i]
             area[c] += len.toLong()
             if (len > maxRun[c]) maxRun[c] = len
+            if (x0.a[i] < minX[c]) minX[c] = x0.a[i]
+            if (x1.a[i] > maxX[c]) maxX[c] = x1.a[i]
         }
         val (order, first) = bucket(comp, n, count)
-        return Labels(plane, count, area, maxRun, x0.a, x1.a, row.a, order, first)
+        return Labels(plane, count, area, maxRun, minX, maxX, x0.a, x1.a, row.a, order, first)
     }
 
     /** The components of everything that is not [gutter], eight-connected, with their extents. */
