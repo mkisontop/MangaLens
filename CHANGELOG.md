@@ -1,5 +1,37 @@
 # Changelog
 
+## Unreleased
+
+**Dark gaps — manhwa night mode.** The white gutters between a manhwa's panels
+can now be painted dark, without touching the art, and kept dark while you scroll.
+
+- **Long-press the floating button → 🌙 Dark gaps between panels** (or
+  *Reading → Night reading*; Dim / Dark / Black). Works on any site or app and
+  independently of translation.
+- **Only real paper is darkened.** Pixels must be white (every channel ≥ 240) and
+  part of a region that spans the strip; balloons stay as drawn, lettering on the
+  white keeps a margin of white, and a hairline break in a balloon's outline can
+  no longer let the dark in.
+- **Rides the scroll.** The page's motion is measured to the pixel from the
+  capture itself and the overlay is drawn where the page will be when it reaches
+  the glass; the lead time is calibrated on the fly from the shade's own edges,
+  so it follows each device's capture and display delay. A speed-dependent margin
+  keeps it off the art while moving; a touch raises the margin before the page
+  moves; when the page stops, an exact full-resolution pass lands the edges on
+  the pixel.
+- **Self-checking.** The overlay is translucent so the capture can see the page
+  through it: the detector reads its own output as paper (no flicker), spots art
+  the shade has strayed onto, and learns the real grey on a device whose
+  compositor blends differently. Probes of the deep inside of every gap drop the
+  shade if it ever stands over something that is not paper; a page turn drops it
+  within a few frames.
+- **Invisible to translation.** OCR and the change detectors are given the page
+  with the shade taken back off, so nothing about translating changes.
+- New, Android-free, JVM-tested core in `app/mangalens/gaps/`: a bit-parallel
+  region finder, a row-profile scroll tracker, the shade engine, and a latency
+  simulation (60/120 Hz, random capture/display/detection delays) that scores the
+  art pixels the visible overlay covers.
+
 ## 0.10.1
 
 Tap-to-turn readers are noticed on the first tap.

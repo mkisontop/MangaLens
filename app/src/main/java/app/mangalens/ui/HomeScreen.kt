@@ -52,6 +52,7 @@ import androidx.compose.ui.text.input.VisualTransformation
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import app.mangalens.capture.ScreenCaptureService
+import app.mangalens.gaps.ShadeLevel
 import app.mangalens.settings.AiReasoning
 import app.mangalens.settings.AiVisionMode
 import app.mangalens.settings.AppSettings
@@ -570,6 +571,37 @@ private fun ReadingCard(settings: AppSettings, repo: SettingsRepository) {
                     scope.launch { repo.setMode(CaptureMode.MANUAL) }
                 }
             }
+            Spacer(Modifier.height(12.dp))
+            Text("Night reading", style = MaterialTheme.typography.bodyMedium)
+            Spacer(Modifier.height(6.dp))
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                Chip("🌙 Dark gaps between panels", settings.darkGaps) {
+                    scope.launch { repo.setDarkGaps(!settings.darkGaps) }
+                }
+            }
+            if (settings.darkGaps) {
+                Spacer(Modifier.height(8.dp))
+                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Chip("Dim", settings.gapShade == ShadeLevel.DIM) {
+                        scope.launch { repo.setGapShade(ShadeLevel.DIM) }
+                    }
+                    Chip("Dark", settings.gapShade == ShadeLevel.DARK) {
+                        scope.launch { repo.setGapShade(ShadeLevel.DARK) }
+                    }
+                    Chip("Black", settings.gapShade == ShadeLevel.BLACK) {
+                        scope.launch { repo.setGapShade(ShadeLevel.BLACK) }
+                    }
+                }
+            }
+            Spacer(Modifier.height(6.dp))
+            Text(
+                "Paints the white space between a manhwa's panels dark and leaves the art exactly " +
+                    "as drawn — speech balloons and lettering stay light so they stay readable. It " +
+                    "follows your scrolling frame by frame. Also on the floating button's long-press " +
+                    "menu: 🌙 Dark gaps.",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
             Spacer(Modifier.height(14.dp))
             LabeledSlider(
                 "Reaction time",

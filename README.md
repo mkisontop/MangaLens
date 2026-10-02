@@ -33,7 +33,13 @@ the normal APK.
 
 A floating **文A** toggle is always available: **tap** = translation on/off
 (with a busy ring while a pass runs), **long-press** = quick menu (translate
-now, pause, peek at the original art, tap-to-translate mode, settings, stop).
+now, pause, peek at the original art, **🌙 dark gaps**, tap-to-translate mode,
+settings, stop).
+
+**Reading manhwa at night?** Long-press the button and pick **🌙 Dark gaps
+between panels**. The white space between panels goes dark and the art is left
+exactly as drawn — see [Dark gaps](#dark-gaps-manhwa-night-mode) below. It works
+on any site or app, with or without translation.
 
 ## Install
 
@@ -394,6 +400,79 @@ Key details:
   previous stop's lines were stamped, instantly and confidently, onto
   whichever balloons had scrolled into those screen positions.
 
+## Dark gaps (manhwa night mode)
+
+A webtoon is a strip of art cut by white gutters, and at night the gutters are
+what hurts. **Dark gaps** paints them dark and touches nothing else. Turn it on
+from the floating button's long-press menu or **Reading → Night reading**; pick
+*Dim*, *Dark* or *Black*. It is independent of translation: pause translating
+and the gaps stay dark.
+
+It cannot read the page's HTML — MangaLens only ever sees pixels — so it works
+the way the rest of the app does, from the screen capture, and that is also why
+it works in any browser or reader. What it does with them:
+
+- **Only paper is ever painted.** A pixel counts as paper only if all three
+  channels are at least 240, so pale art and compression ringing are never
+  touched. A region is a gutter only if it runs most of the strip's width at
+  some row; a balloon, enclosed by its outline, never does.
+- **Edges are followed down, not left as a pale line.** Where a black panel
+  border meets the white, the anti-aliased pixels between them (242, 210, 146,
+  61…) would stay light and glow against the dark. A fringe is a *ramp* — brightness
+  falling by a clear step each pixel from near-white to a dark mass — and only a
+  ramp that is one all the way, at most three pixels deep, is shaded, with the same
+  translucent black, which makes exactly the blend of ink and shaded paper. Flat
+  pale art, a slow fade and textured art are not ramps and are never touched. The
+  thresholds were set from measurements of real screenshots (70% of gap edges are
+  textbook ramps; their first pixel is a median 216).
+- **Balloons and lettering stay readable.** A balloon is left exactly as drawn
+  and the gutter stops at its outline; an outline with a hairline break is
+  sealed first, so the dark cannot flow in through it. Narration set straight on
+  the white keeps a margin of white round every stroke, so black ink is never
+  left on a dark ground. A white-backed drawing is protected as a whole.
+- **The overlay is translucent on purpose.** It is painted at 80/90/95% over
+  white, so the capture sees the page *through* it. Paper under the shade has a
+  known grey, which means the detector reads its own output as paper — it never
+  takes itself for art and switches itself off — and any art the shade strays
+  onto shows up as the darker thing it is. The engine checks what the glass
+  really shows against what the arithmetic says, and learns the grey if a device
+  blends differently.
+- **It rides the scroll.** The page's movement is measured to the pixel from
+  the frames themselves (a row profile of edge strength, aligned frame to frame —
+  gradients, so the shade's own brightness does not matter), and the overlay is
+  drawn where the page *will be* by the time the pixels reach the glass. That lead
+  — capture delay plus display delay, which differ per device — is calibrated
+  continuously from the shade's own edges, which are visible in the capture.
+- **A margin guards the art while it moves.** The shade is pulled back from every
+  gutter edge by a margin that grows with speed and with how wrong the prediction
+  has lately been, so a misjudged stop or start costs a strip of white at the
+  edge for a frame or two, never darkened art. A finger touching the screen puts a
+  margin up *before* the page moves, since a touch precedes every scroll. Fast
+  half-resolution detection runs a few times a second while moving; the moment the
+  page stops, one exact full-resolution pass replaces it, and the edges land on
+  the pixel.
+- **The rest of the app never sees it.** OCR, the balloon finder and the change
+  detectors read the page as if the shade were not there (paper restored under it,
+  thumbnails corrected), so translation behaves exactly as before.
+
+What to expect: while you scroll fast there is a thin strip of white at gutter
+edges that closes up when you stop. A **tap-to-turn** reader that replaces the
+page in one frame leaves the old shade up for about three frames (the capture and
+display delay) before it is dropped and the new page's gaps are found. Art that
+*fades* slowly into the white (a soft vignette) leaves its pale fade un-darkened —
+only real white and sharp anti-aliased edges are painted. A light-grey page background (below
+240) is not treated as paper. Private-tab `FLAG_SECURE` pages capture as black,
+so there is nothing to find. Lettering that sits on the white gets a white card
+rather than being re-coloured.
+
+The logic is plain Kotlin with no Android in it (`app/mangalens/gaps/`), so it is
+tested on the JVM: scene tests for the finder (gutters, balloons, leaky
+balloons, narration, inset panels, pale art, bars, its own shaded output),
+tracker tests, and a latency simulation that scrolls a synthetic strip at
+60/120 Hz with random capture, display and detection delays and counts the art
+pixels the visible overlay covers — zero in steady motion at reading speeds,
+zero at the start of a touch-initiated scroll, exact at rest.
+
 ## Building it yourself
 
 ```bash
@@ -426,7 +505,17 @@ makes the captured screen black.
 **The browser bar gets translated?** Raise the "Ignore top of screen" slider in
 Reading settings.
 
-**Battery?** Use "Tap to translate" mode — capture idles until you tap.
+**Battery?** Use "Tap to translate" mode — capture idles until you tap. Dark
+gaps does work only while the page moves or settles; a still page costs nothing.
+
+**Dark gaps leaves a white line next to the art while I scroll?** That is the
+margin that keeps the shade off the art while it is moving; it closes when you
+stop. It is wider the faster you scroll. If it never closes, or the gaps do not
+darken at all, check the page's gutters are pure white and not grey.
+
+**Dark gaps and the page-turn flash?** Readers that swap the whole page on a tap
+keep the old shade up for about three frames. Scrolling readers (webtoons) are
+not affected.
 
 **Slow internet?** You still read at full speed: the free draft is instant and
 the AI polish arrives whenever it arrives. Turn on **Data saver** to shrink

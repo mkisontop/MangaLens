@@ -11,6 +11,7 @@ import androidx.datastore.preferences.core.floatPreferencesKey
 import androidx.datastore.preferences.core.intPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
+import app.mangalens.gaps.ShadeLevel
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -64,6 +65,14 @@ data class AppSettings(
     val stabilityMs: Int = 350,
     val ignoreTopPct: Float = 0.03f,
     val ignoreBottomPct: Float = 0.02f,
+    /**
+     * Manhwa night mode: the white gaps between panels are painted dark, and the art is
+     * never touched. Off until the reader turns it on, from here or from the floating
+     * button's menu.
+     */
+    val darkGaps: Boolean = false,
+    /** How dark the gaps go: dim grey, near-black, or as black as the overlay allows. */
+    val gapShade: ShadeLevel = ShadeLevel.DARK,
 ) {
     fun effectiveModel(): String = if (model.isNotBlank()) model else when (provider) {
         LlmProvider.ANTHROPIC -> "claude-sonnet-5"
@@ -104,6 +113,8 @@ private object Keys {
     val STABILITY_MS = intPreferencesKey("stability_ms")
     val IGNORE_TOP = floatPreferencesKey("ignore_top")
     val IGNORE_BOTTOM = floatPreferencesKey("ignore_bottom")
+    val DARK_GAPS = booleanPreferencesKey("dark_gaps")
+    val GAP_SHADE = stringPreferencesKey("gap_shade")
 
     private val API_KEY_ANTHROPIC = stringPreferencesKey("api_key_anthropic")
     private val API_KEY_OPENAI = stringPreferencesKey("api_key_openai")
@@ -236,6 +247,8 @@ internal fun settingsFromPreferences(p: Preferences, credentials: Preferences = 
         stabilityMs = p[Keys.STABILITY_MS] ?: d.stabilityMs,
         ignoreTopPct = p[Keys.IGNORE_TOP] ?: d.ignoreTopPct,
         ignoreBottomPct = p[Keys.IGNORE_BOTTOM] ?: d.ignoreBottomPct,
+        darkGaps = p[Keys.DARK_GAPS] ?: d.darkGaps,
+        gapShade = enumOr(p[Keys.GAP_SHADE], d.gapShade),
     )
 }
 
@@ -267,4 +280,6 @@ class SettingsRepository(private val context: Context) {
     suspend fun setStabilityMs(v: Int) = context.settingsStore.edit { it[Keys.STABILITY_MS] = v }
     suspend fun setIgnoreTopPct(v: Float) = context.settingsStore.edit { it[Keys.IGNORE_TOP] = v }
     suspend fun setIgnoreBottomPct(v: Float) = context.settingsStore.edit { it[Keys.IGNORE_BOTTOM] = v }
+    suspend fun setDarkGaps(v: Boolean) = context.settingsStore.edit { it[Keys.DARK_GAPS] = v }
+    suspend fun setGapShade(v: ShadeLevel) = context.settingsStore.edit { it[Keys.GAP_SHADE] = v.name }
 }

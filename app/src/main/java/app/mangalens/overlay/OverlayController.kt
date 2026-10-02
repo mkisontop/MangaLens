@@ -27,16 +27,23 @@ class OverlayController(private val context: Context, private val listener: List
         fun onTogglePause()
         fun onToggleMode()
         fun onPeek()
+        /** Turn the manhwa night mode — dark gaps between panels — on or off. */
+        fun onToggleDarkGaps()
         /** Forget this series' glossary, cast and story so far, and start fresh. */
         fun onNewSeries()
         fun onOpenSettings()
         fun onStopRequested()
         fun isPaused(): Boolean
         fun isAutoMode(): Boolean
+        fun isDarkGapsOn(): Boolean
     }
 
     private val wm = context.getSystemService(WindowManager::class.java)
     val bubbleView = BubbleOverlayView(context)
+
+    /** The dark gaps. Its window is added first, so everything else MangaLens draws sits on top of it. */
+    val shadeView = GapShadeView(context)
+    private var touchWatcher: View? = null
 
     private var controls: LinearLayout? = null
     private var button: FloatingButtonView? = null
@@ -60,6 +67,27 @@ class OverlayController(private val context: Context, private val listener: List
 
     fun attach() {
         if (attached) return
+        val shadeLp = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                // Redrawn every frame while the page moves: that belongs on the GPU.
+                WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
+            PixelFormat.TRANSLUCENT
+        )
+        shadeLp.gravity = Gravity.TOP or Gravity.START
+        if (Build.VERSION.SDK_INT >= 28) {
+            shadeLp.layoutInDisplayCutoutMode =
+                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+        }
+        // Off until the reader turns dark gaps on: a hidden window costs the compositor nothing.
+        shadeView.visibility = View.GONE
+        wm.addView(shadeView, shadeLp)
+
         val bubbleLp = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.MATCH_PARENT,
@@ -83,7 +111,9 @@ class OverlayController(private val context: Context, private val listener: List
     fun detach() {
         if (!attached) return
         dismissMenu()
+        watchTouches(false) {}
         runCatching { wm.removeView(bubbleView) }
+        runCatching { wm.removeView(shadeView) }
         controls?.let { runCatching { wm.removeView(it) } }
         controls = null
         onFootprintChanged = null
@@ -110,6 +140,41 @@ class OverlayController(private val context: Context, private val listener: List
             }
         }
         return out
+    }
+
+    /**
+     * Calls [onTouchDown] whenever a finger goes down anywhere on the screen, while [on].
+     *
+     * A scroll begins with a touch, and the touch comes before the page moves. The dark gaps
+     * cannot react to the first rows of movement for a few frames, so they are told in
+     * advance and hold back from the panels' edges. The window that hears it is one pixel in
+     * the corner of the screen: Android reports a touch elsewhere to a window that asks to
+     * watch for them, as a single event with no position, and that is all that is needed.
+     */
+    @SuppressLint("ClickableViewAccessibility")
+    fun watchTouches(on: Boolean, onTouchDown: () -> Unit) {
+        if (!attached) return
+        if (!on) {
+            touchWatcher?.let { runCatching { wm.removeView(it) } }
+            touchWatcher = null
+            return
+        }
+        if (touchWatcher != null) return
+        val v = View(context)
+        v.setOnTouchListener { _, e ->
+            if (e.actionMasked == MotionEvent.ACTION_OUTSIDE) onTouchDown()
+            false
+        }
+        val lp = WindowManager.LayoutParams(
+            1, 1,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
+                WindowManager.LayoutParams.FLAG_WATCH_OUTSIDE_TOUCH,
+            PixelFormat.TRANSLUCENT
+        )
+        lp.gravity = Gravity.TOP or Gravity.START
+        runCatching { wm.addView(v, lp) }.onSuccess { touchWatcher = v }
     }
 
     fun setStatus(text: String?, autoHideMs: Long = 0) {
@@ -264,6 +329,9 @@ class OverlayController(private val context: Context, private val listener: List
             listener.onToggleMode()
         }
         item("👁  Peek at original (4 s)") { listener.onPeek() }
+        item(if (listener.isDarkGapsOn()) "🌙  Dark gaps: on — tap to turn off" else "🌙  Dark gaps between panels") {
+            listener.onToggleDarkGaps()
+        }
         item("📖  New series — forget names so far") { listener.onNewSeries() }
         item("⚙  Settings") { listener.onOpenSettings() }
         item("✕  Stop translating") { listener.onStopRequested() }

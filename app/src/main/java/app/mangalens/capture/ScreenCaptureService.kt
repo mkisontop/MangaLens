@@ -31,6 +31,7 @@ import app.mangalens.MainActivity
 import app.mangalens.MangaLensApp
 import app.mangalens.R
 import app.mangalens.ocr.OcrEngine
+import app.mangalens.overlay.GapClock
 import app.mangalens.overlay.OverlayController
 import app.mangalens.overlay.RenderBubble
 import app.mangalens.pipeline.TranslatePipeline
@@ -170,6 +171,9 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
     private var captureHandler: Handler? = null
 
     private var controller: OverlayController? = null
+
+    /** Dark gaps between panels; null until the projection starts. */
+    private var shade: GapShadeController? = null
     private val ocr = OcrEngine()
     private val cache = TranslationCache()
     // lazy: these need a Context, which a Service only has after construction
@@ -187,6 +191,10 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
 
     private val frameLock = Any()
     private var latestBitmap: Bitmap? = null
+
+    /** When [latestBitmap] was captured, on the shade's clock; and when the frame last grabbed was. */
+    @Volatile private var latestBitmapAtMs = 0.0
+    @Volatile private var grabbedAtMs = 0.0
     private var prevThumb: IntArray? = null
 
     /**
@@ -286,6 +294,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                     v.textScale = s.textScale
                     v.bgOpacity = s.bgOpacity
                 }
+                applyShadeSettings()
             }
         }
     }
@@ -346,7 +355,21 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
             v.bgOpacity = settings.bgOpacity
         }
         controller?.onFootprintChanged = { refreshOverlayMask() }
+        val shadeController = GapShadeController(
+            captureHandler = captureHandler ?: Handler(thread.looper),
+            restFrame = {
+                synchronized(frameLock) { latestBitmap }?.let { BitmapPixels(it, capW, capH) }
+            },
+            onProblem = { message ->
+                setPill(message, 3500)
+                // it has switched itself off: the menu and the settings must say so
+                scope.launch { settingsRepo.setDarkGaps(false) }
+            },
+        )
+        controller?.let { shadeController.attach(it.shadeView) }
+        shade = shadeController
         refreshOverlayMask()
+        applyShadeSettings()
         running.value = true
         startTicker()
         setPill("MangaLens is live — open your manhwa", 2600)
@@ -413,6 +436,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
             clearCards()
             releaseFrameBuffers()
             setupDisplay()
+            applyShadeSettings()
         }
     }
 
@@ -429,6 +453,8 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         } ?: return
         val now = SystemClock.uptimeMillis()
         lastFrameAt = now
+        // The dark gaps follow the page frame by frame, not at the loop's pace below.
+        shade?.onFrame(image)
         when (gate.arrival(now)) {
             FrameGate.Action.PROCESS -> {
                 dropHeld()
@@ -502,8 +528,12 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
             val bmp = imageToBitmap(image)
             synchronized(frameLock) {
                 latestBitmap = bmp
+                latestBitmapAtMs = GapClock.nowMs()
             }
             val thumb = FrameStability.grayThumb(bmp, capW, capH)
+            // Our own dark gaps are in the capture; the detectors below were written for a
+            // page with white ones, so the thumbnail is made to read as the page would.
+            shade?.correctThumb(thumb, capW, capH)
             val diff = FrameStability.meanDiff(prevThumb, thumb)
             prevThumb = thumb
             latestThumb = thumb
@@ -682,6 +712,19 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
     /** The floating controls moved, or the pill came, went or was re-measured. Main thread only. */
     private fun refreshOverlayMask() {
         setOverlayMask(currentOverlayMask())
+        // The floating controls sit still while the page moves: the dark gaps must not follow them.
+        controller?.let { shade?.setExclusions(it.overlayExclusions()) }
+    }
+
+    /** Pushes the dark-gap settings, and the screen's size, to the shade; and the touch watch that anticipates a scroll. */
+    private fun applyShadeSettings() {
+        val s = settings
+        val c = shade ?: return
+        val on = s.darkGaps && projection != null
+        // The top band is the browser's bar and the status bar. The bottom band exists for OCR; to the
+        // shade it would only leave a strip of white across real content, so the shade has none.
+        c.configure(on, s.gapShade, capW, capH, (capH * s.ignoreTopPct).toInt(), 0)
+        controller?.watchTouches(on) { shade?.arm() }
     }
 
     /** The cells under the cards on screen, if any, and under the floating controls. */
@@ -742,9 +785,11 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         // Never read a frame with our own cards on it.
         if (controller?.bubbleView?.hasBubbles() == true) return
         val bmp = grabFrame() ?: return
+        val frameAt = grabbedAtMs
         val exclusions = controller?.overlayExclusions() ?: emptyList()
         preparing = true
         val job = scope.async(Dispatchers.Default) {
+            shade?.unshade(bmp, frameAt)
             FrameStability.grayThumbOf(bmp) to pipeline.analyze(bmp, settings, exclusions)
         }
         prepared = Prepared(bmp, job)
@@ -852,8 +897,10 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                         return@launch
                     }
                     bmp = fresh
+                    val frameAt = grabbedAtMs
                     setPill("translating…")
                     withContext(Dispatchers.Default) {
+                        shade?.unshade(fresh, frameAt)
                         shownThumb = FrameStability.grayThumbOf(fresh)
                         pipeline.analyze(fresh, settings, exclusions)
                     }
@@ -955,6 +1002,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
      * capture buffers stay the capture thread's own.
      */
     private fun grabFrame(): Bitmap? = synchronized(frameLock) {
+        grabbedAtMs = latestBitmapAtMs
         latestBitmap?.let { src ->
             val w = capW.coerceAtMost(src.width)
             val h = capH.coerceAtMost(src.height)
@@ -1024,6 +1072,14 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         }
     }
 
+    override fun onToggleDarkGaps() {
+        val next = !settings.darkGaps
+        scope.launch { settingsRepo.setDarkGaps(next) }
+        setPill(if (next) "🌙 dark gaps on" else "dark gaps off", 1800)
+    }
+
+    override fun isDarkGapsOn() = settings.darkGaps
+
     override fun onOpenSettings() {
         startActivity(
             Intent(this, MainActivity::class.java)
@@ -1080,6 +1136,8 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         runCatching { projection?.stop() }
         projection = null
         controller?.onFootprintChanged = null
+        shade?.shutdown()
+        shade = null
         controller?.detach()
         controller = null
         releaseFrameBuffers()
