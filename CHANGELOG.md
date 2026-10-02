@@ -1,9 +1,13 @@
 # Changelog
 
-## Unreleased
+## 0.11.0
 
 **Dark gaps — manhwa night mode.** The white gutters between a manhwa's panels
 can now be painted dark, without touching the art, and kept dark while you scroll.
+
+**Download:** `MangaLens.apk` below updates 0.9.2 and newer in place. Still on
+0.9.1? Use `MangaLens-legacy-update.apk` once (Android 9+), as described in
+the README.
 
 - **Long-press the floating button → 🌙 Dark gaps between panels** (or
   *Reading → Night reading*; Dim / Dark / Black). Works on any site or app and
