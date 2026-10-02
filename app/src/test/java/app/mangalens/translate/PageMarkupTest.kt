@@ -8,6 +8,7 @@ import android.graphics.Rect
 import android.util.Base64
 import app.mangalens.ocr.Bubble
 import java.io.File
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -129,8 +130,8 @@ class PageMarkupTest {
         val anchors = balloons.map { Bubble("", it, true) }
 
         val crops = PageMarkup.encodeRegionCrops(page, anchors, listOf(1, 0), dataSaver = false)
-        assertTrue("one close-up per requested region", crops.size == 2)
-        for ((i, b64) in crops.withIndex()) {
+        assertEquals("one close-up per requested region, each with its id", listOf(1, 0), crops.map { it.first })
+        for ((i, b64) in crops.map { it.second }.withIndex()) {
             val bytes = Base64.decode(b64, Base64.NO_WRAP)
             assertTrue("close-up $i is a JPEG", bytes[0] == 0xFF.toByte() && bytes[1] == 0xD8.toByte())
             val img = android.graphics.BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
@@ -146,11 +147,14 @@ class PageMarkupTest {
 
         // Data saver shrinks them but keeps every one.
         val small = PageMarkup.encodeRegionCrops(page, anchors, listOf(0), dataSaver = true)
-        val img = android.graphics.BitmapFactory.decodeByteArray(Base64.decode(small[0], Base64.NO_WRAP), 0, Base64.decode(small[0], Base64.NO_WRAP).size)
+        assertEquals(listOf(0), small.map { it.first })
+        val img = android.graphics.BitmapFactory.decodeByteArray(Base64.decode(small[0].second, Base64.NO_WRAP), 0, Base64.decode(small[0].second, Base64.NO_WRAP).size)
         assertTrue("data saver close-ups are at most 384 px on the long side (got ${img.width})", img.width <= 384)
 
-        // An id off the end is skipped, never a crash.
+        // An id off the end is skipped, never a crash, and the ids that
+        // come back name only the close-ups actually made.
         assertTrue(PageMarkup.encodeRegionCrops(page, anchors, listOf(7), false).isEmpty())
+        assertEquals(listOf(1, 0), PageMarkup.encodeRegionCrops(page, anchors, listOf(1, 7, 0), false).map { it.first })
     }
 
     @Test

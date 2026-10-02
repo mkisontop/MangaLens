@@ -155,4 +155,23 @@ class ReadingOrderTest {
         )
         assertFalse(ReadingOrder.isRightToLeft(bubbles, SourceLang.JA))
     }
+
+    @Test
+    fun `balloons OCR read nothing in do not outvote the columns it read`() {
+        // A traditional manga page where OCR resolved two vertical balloons
+        // side by side and nothing in five others. Those five come back as
+        // blank placeholders marked horizontal, which says nothing about how
+        // the page runs; counted as votes they turned the page left-to-right,
+        // and the tier's left balloon was read first.
+        val read = listOf(
+            bubble("left", 100, 100, 200, 400),
+            bubble("right", 600, 100, 700, 400),
+        )
+        val blank = (0 until 5).map { i -> Bubble("", Rect(100 + i * 160, 600, 220 + i * 160, 800), false) }
+        val page = read + blank
+
+        val rtl = ReadingOrder.isRightToLeft(page, SourceLang.JA)
+        assertTrue("two read columns and nothing read against them is a manga page", rtl)
+        assertEquals(listOf("right", "left"), order(page, rtl).filter { it.isNotEmpty() })
+    }
 }

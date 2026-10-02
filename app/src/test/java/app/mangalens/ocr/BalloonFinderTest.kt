@@ -463,6 +463,38 @@ class BalloonFinderTest {
     }
 
     /**
+     * A balloon only the sealed passes find — a break in its outline lets
+     * the plain flood out into the page — with a column set close to the
+     * outline, as dense balloons are lettered. Sealing thickens the ink, so
+     * that column fused with the outline, never read as a hole in the paper
+     * and was left out of the mask: the cleaning painted round it, and the
+     * line stayed on the page under its English.
+     */
+    @Test
+    fun `a sealed find keeps a column set close to its outline`() {
+        val bmp = Bitmap.createBitmap(900, 500, Bitmap.Config.ARGB_8888)
+        val canvas = Canvas(bmp)
+        canvas.drawColor(Color.WHITE)
+        val box = Rect(300, 80, 520, 420)
+        canvas.drawOval(RectF(box), white)
+        canvas.drawOval(RectF(box), ink)
+        canvas.drawRect(Rect(404, 70, 412, 92), white)
+        val columns = listOf(Rect(316, 205, 330, 295), Rect(380, 130, 396, 370), Rect(430, 130, 446, 370))
+        for (c in columns) canvas.drawRect(c, black)
+        val balloons = BalloonFinder.findDetailed(bmp)
+        writePreview("sealed-close.png", bmp, balloons.map { it.box })
+
+        val b = balloons.firstOrNull { matches(it.box, box) }
+        assertTrue("no balloon detected at $box (found ${balloons.map { it.box }})", b != null)
+        b!!
+        for (c in columns) {
+            val cx = ((c.centerX() - b.box.left).toFloat() * b.maskW / b.box.width()).toInt().coerceIn(0, b.maskW - 1)
+            val cy = ((c.centerY() - b.box.top).toFloat() * b.maskH / b.box.height()).toInt().coerceIn(0, b.maskH - 1)
+            assertTrue("the column at $c must be inside the cleaned interior", b.mask[cy * b.maskW + cx])
+        }
+    }
+
+    /**
      * A page mixing polarities: the two smaller balloons of the plain-page
      * fixture beside a black narration box. Each pass must contribute its own
      * kind while the dedupe and container logic runs across all of them.

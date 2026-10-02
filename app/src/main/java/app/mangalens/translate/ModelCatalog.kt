@@ -18,10 +18,16 @@ object ModelCatalog {
 
     data class LiveModel(val id: String, val label: String)
 
-    /** Families that can't translate a page: no reason to offer them. */
+    /**
+     * Families that can't translate a page: speech, image and video
+     * generation, realtime audio, embeddings, agents and tool-use
+     * specialists. The live list grows new ones every few months, so the
+     * test is by name fragment rather than by exact id.
+     */
     private val EXCLUDE = listOf(
-        "embedding", "tts", "image", "audio", "live", "veo",
-        "imagen", "aqa", "robotics", "computer-use",
+        "embedding", "tts", "image", "nano-banana", "audio", "live", "transcribe",
+        "veo", "imagen", "aqa", "robotics", "computer-use", "customtools",
+        "antigravity", "deep-research", "lyria", "omni",
     )
 
     suspend fun gemini(apiKey: String): List<LiveModel> = withContext(Dispatchers.IO) {
@@ -29,18 +35,17 @@ object ModelCatalog {
     }
 
     private suspend fun fetchGemini(apiKey: String): List<LiveModel> {
-        val request = Request.Builder()
-            .url("https://generativelanguage.googleapis.com/v1beta/models?pageSize=1000")
-            // Header, not query parameter: keys don't belong in URLs or logs.
-            .header("x-goog-api-key", apiKey)
+        val builder = Request.Builder()
+            .url(GeminiApi.base.removeSuffix("/") + "?pageSize=1000")
+        // Header, not query parameter: keys don't belong in URLs or logs.
+        val request = LlmHttp.keyHeader(builder, "x-goog-api-key", apiKey)
             .get()
             .build()
-        LlmHttp.await(LlmHttp.client.newCall(request)).use { resp ->
-            val text = resp.body?.string() ?: ""
-            if (!resp.isSuccessful) {
-                throw RuntimeException("Gemini HTTP " + resp.code + ": " + text.take(160))
-            }
-            return parseGemini(text)
+        LlmHttp.await(GeminiApi.client.newCall(request)).use { resp ->
+            // The picker shows this message as it is: Google's own words
+            // ("API key not valid"), not its error envelope.
+            if (!resp.isSuccessful) throw GeminiApi.httpError("", resp)
+            return parseGemini(resp.body?.string() ?: "")
         }
     }
 

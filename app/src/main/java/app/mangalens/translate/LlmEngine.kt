@@ -26,13 +26,16 @@ class LlmEngine(
     private val settings: AppSettings,
     private val glossary: GlossaryStore? = null,
     private val cast: CastBook? = null,
-) : TranslationEngine {
+) {
 
-    override val label: String get() = LlmHttp.providerLabel(settings)
+    /** Short name shown in the status pill, e.g. "Claude" or "Gemini". */
+    val label: String get() = LlmHttp.providerLabel(settings)
 
-    override val cacheNamespace: String get() = label + ":" + settings.effectiveModel()
+    /** Cache namespace: the provider and the model, so a new model never replays an old one's lines. */
+    val cacheNamespace: String get() = label + ":" + settings.effectiveModel()
 
-    override suspend fun translate(items: List<String>, lang: SourceLang): List<String> =
+    /** Translates every item as dialogue; the result matches [items] in size and order. */
+    suspend fun translate(items: List<String>, lang: SourceLang): List<String> =
         translateWithKinds(
             items,
             List(items.size) { BubbleKind.DIALOGUE },
@@ -55,6 +58,8 @@ class LlmEngine(
         onEntry: (suspend (Int, String) -> Unit)? = null,
     ): List<String> = withContext(Dispatchers.IO) {
         LlmHttp.requireConfig(settings)
+        // Noted before the memory is taken: see the learning below.
+        val generation = StoryContext.generation
 
         val bubbles = JSONArray()
         items.forEachIndexed { i, t ->
@@ -107,15 +112,20 @@ class LlmEngine(
                 who[id] = o.optString("who", "").trim().take(24)
             }
         }
-        reply.optJSONObject("new_terms")?.let { terms ->
-            val learned = HashMap<String, String>()
-            for (k in terms.keys()) learned[k] = terms.optString(k, "")
-            glossary?.learn(learned)
-        }
-        cast?.learn(CastBook.parse(reply.optJSONObject("characters")))
-        out.forEachIndexed { i, en ->
-            if (en.isNotBlank() && kinds.getOrNull(i) != BubbleKind.SFX) {
-                StoryContext.remember(en, who[i])
+        // A reply that lands after the reader moved on to another work (a
+        // long pause, "New series") still translates its page, but what it
+        // would teach belongs to the work it was asked about.
+        if (generation == StoryContext.generation) {
+            reply.optJSONObject("new_terms")?.let { terms ->
+                val learned = HashMap<String, String>()
+                for (k in terms.keys()) learned[k] = terms.optString(k, "")
+                glossary?.learn(learned)
+            }
+            cast?.learn(CastBook.parse(reply.optJSONObject("characters")))
+            out.forEachIndexed { i, en ->
+                if (en.isNotBlank() && kinds.getOrNull(i) != BubbleKind.SFX) {
+                    StoryContext.remember(en, who[i])
+                }
             }
         }
         out
@@ -140,6 +150,9 @@ VOICE
 - Use the glossary EXACTLY for any name or term it contains. Romanize new names sensibly and keep them consistent within the page.
 - Keep honorifics that carry nuance (oppa, hyung, noona, unnie, -nim, -ssi, senpai, -san, -sama, -chan, shifu, gege, jiejie).
 - Keep lines as tight as real typeset dialogue. No translator notes, no explanations.
+- Natural, idiomatic English as a skilled native scanlator writes it: carry meaning, intent and tone, not word order; no calques (idioms and sentence particles become what an English speaker would say). Rephrase, never reinterpret: add nothing the source does not say.
+- Faithful and complete: never omit, summarise or soften; match crudeness and heat. Explicit scenes use the plain words of English adult comics, never clinical or anatomical terms.
+- Proofread every line: correct spelling, grammar and punctuation.
 
 DAMAGED INPUT
 This text came from on-device OCR and may contain recognition errors, scrambled column order, or stray characters. Reconstruct the intended sentence from context and the story so far — never translate garbage literally, never romanize the source. If a bubble is pure noise (UI scraps, page numbers, unreadable fragments), skip it rather than guessing wildly.

@@ -26,8 +26,8 @@ object BalloonMerge {
 
     /**
      * @param includeEmpty add regions for balloons holding no readable text.
-     *   Only useful when something downstream can read the image itself; the
-     *   machine engines have nothing to translate and would render blanks.
+     *   Only useful when something downstream can read the image itself; a
+     *   text-only request has nothing to translate and would render blanks.
      */
     fun apply(
         bubbles: List<Bubble>,

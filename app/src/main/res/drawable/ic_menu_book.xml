@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Quick-menu icon for the overlay: monochrome, tinted in code. -->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="24dp"
+    android:height="24dp"
+    android:viewportWidth="24"
+    android:viewportHeight="24">
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FF000000"
+        android:strokeWidth="2"
+        android:strokeLineJoin="round"
+        android:pathData="M2.5,5.5h6c1.93,0 3.5,1.57 3.5,3.5v10.5c0,-1.38 -1.12,-2.5 -2.5,-2.5h-7z M21.5,5.5h-6c-1.93,0 -3.5,1.57 -3.5,3.5v10.5c0,-1.38 1.12,-2.5 2.5,-2.5h7z" />
+</vector>

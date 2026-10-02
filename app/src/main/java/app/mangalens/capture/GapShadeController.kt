@@ -7,6 +7,7 @@ import android.os.Handler
 import android.os.Looper
 import android.view.View
 import app.mangalens.gaps.DetectJob
+import app.mangalens.gaps.LiftedPixels
 import app.mangalens.gaps.PixelSource
 import app.mangalens.gaps.ShadeEngine
 import app.mangalens.gaps.ShadeLevel
@@ -117,15 +118,20 @@ class GapShadeController(
         captureHandler.post { engine?.setExclusions(list) }
     }
 
-    /** Capture thread: a frame has arrived. Cheap when the frame is not one to look at. */
-    fun onFrame(image: Image) {
+    /**
+     * Capture thread: a frame has arrived. Cheap when the frame is not one to look at. [level] is
+     * the share of light MangaLens's own veil lets through, 1 when there is none: the page is
+     * read as it is under it, or the veil's darkness would be taken for ink.
+     */
+    fun onFrame(image: Image, level: Float = 1f) {
         val e = engine ?: return
         if (!enabled) return
         // A frame of another size — a rotation in flight — is not one this engine can read.
         if (image.width != width || image.height != height) return
         guard {
             val plane = image.planes[0]
-            val src = ImageBufferPixels(plane.buffer, plane.rowStride / 4, width, height)
+            val raw = ImageBufferPixels(plane.buffer, plane.rowStride / 4, width, height)
+            val src: PixelSource = if (level < 0.999f) LiftedPixels(raw, 1f / level) else raw
             after(e, e.onFrame(src, GapClock.nowMs()))
             captureHandler.removeCallbacks(quiet)
             captureHandler.postDelayed(quiet, QUIET_MS)

@@ -111,6 +111,195 @@ object TypeSet {
         return lines
     }
 
+    /**
+     * [text] with every word wider than [maxWidth] cut into pieces that fit,
+     * each piece but the last ending in a hyphen, and the pieces separated
+     * as words so any breaker can set them on lines of their own.
+     *
+     * A letterer hyphenates a word that will not fit a balloon rather than
+     * let it run over the outline; shrinking the whole block to a size where
+     * one compound fits makes every other line unreadable. Words that fit
+     * are left alone, so a caller can apply this blindly once shrinking has
+     * run out. A word's own hyphens are the preferred cut points; otherwise
+     * the word is cut into the fewest balanced pieces. Balanced pieces of the
+     * fewest count each take about half the width or more, so two of them do
+     * not fit one line together — a breaker cannot rejoin them into
+     * "Donau- dampf" mid-line. A word no cut can bring under [maxWidth] comes
+     * back as close as its cuts allow; the caller shrinks the type for it.
+     *
+     * Short words and names are set whole ([MIN_HYPHENATED], [isName])
+     * unless [eager]: for a balloon so narrow that even the smallest type
+     * cannot hold them, where a hyphen is better than a word over the
+     * outline.
+     */
+    fun hyphenate(text: String, measure: (String) -> Float, maxWidth: Float, eager: Boolean = false): String {
+        val words = text.trim().split(WS).filter { it.isNotEmpty() }
+        if (words.none { measure(it) > maxWidth }) return text
+        val shortest = if (eager) MIN_HYPHENATED_EAGER else MIN_HYPHENATED
+        val out = StringBuilder()
+        for ((i, word) in words.withIndex()) {
+            if (out.isNotEmpty()) out.append(' ')
+            if (measure(word) <= maxWidth || (!eager && isName(word, words.getOrNull(i - 1)))) {
+                out.append(word)
+            } else {
+                splitWord(word, measure, maxWidth, shortest).joinTo(out, " ")
+            }
+        }
+        return out.toString()
+    }
+
+    /**
+     * A name, capitalised mid-sentence, is set whole: "Tortil- lano" reads
+     * as a typo, where the type a size smaller does not. One too long for
+     * any balloon is cut like any other word.
+     */
+    private fun isName(word: String, previous: String?): Boolean {
+        val first = word.firstOrNull { it.isLetter() } ?: return false
+        if (!first.isUpperCase() || previous == null || previous.last() in SENTENCE_END) return false
+        return word.count { it.isLetter() } <= LONGEST_WHOLE_NAME
+    }
+
+    private const val SENTENCE_END = ".!?…:\"—"
+
+    /** Letters in the longest name that is always set whole. */
+    private const val LONGEST_WHOLE_NAME = 12
+
+    /** Fewest letters on either side of a hyphen: "W-" / "What" is a stammer, not a break. */
+    private const val MIN_PIECE = 3
+
+    /**
+     * Shortest word that is ever cut. "what-ever" or "Under-stood" in a
+     * narrow balloon reads worse than slightly smaller type; a compound
+     * twice that long has no size at which it fits.
+     */
+    private const val MIN_HYPHENATED = 11
+
+    /** The same, when nothing else fits the balloon at any size. */
+    private const val MIN_HYPHENATED_EAGER = 9
+
+    private fun splitWord(word: String, measure: (String) -> Float, maxWidth: Float, shortest: Int): List<String> {
+        // Its own hyphens first: "self-" / "control" reads as written.
+        val parts = word.split(HYPHEN_AFTER).filter { it.isNotEmpty() }
+        if (parts.size > 1 && parts.all { p -> p.count { it.isLetter() } >= MIN_PIECE }) {
+            val out = ArrayList<String>()
+            var line = ""
+            for (part in parts) {
+                val grown = line + part
+                if (line.isEmpty() || measure(grown) <= maxWidth) {
+                    line = grown
+                } else {
+                    out.add(line)
+                    line = part
+                }
+            }
+            out.add(line)
+            return out.flatMap { if (measure(it) > maxWidth) balancedPieces(it, measure, maxWidth, shortest) else listOf(it) }
+        }
+        return balancedPieces(word, measure, maxWidth, shortest)
+    }
+
+    /**
+     * The fewest near-equal pieces of [word] that fit [maxWidth] once
+     * hyphenated, cut only between two letters with [MIN_PIECE] letters
+     * either side — never through "...?!" or a stammer — and only in words
+     * of [shortest] letters or more. A word with no such cut is
+     * returned whole; one that cannot be cut narrow enough comes back in
+     * the fewest pieces its cuts allow, for the caller to shrink.
+     */
+    private fun balancedPieces(word: String, measure: (String) -> Float, maxWidth: Float, shortest: Int): List<String> {
+        val letters = IntArray(word.length + 1)
+        for (i in word.indices) letters[i + 1] = letters[i] + if (word[i].isLetter()) 1 else 0
+        val total = letters[word.length]
+        if (total < shortest) return listOf(word)
+        // Letters run by run: a cut needs MIN_PIECE letters of its own run
+        // on each side, so "S-Sorry" and "waiting...aah" keep their halves.
+        val runStart = IntArray(word.length)
+        val runEnd = IntArray(word.length)
+        for (i in word.indices) {
+            runStart[i] = if (i > 0 && word[i - 1].isLetter() && word[i].isLetter()) runStart[i - 1] else i
+        }
+        for (i in word.indices.reversed()) {
+            runEnd[i] = if (i < word.length - 1 && word[i + 1].isLetter() && word[i].isLetter()) runEnd[i + 1] else i + 1
+        }
+        // Where the patterns would hyphenate each run.
+        val syllable = BooleanArray(word.length + 1)
+        var run = 0
+        while (run < word.length) {
+            if (!word[run].isLetter()) {
+                run++
+                continue
+            }
+            val points = Hyphenation.points(word.substring(run, runEnd[run]))
+            for (k in 1 until runEnd[run] - run) syllable[run + k] = points[k]
+            run = runEnd[run]
+        }
+        val cuts = (1 until word.length).filter { i ->
+            word[i - 1].isLetter() && word[i].isLetter() &&
+                i - runStart[i - 1] >= MIN_PIECE && runEnd[i] - i >= MIN_PIECE &&
+                (syllable[i] || "${word[i - 1].lowercaseChar()}${word[i].lowercaseChar()}" !in DIGRAPHS)
+        }
+        if (cuts.isEmpty()) return listOf(word)
+        fun piecesAt(chosen: List<Int>): List<String> {
+            val out = ArrayList<String>(chosen.size + 1)
+            var start = 0
+            for (c in chosen) {
+                out.add(word.substring(start, c) + "-")
+                start = c
+            }
+            out.add(word.substring(start))
+            return out
+        }
+        var fewest: List<String>? = null
+        val first = (measure(word) / maxWidth).toInt().coerceAtLeast(1) + 1
+        for (n in first..cuts.size + 1) {
+            // Each cut nearest its even share of the letters, and after the last.
+            val chosen = ArrayList<Int>(n - 1)
+            for (i in 1 until n) {
+                val target = total * i / n
+                val c = cuts.filter { chosen.isEmpty() || letters[it] - letters[chosen.last()] >= MIN_PIECE }
+                    .minByOrNull { kotlin.math.abs(letters[it] - target) + cutCost(word, it, syllable[it]) }
+                    ?: break
+                chosen.add(c)
+            }
+            if (chosen.size != n - 1) break
+            val pieces = piecesAt(chosen)
+            if (fewest == null) fewest = pieces
+            if (pieces.all { measure(it) <= maxWidth }) return pieces
+        }
+        return fewest ?: listOf(word)
+    }
+
+    private val HYPHEN_AFTER = Regex("(?<=-)")
+
+    /** Letters a cut may drift from its even share to land where the patterns hyphenate. */
+    private const val SYLLABLE_MISS = 3f
+
+    /**
+     * What a cut before [i] costs the reader, in letters of imbalance it is
+     * worth: nothing where the patterns hyphenate ("destruc- tive"); for a
+     * word they know nothing of, [SYLLABLE_MISS] between two consonants —
+     * the one syllable break that needs no dictionary — and twice that
+     * anywhere else.
+     */
+    private fun cutCost(word: String, i: Int, syllable: Boolean): Float = when {
+        syllable -> 0f
+        between(word, i) -> SYLLABLE_MISS
+        else -> 2 * SYLLABLE_MISS
+    }
+
+    private const val VOWELS = "aeiouyäöüàáâèéêëìíîïòóôùúûæøå"
+
+    /** Letter pairs that spell one sound; a hyphen between them misleads the reader. */
+    private val DIGRAPHS = setOf("ch", "sh", "th", "ph", "gh", "ck", "qu", "wh", "ng")
+
+    /**
+     * Whether a cut before [i] falls between two consonants — "schiff-fahrt",
+     * "gesell-schaft", "ket-chup" — the one syllable boundary that needs no
+     * dictionary, and the one readers stumble over least.
+     */
+    private fun between(word: String, i: Int): Boolean =
+        word[i - 1].lowercaseChar() !in VOWELS && word[i].lowercaseChar() !in VOWELS
+
     /** A shaped break: the lines, and how far short of their caps they fell. */
     class Fit(val lines: List<String>, val cost: Float)
 
@@ -138,6 +327,9 @@ object TypeSet {
         } else {
             null
         }
+
+        /** False past [DP_WORD_LIMIT] words, where [fit] and [greedyLines] give no answer worth using. */
+        val shapeable: Boolean get() = width != null
 
         /** The widest single word; no line can be narrower than this. */
         val widestWord: Float = width?.let { w -> w.indices.maxOf { w[it][it] } } ?: 0f

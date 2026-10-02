@@ -16,8 +16,11 @@ import kotlin.math.min
  * painted over one reads as a patch stuck onto the balloon rather than the
  * balloon with its lettering gone. For those the fill is inpainted: each
  * cell of the balloon's own mask takes the colour of the paper pixels it
- * holds, and cells the lettering covered entirely are filled in from their
- * neighbours until the gradient runs through unbroken.
+ * holds, and cells the lettering touches are filled in from their
+ * neighbours until the gradient runs through unbroken. A cell with any
+ * lettering in it is never read for paper: the grey anti-aliased rim of
+ * every glyph passes for paper, and a fill read from it keeps a faint copy
+ * of the text, cell by cell, under the English.
  *
  * Returns null when the paper is flat, so the ordinary fill is used.
  */
@@ -39,6 +42,9 @@ object BalloonFill {
 
     private const val MAX_DIFFUSION = 120
 
+    /** A cell with more than one pixel in this many dark holds lettering (or the outline), not paper alone. */
+    private const val INK_FREE = 50
+
     /** An opaque [Balloon.maskW] x [Balloon.maskH] fill, or null for a flat balloon. */
     fun build(bitmap: Bitmap, balloon: Balloon): Bitmap? {
         val mw = balloon.maskW
@@ -59,6 +65,7 @@ object BalloonFill {
         val sumG = LongArray(n)
         val sumB = LongArray(n)
         val cnt = IntArray(n)
+        val ink = IntArray(n)
         val cw = clip.width()
         val cxOf = IntArray(cw) { x -> ((clip.left + x - src.left).toLong() * mw / src.width()).toInt().coerceIn(0, mw - 1) }
         val band = max(1, min(clip.height(), (1 shl 18) / cw))
@@ -78,8 +85,11 @@ object BalloonFill {
                     val blue = p and 0xFF
                     val lum = (red * 299 + green * 587 + blue * 114) / 1000
                     val paper = if (balloon.inverted) lum <= PAPER_DARK else lum >= PAPER_LIGHT
-                    if (!paper) continue
                     val i = cellRow + cxOf[x]
+                    if (!paper) {
+                        ink[i]++
+                        continue
+                    }
                     sumR[i] += red
                     sumG[i] += green
                     sumB[i] += blue
@@ -92,10 +102,23 @@ object BalloonFill {
         val red = FloatArray(n)
         val green = FloatArray(n)
         val blue = FloatArray(n)
+        // Lettering and the cells beside it: the rim of a stroke can spill
+        // into the next cell without any of its dark core.
+        val lettered = BooleanArray(n)
+        for (i in 0 until n) {
+            if (ink[i] * INK_FREE <= ink[i] + cnt[i]) continue
+            val x = i % mw
+            val yy = i / mw
+            lettered[i] = true
+            if (x > 0) lettered[i - 1] = true
+            if (x < mw - 1) lettered[i + 1] = true
+            if (yy > 0) lettered[i - mw] = true
+            if (yy < mh - 1) lettered[i + mw] = true
+        }
         val known = BooleanArray(n)
         var knownCount = 0
         for (i in 0 until n) {
-            if (cnt[i] == 0) continue
+            if (cnt[i] == 0 || lettered[i]) continue
             red[i] = sumR[i].toFloat() / cnt[i]
             green[i] = sumG[i].toFloat() / cnt[i]
             blue[i] = sumB[i].toFloat() / cnt[i]

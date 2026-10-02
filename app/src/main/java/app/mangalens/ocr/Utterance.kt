@@ -56,10 +56,21 @@ object Utterance {
     /**
      * Korean connective endings (-고, -서, -는데 …). A clause ending in one of
      * these is grammatically mid-sentence.
+     *
+     * Conspicuously absent: 야 and a bare 라. -아야/-어야 joins clauses, but
+     * a balloon ending in 야 is far more often the banmal copula or a
+     * vocative (뭐야, 민수야); one ending in 라 is far more often an
+     * imperative or a -더라 recollection (가라, 맛있더라) than the reason
+     * clause 이라 still catches. Those are complete lines, and Korean
+     * balloons usually drop the full stop that would say so. As with the
+     * Japanese table, an ending earns a place here only if it rarely closes a
+     * spoken line. -ㄴ데 after a vowel stem (예쁜데, 이상한데) is not caught
+     * either: OCR returns the whole syllable, never the jamo, and that miss
+     * merely leaves a tail balloon translated on its own.
      */
     private val KO_CONNECTIVES = listOf(
-        "는데", "은데", "ㄴ데", "지만", "니까", "아서", "어서", "면서", "거나", "든지",
-        "라서", "이라", "하고", "고", "서", "며", "면", "야", "라",
+        "는데", "은데", "지만", "니까", "아서", "어서", "면서", "거나", "든지",
+        "라서", "이라", "하고", "고", "서", "며", "면",
     )
 
     /** Chinese conjunctions and possessive/aspect tails that run on. */

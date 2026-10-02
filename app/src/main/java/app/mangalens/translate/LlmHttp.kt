@@ -5,11 +5,13 @@ import app.mangalens.settings.AppSettings
 import app.mangalens.settings.LlmProvider
 import java.io.IOException
 import java.util.concurrent.TimeUnit
-import kotlin.coroutines.resume
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.coroutines.resumeWithException
-import kotlinx.coroutines.Job
+import kotlinx.coroutines.CoroutineStart
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.currentCoroutineContext
 import kotlinx.coroutines.ensureActive
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.suspendCancellableCoroutine
 import okhttp3.Call
 import okhttp3.Callback
@@ -24,9 +26,9 @@ import org.json.JSONObject
 
 /**
  * Shared HTTP plumbing for the text and vision LLM engines: one client with
- * upload-friendly timeouts, the Anthropic Messages shape, the OpenAI-compatible
- * chat shape (OpenAI, Gemini, OpenRouter, custom), streaming for both, and
- * tolerant JSON digging.
+ * upload-friendly timeouts, the Anthropic Messages shape, Google's native
+ * Gemini shape ([GeminiApi]), the OpenAI-compatible chat shape (OpenAI,
+ * OpenRouter, custom), streaming for all three, and tolerant JSON digging.
  *
  * Every request is laid out stable-first: the system prompt, then the
  * series memory (glossary and cast, which change only when a new name is
@@ -55,10 +57,6 @@ internal object LlmHttp {
 
     /** Claude models that take an effort level; older ones reject the parameter. */
     private val CLAUDE_EFFORT = Regex("^claude-(opus-(5|4-[5-9])|sonnet-(5|4-[6-9])|fable|mythos)")
-
-    /** Gemini models with thinking. Gemini 3 takes only low and high. */
-    private val GEMINI_THINKING = Regex("gemini-(2\\.5|3)")
-    private val GEMINI_3 = Regex("gemini-3")
 
     /**
      * OpenAI reasoning models. They take a reasoning effort, they reject
@@ -99,6 +97,10 @@ internal object LlmHttp {
      * Executes a call so coroutine cancellation aborts the HTTP request —
      * scrolling away kills in-flight translations instead of letting them
      * finish for nobody.
+     *
+     * A response can land in the same instant its caller is cancelled, and
+     * is then never delivered; it is closed rather than left holding its
+     * connection.
      */
     suspend fun await(call: Call): Response = suspendCancellableCoroutine { cont ->
         call.enqueue(object : Callback {
@@ -107,19 +109,98 @@ internal object LlmHttp {
             }
 
             override fun onResponse(call: Call, response: Response) {
-                if (cont.isActive) cont.resume(response) else response.close()
+                cont.resume(response) { _, undelivered, _ -> undelivered.close() }
             }
         })
         cont.invokeOnCancellation { runCatching { call.cancel() } }
     }
 
+    /**
+     * Runs a blocking read so that cancelling the caller cancels [call] at
+     * once. The read blocks its thread between events, so nothing on that
+     * thread can notice the cancellation; a hook on the caller cancels the
+     * call instead, which fails the read and ends the stream. Without it a
+     * cancelled request would hold its connection until the next event —
+     * up to several seconds before the first token.
+     *
+     * The hook is in place before the read starts and runs on whichever
+     * thread does the cancelling. A watcher that first had to be scheduled
+     * would miss a cancel landing before its turn, and would never get a
+     * turn while every thread it could run on sat blocked in a read; a
+     * completion handler on the caller's job would wait for the read to
+     * return first.
+     *
+     * A read that ends on its own leaves the call alone: cancelling a
+     * finished HTTP/1.1 call closes its socket, and the next page would pay
+     * for a fresh handshake.
+     */
+    internal suspend fun <T> abortOnCancel(call: Call, block: suspend () -> T): T = coroutineScope {
+        val ended = AtomicBoolean(false)
+        val hook = launch(start = CoroutineStart.UNDISPATCHED) {
+            suspendCancellableCoroutine<Unit> { cont ->
+                cont.invokeOnCancellation { if (!ended.get()) runCatching { call.cancel() } }
+            }
+        }
+        try {
+            block()
+        } catch (e: IOException) {
+            currentCoroutineContext().ensureActive()
+            throw e
+        } finally {
+            ended.set(true)
+            hook.cancel()
+        }
+    }
+
+    /**
+     * [key] as it can go in a header: trimmed, and without anything outside
+     * printable ASCII. A key copied from a web page or a chat often brings
+     * a zero-width or no-break space along, which no key contains and
+     * OkHttp refuses in a header.
+     */
+    fun cleanKey(key: String): String = key.filter { it in ' '..'~' }.trim()
+
+    /**
+     * [builder] with [key], cleaned, in the header [name]. OkHttp quotes a
+     * value it refuses in its error unless the header is one it knows to
+     * be secret, and it does not know x-goog-api-key or x-api-key: a key it
+     * refused would be shown on screen in full.
+     */
+    fun keyHeader(builder: Request.Builder, name: String, key: String): Request.Builder =
+        withoutKeyInErrors { builder.header(name, cleanKey(key)) }
+
+    /**
+     * Runs [build], rethrowing a refused header without the value OkHttp
+     * quoted — and without the original as its cause, since the cause's
+     * message is the one that holds the key.
+     */
+    internal inline fun <T> withoutKeyInErrors(build: () -> T): T = try {
+        build()
+    } catch (e: IllegalArgumentException) {
+        throw IllegalArgumentException("API key contains characters that are not allowed")
+    }
+
     fun requireConfig(settings: AppSettings) {
-        if (settings.provider != LlmProvider.CUSTOM && settings.apiKey.isBlank()) {
+        if (settings.provider != LlmProvider.CUSTOM && cleanKey(settings.apiKey).isEmpty()) {
             throw RuntimeException("No API key set for " + providerLabel(settings))
         }
         if (settings.provider == LlmProvider.CUSTOM && settings.customUrl.isBlank()) {
             throw RuntimeException("No endpoint URL set")
         }
+    }
+
+    /**
+     * What the reader still has to set up before the AI can be asked, in
+     * the words the status pill uses, or null when nothing is missing. The
+     * checks are [requireConfig]'s, said as what to do rather than as what
+     * went wrong: translation is the AI's alone, so without this there is
+     * nothing to try, and no point spending a pass finding that out.
+     */
+    fun setupNeeded(settings: AppSettings): String? = when {
+        settings.provider == LlmProvider.CUSTOM ->
+            if (settings.customUrl.isBlank()) "Add your AI endpoint in MangaLens" else null
+        cleanKey(settings.apiKey).isEmpty() -> "Add your " + providerLabel(settings) + " key in MangaLens"
+        else -> null
     }
 
     /**
@@ -146,6 +227,36 @@ internal object LlmHttp {
         vision: Boolean,
         onDelta: (suspend (String) -> Unit)? = null,
     ): String {
+        if (settings.provider == LlmProvider.GEMINI) {
+            // A model picked months ago may since have been retired; the
+            // newest Flash answers instead, and once Google has said the
+            // model is gone it is not asked again. One Google is turning
+            // away as overloaded is stood in for (GeminiApi.relief).
+            val chosen = settings.effectiveModel()
+            val model = GeminiApi.available(if (chosen != GeminiApi.FALLBACK_MODEL && GeminiApi.isMissing(chosen)) GeminiApi.FALLBACK_MODEL else chosen)
+            var shown = false
+            val relay: (suspend (String) -> Unit)? = if (onDelta == null) {
+                null
+            } else {
+                { text ->
+                    shown = true
+                    onDelta(text)
+                }
+            }
+            return try {
+                gemini(settings, model, system, stable, images, page, effort, vision, relay)
+            } catch (e: GeminiModelMissing) {
+                // Text already handed on cannot be taken back, so a model
+                // that goes missing mid-reply is that reply's failure.
+                if (model == GeminiApi.FALLBACK_MODEL || shown) throw e
+                gemini(settings, GeminiApi.FALLBACK_MODEL, system, stable, images, page, effort, vision, onDelta)
+            } catch (e: GeminiHttpException) {
+                if (e.code != 503 || shown) throw e
+                GeminiApi.strain(model)
+                val relief = GeminiApi.relief(model) ?: throw e
+                gemini(settings, relief, system, stable, images, page, effort, vision, onDelta)
+            }
+        }
         val anthropic = settings.provider == LlmProvider.ANTHROPIC
         val streaming = onDelta != null
         val body = if (anthropic) {
@@ -157,9 +268,9 @@ internal object LlmHttp {
             .url(settings.endpoint())
             .post(body.toString().toRequestBody(JSON))
         if (anthropic) {
-            builder.header("x-api-key", settings.apiKey).header("anthropic-version", "2023-06-01")
-        } else if (settings.apiKey.isNotBlank()) {
-            builder.header("Authorization", "Bearer " + settings.apiKey)
+            keyHeader(builder, "x-api-key", settings.apiKey).header("anthropic-version", "2023-06-01")
+        } else if (cleanKey(settings.apiKey).isNotEmpty()) {
+            keyHeader(builder, "Authorization", "Bearer " + cleanKey(settings.apiKey))
         }
         val call = client.newCall(builder.build())
         await(call).use { resp ->
@@ -184,6 +295,26 @@ internal object LlmHttp {
         }
     }
 
+    /** One request to Gemini's native API for [model], with a body built for that model. */
+    private suspend fun gemini(
+        settings: AppSettings,
+        model: String,
+        system: String,
+        stable: String,
+        images: List<String>,
+        page: String,
+        effort: String,
+        vision: Boolean,
+        onDelta: (suspend (String) -> Unit)?,
+    ): String {
+        val body = geminiBody(settings, system, stable, images, page, effort, vision, model)
+        return if (onDelta != null) {
+            GeminiApi.stream(settings.apiKey, model, body, onDelta = onDelta)
+        } else {
+            GeminiApi.text(GeminiApi.generate(settings.apiKey, model, body))
+        }
+    }
+
     private fun BufferedSource.peekStartsWith(prefix: String): Boolean =
         runCatching { request(prefix.length.toLong()) && peek().readUtf8(prefix.length.toLong()) == prefix }
             .getOrDefault(false)
@@ -192,8 +323,8 @@ internal object LlmHttp {
      * Room for the answer. The cap covers the model's thinking as well as
      * its reply on every current API, so it is set well above what a page
      * of translations needs: a cap the thinking exhausts cuts the JSON off
-     * mid-array, and the page then falls back to the draft as though the
-     * model had said nothing.
+     * mid-array, and the page then comes back as though the model had said
+     * nothing.
      */
     internal fun outputCap(anthropic: Boolean, vision: Boolean, effort: String): Int {
         val base = if (anthropic) (if (vision) 8192 else 4096) else (if (vision) 16384 else 8192)
@@ -281,23 +412,12 @@ internal object LlmHttp {
         // varies slightly between two captures of the same page, so a
         // re-read often misses the cache and asks again. With sampling on,
         // that second answer differs from the first — the same panel worded
-        // two ways depending on when you looked at it. Gemini 3 and the
-        // OpenAI reasoning models are the exceptions: they are tuned for
-        // their default temperature, and Google warns that lowering it can
-        // send Gemini 3 into loops.
+        // two ways depending on when you looked at it. The OpenAI reasoning
+        // models are the exception: they are tuned for their default
+        // temperature and reject any other.
         var greedy = true
         var tokensField = "max_tokens"
         when (settings.provider) {
-            LlmProvider.GEMINI -> {
-                if (GEMINI_3.containsMatchIn(model)) {
-                    greedy = false
-                    // Gemini 3 takes only low and high; medium is answered
-                    // with the faster of the two.
-                    body.put("reasoning_effort", if (effort == "high") "high" else "low")
-                } else if (GEMINI_THINKING.containsMatchIn(model)) {
-                    body.put("reasoning_effort", effort)
-                }
-            }
             LlmProvider.OPENAI -> {
                 if (OPENAI_REASONING.containsMatchIn(model)) {
                     greedy = false
@@ -317,6 +437,46 @@ internal object LlmHttp {
         body.put(tokensField, cap)
         if (stream) body.put("stream", true)
         return body
+    }
+
+    /**
+     * Google's native request: the system prompt as `systemInstruction`,
+     * then one user turn laid out stable-first — series memory, images,
+     * page — so Gemini's implicit prefix caching reuses the memory from one
+     * page to the next. The reply is constrained to JSON, which the native
+     * API guarantees rather than merely encourages.
+     *
+     * Greedy decoding as elsewhere, except on Gemini 3 and later: Google
+     * warns that lowering their temperature sends them into loops.
+     *
+     * Built for [model], which is the reader's choice unless it has been
+     * retired: a fallback gets the thinking configuration and temperature
+     * of its own generation, not those of the model it stands in for.
+     */
+    internal fun geminiBody(
+        settings: AppSettings,
+        system: String,
+        stable: String,
+        images: List<String>,
+        page: String,
+        effort: String,
+        vision: Boolean,
+        model: String = settings.effectiveModel(),
+    ): JSONObject {
+        val parts = JSONArray().put(JSONObject().put("text", stable))
+        for (image in images) {
+            parts.put(JSONObject().put("inlineData", JSONObject().put("mimeType", "image/jpeg").put("data", image)))
+        }
+        parts.put(JSONObject().put("text", page))
+        val config = JSONObject()
+            .put("responseMimeType", "application/json")
+            .put("maxOutputTokens", outputCap(anthropic = false, vision = vision, effort = effort))
+        GeminiApi.thinkingConfig(model, settings.aiReasoning)?.let { config.put("thinkingConfig", it) }
+        if (GeminiApi.takesTemperature(model)) config.put("temperature", 0)
+        return JSONObject()
+            .put("systemInstruction", JSONObject().put("parts", JSONArray().put(JSONObject().put("text", system))))
+            .put("contents", JSONArray().put(JSONObject().put("role", "user").put("parts", parts)))
+            .put("generationConfig", config)
     }
 
     // ---- response shapes ----
@@ -340,51 +500,39 @@ internal object LlmHttp {
     /**
      * Reads a server-sent event stream to its end, handing each text delta
      * to [onDelta] and returning the whole text. The read blocks the
-     * thread between events; cancelling the coroutine cancels the call,
-     * which fails the read and ends the stream.
+     * thread between events; cancelling the coroutine cancels the call
+     * ([abortOnCancel]), which fails the read and ends the stream.
      */
     private suspend fun readEvents(
         call: Call,
         source: BufferedSource,
         anthropic: Boolean,
         onDelta: suspend (String) -> Unit,
-    ): String {
+    ): String = abortOnCancel(call) {
         val full = StringBuilder()
-        val handle = currentCoroutineContext()[Job]?.invokeOnCompletion { cause ->
-            if (cause != null) runCatching { call.cancel() }
-        }
-        try {
-            val data = StringBuilder()
-            suspend fun dispatch() {
-                if (data.isEmpty()) return
-                val payload = data.toString()
-                data.setLength(0)
-                if (payload == "[DONE]") return
-                val o = runCatching { JSONObject(payload) }.getOrNull() ?: return
-                val text = if (anthropic) anthropicDelta(o) else openAiDelta(o)
-                if (text.isNotEmpty()) {
-                    full.append(text)
-                    onDelta(text)
-                }
+        val data = StringBuilder()
+        suspend fun dispatch() {
+            if (data.isEmpty()) return
+            val payload = data.toString()
+            data.setLength(0)
+            if (payload == "[DONE]") return
+            val o = runCatching { JSONObject(payload) }.getOrNull() ?: return
+            val text = if (anthropic) anthropicDelta(o) else openAiDelta(o)
+            if (text.isNotEmpty()) {
+                full.append(text)
+                onDelta(text)
             }
-            while (true) {
-                val line = try {
-                    source.readUtf8Line()
-                } catch (e: IOException) {
-                    currentCoroutineContext().ensureActive()
-                    throw e
-                } ?: break
-                when {
-                    line.isEmpty() -> dispatch()
-                    line.startsWith("data:") -> data.append(line.substring(5).trim())
-                    // event: and comment lines carry nothing the payload does not.
-                }
-            }
-            dispatch()
-        } finally {
-            handle?.dispose()
         }
-        return full.toString()
+        while (true) {
+            val line = source.readUtf8Line() ?: break
+            when {
+                line.isEmpty() -> dispatch()
+                line.startsWith("data:") -> data.append(line.substring(5).trim())
+                // event: and comment lines carry nothing the payload does not.
+            }
+        }
+        dispatch()
+        full.toString()
     }
 
     private fun anthropicDelta(o: JSONObject): String = when (o.optString("type")) {

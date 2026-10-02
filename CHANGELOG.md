@@ -1,6 +1,6 @@
 # Changelog
 
-## 0.11.0
+## 1.1.0
 
 **Dark gaps — manhwa night mode.** The white gutters between a manhwa's panels
 can now be painted dark, without touching the art, and kept dark while you scroll.
@@ -9,8 +9,10 @@ can now be painted dark, without touching the art, and kept dark while you scrol
 0.9.1? Use `MangaLens-legacy-update.apk` once (Android 9+), as described in
 the README.
 
+Built on 1.0.7: everything in the 1.0.x releases below is included.
+
 - **Long-press the floating button → 🌙 Dark gaps between panels** (or
-  *Reading → Night reading*; Dim / Dark / Black). Works on any site or app and
+  *Tweaks → Reading → Dark gaps*; Dim / Dark / Black). Works on any site or app and
   independently of translation.
 - **Only real paper is darkened.** Pixels must be white (every channel ≥ 240) and
   part of a region that spans the strip; balloons stay as drawn, lettering on the
@@ -45,6 +47,330 @@ the README.
   region finder, a row-profile scroll tracker, the shade engine, and a latency
   simulation (60/120 Hz, random capture/display/detection delays) that scores the
   art pixels the visible overlay covers.
+
+## 1.0.7
+
+A full review of the app, with every finding checked and fixed.
+
+**Download:** `MangaLens.apk` below updates 0.9.2 and newer in place.
+Installing still needs Play Protect's scanning switched off for a moment
+(auto-scroll's Accessibility switch is what it blocks); see the README.
+
+- **Auto-scroll**
+  - Translation no longer starts on a page that is still gliding slowly,
+    and a stop always waits for its own translation.
+  - MangaLens's own buttons no longer keep it from hurrying through the
+    gaps between panels, or pass for the end of the page.
+  - It also stops at the end of the page while translating.
+  - Turning its Accessibility switch off while it runs stops it with a
+    message instead of leaving it stuck.
+  - It waits while the long-press menu is open, and a speed tap no longer
+    stops your next touch from pausing it.
+- **Translation**
+  - Stop can no longer crash the app while a frame is being copied.
+  - A page with an animated banner or a video no longer translates over
+    and over.
+  - The last page's cards no longer come back over a new page after a
+    failed pass.
+  - Each series keeps its own names and story from the first page on, is
+    recognised again when you come back to it after a long read, and a
+    read still running when you tap New series no longer teaches the next
+    one. A few failed reads in a row (offline, rate-limited) no longer
+    make it forget the series.
+  - A reply with no lines no longer beats one with lines; the other
+    requests keep going.
+  - Small scroll nudges no longer leave rows unread, and a remembered
+    answer is reused only where the same words are found again.
+- **Cleaning the page**
+  - On screentone, panel borders and outlines beside the lettering are no
+    longer cut through and filled with dots.
+  - Art text is no longer wiped flat because a line once drifted into it.
+  - The AI clean-up sends at most eight regions and paints none of its
+    lettering back, and skips the request when no image model is left.
+  - Two balloons drawn joined each get their own line of English again,
+    instead of one block running across the outline between them.
+- **Reading the page on the phone**
+  - Two joined balloons cut by the screen's edge are treated as cut.
+  - Korean lines ending in 야 or 라 are no longer run into the next
+    speaker's.
+  - The on-device reading models are released when you stop.
+- **The app**
+  - A leftover 1.0.1 Solid lettering switch no longer hides No ghosts.
+  - Allow it no longer crashes on phones without Android's overlay
+    permission page.
+  - The first Tweaks or scroll-button request after turning the phone is
+    no longer lost.
+  - OpenRouter and OpenAI refusals (HTTP 403) are no longer reported as a
+    bad key.
+- The release build signs the APK in a separate job that never runs build
+  code.
+
+## 1.0.6
+
+Faster auto-scroll.
+
+**Download:** `MangaLens.apk` below updates 0.9.2 and newer in place.
+
+- **Auto-scroll goes much faster now.** The speed runs from 1 to 15 instead
+  of 1 to 10: levels 1–10 are as they were, and each new level is about a
+  third faster than the one before, so 15 moves about three times as fast
+  as 10 did. The finger also drags a longer stretch of the screen before it
+  lifts, so fast speeds run more smoothly.
+- Installing still needs Play Protect's scanning switched off for a moment
+  (auto-scroll's Accessibility switch is what it blocks); see the README.
+
+## 1.0.5
+
+Auto-scroll: MangaLens scrolls the page for you, in any app, and slows down
+for the big balloons.
+
+**Download:** `MangaLens.apk` below updates 0.9.2 and newer in place.
+
+- **Auto-scroll.** Tap the new **▼** beside the 文A bubble and the page moves
+  on by itself — in Brave, a reader app, anything that scrolls. **−** and
+  **+** change the speed as it goes, **❚❚** stops it, and touching the
+  screen pauses it until you let go. It stops by itself at the end of the
+  page. It is also in the long-press menu, and Tweaks → Auto-scroll sets
+  the speed it starts at.
+- **It slows down for big balloons.** MangaLens watches the page on your
+  phone as it moves and slows right down while a big balloon goes by, the
+  more the bigger it is, then hurries through the empty gaps between
+  panels. No AI or connection is involved, so it works the same with
+  translation napping.
+- **With translation or without.** Napping (tap 文A), the page glides
+  without stopping. Awake, it glides half a screen, waits for that stop's
+  translation, gives you time to read it, and glides on.
+- **One switch in Accessibility.** Only an accessibility service can move
+  another app's page, so auto-scroll comes with one, "MangaLens auto-scroll":
+  Tweaks → Auto-scroll → **Turn on** takes you there. It can only drag the
+  page — it can't read the screen, see what you type or tap anything. On
+  Android 13 and later, if the switch is greyed out, allow restricted
+  settings in App info first (the link is right under the button).
+- **Installing:** where Play Protect's enhanced fraud protection is on,
+  Android refuses a downloaded app with an accessibility service ("App
+  blocked to protect your device"). Switch that protection off for the
+  install and back on afterwards; see the README.
+- **Fewer slow stops while you scroll yourself.** Lines read at the last
+  stop are found again more reliably, thin ones like a lone "……" included,
+  so a small scroll reads only the new strip instead of the whole screen
+  again (about 1 stop in 10 used to).
+- A line the screen's edge cut in half is read whole at the next stop,
+  instead of keeping the half-sentence it was first read as.
+- **Cleaner balloons.** A panel whose boxes all slid off their balloons,
+  a box that slid down out of its balloon, and a face under a drifted box
+  are all handled: the balloon is cleaned whole and the art is left alone.
+- Words that fit no centred block are set in the balloon's largest clear
+  area instead of spilling over its edge.
+
+## 1.0.4
+
+Faster, above all when you scroll.
+
+**Download:** `MangaLens.apk` below updates 0.9.2 and newer in place.
+
+- **A scroll reads only what's new.** After a scroll, only the strip the
+  scroll revealed goes to the AI, and the lines you had already read come
+  back the moment you stop, moved with the page, instead of the whole screen
+  being read again. On real pages, the first new line after a small scroll
+  arrived in 1.7 s instead of 4.2 s, and the whole screen was done in 2.7 s
+  instead of 5.7 s. These times were measured from a server; your phone adds
+  the time it takes to upload the page.
+- **A new page's first line comes sooner.** The AI's first line is painted as
+  soon as it arrives, without waiting for the phone's own text recognition,
+  and the page is sent the moment it settles: about 1.7–1.9 s to the first
+  line instead of 2.4 s, measured the same way.
+- **Lines cut by the screen's edge stay translated** after a scroll.
+- **When Google is overloaded**, MangaLens switches to a stand-in model at
+  once instead of waiting it out, and gives up on a connection that has gone
+  silent.
+- **Cleaner balloons.** A balloon the AI only partly boxed is cleaned whole,
+  and white lettering edged in black on dark art, and the white halo around
+  lettering, are erased with it.
+- **Better typesetting.** Names and short words stay whole whenever they fit,
+  words break where a dictionary would break them, free lettering keeps off
+  its neighbours' lines, and sounds the AI wraps in asterisks are lettered
+  without them.
+- The reading code is compiled ahead of time, so the first page after
+  starting MangaLens is quicker too.
+- With **diagnostics** on, the pill says how long each stop took from the
+  moment you stopped: to the first line, how many lines came back straight
+  away, and the upload apart.
+
+## 1.0.3
+
+No more grey ghost, and nothing extra to allow for it.
+
+**Download:** `MangaLens.apk` below updates 0.9.2 and newer in place.
+
+- **Clean balloons on Android 12 and later.** Android draws an overlay that
+  lets your taps through at no more than 80% strength, so a fifth of the page
+  showed through every cleaned balloon: a grey ghost of the original lettering
+  under the English. MangaLens now dims the whole page by that fifth while it
+  is awake, and paints each cleaned balloon, card and erased patch with the
+  page's share already taken off, so the two meet at exactly the same level
+  and nothing of the original shows through. No accessibility service or any
+  other permission is involved.
+- The page is a little darker while MangaLens is awake, and back to full
+  brightness while it naps. **Tweaks → No ghosts** switches the veil off if
+  you would rather have full brightness and the faint ghost.
+- Floating cards hide the art under them completely now, too.
+
+## 1.0.2
+
+Installs again. Where Play Protect's enhanced fraud protection is on, 1.0.1
+was refused outright ("App blocked to protect your device"), because of the
+accessibility service it added for solid lettering: Play Protect blocks any
+app installed from a browser or file manager that declares one, whatever the
+service does. That service is gone; everything else in 1.0.1 is here.
+
+**Download:** `MangaLens.apk` below updates 0.9.2 and newer in place.
+
+- **No accessibility service.** The optional setup step **Make the English
+  solid** and the **Solid lettering** row in Tweaks went with it. If you had
+  switched it on in 1.0.1, there is nothing to undo: without the service
+  the switch does nothing, even where Android still remembers it as on.
+- On Android 12 and later a faint trace of the original can show under the
+  English again, as it did before 1.0.1: Android draws an overlay that lets
+  your taps through at no more than 80% strength.
+- The release build now refuses to publish an APK that declares anything
+  Play Protect blocks sideloaded installs for.
+
+## 1.0.1
+
+Cleaner pages: every balloon is wiped whole, the English can be solid black
+on white, lettering stays where it belongs, and the translation reads like an
+English scanlation rather than a translation of one.
+
+**Download:** `MangaLens.apk` below updates 0.9.2 and newer in place.
+
+- **Solid lettering (no more grey ghost).** Since Android 12 an app overlay
+  that lets taps through is drawn at no more than 80% opacity, so every
+  cleaned balloon showed a faint grey ghost of the original and the English
+  was dark grey. Turn on the new optional setup step **Make the English
+  solid** (or the **Solid lettering** row in Tweaks): MangaLens is switched on
+  under Accessibility, and Android then draws its lettering at full strength.
+  The switch only lets it draw — it gets no accessibility events, can't read
+  the screen and can't tap for you. Android 13+ may first ask you to allow
+  restricted settings in App info; the step shows how.
+- **Whole balloons, every time.** When the model's box around a vertical
+  balloon's text missed a column — the short first one, a lone last glyph —
+  that column stayed on the page beside the English, and the English was
+  squeezed into one column. The missing column is now recognised as the
+  same line, and the whole balloon is cleaned and lettered.
+- **Balloons the detector used to miss** — see-through ones with the art
+  showing faintly through, ones breaking a panel border, ones cut by the page
+  edge, bursts around big lettering — are now found from their own lettering
+  outward, cleaned whole and lettered into their shape.
+- **Lettering stays where it belongs.** English set over text on the art is
+  centred on that text (a stray stroke of art no longer drags it a line
+  away) and stays inside its own panel. Inside a dense balloon the type may go
+  a step smaller before it would spill over the outline, and words that
+  still cannot fit are haloed in the balloon's paper. Thoughts are lettered in
+  bold italic, dialogue's weight, instead of a faint thin italic.
+- **A scanlator's English.** The AI is asked for natural, idiomatic English in
+  each character's voice rather than word-for-word structure: no calques,
+  the plain words of English adult comics instead of clinical ones, and a
+  proofread of every line — while still adding nothing the source doesn't say.
+- **Simpler Tweaks.** Tweaks shows the language, hands-free, text size and a
+  Your AI card that says whether your key works (Test it, Change key).
+  Timing, data saver, thinking time, the model (Automatic by default), other
+  AI providers and diagnostics wait under **More options**.
+
+## 1.0.0
+
+MangaLens 1.0: translation is AI-only and straight — no machine draft, no
+"upgrading" — the app has a new face, Fuki, and Gemini reads the page
+itself the moment you stop, with every line cleaned and re-lettered the
+way a scanlation team does it.
+
+**Download:** `MangaLens.apk` below updates 0.9.2 and newer in place. Still on
+0.9.1? Use `MangaLens-legacy-update.apk` once (Android 9+), as described in
+the README.
+
+- **AI only** — the free Google and offline engines are gone, and there is
+  no machine draft before the AI: each line appears once, in the AI's words.
+  Gemini is the default provider (the fastest, with a free tier); a key you
+  saved for another provider keeps working. Without a key the pill says
+  "Add your Gemini key in MangaLens" instead of translating.
+- **A new face: Fuki.** The home screen is one big button — Fuki, a
+  speech balloon that says GO! and turns red to STOP — on cream newsprint
+  with ink outlines and hard shadows. First run is two steps (float over
+  apps, paste a free Gemini key), and Fuki wakes up a step at a time as
+  you go, then proves the key by lettering a line. Paused, Fuki naps: tap
+  it to wake it (Stop has its own button). Every setting moved to one
+  Tweaks page; the overlay's quick menu
+  opens it, its button and pill are restyled to read over white and black
+  pages, and in tap-to-translate mode a tap on 文A translates the page.
+- **A quieter pill.** While a page translates, the button's busy ring says
+  so and the pill stays out of the way — no "translating…", no
+  "upgrading…". It speaks up only for what you need to know: a page the AI
+  couldn't read, and why (network, rate limit, rejected key), your own
+  taps, the optional art clean-up, and diagnostics when they are on.
+- **AI-first reading with Gemini.** The screen goes to the model about
+  0.15 s after scrolling stops, alongside on-device analysis instead of after
+  it, through Google's native API. The model finds every piece of lettering
+  itself — balloons, captions, text on the art, sound effects — and each line
+  is painted the moment it streams in, dialogue first in reading order.
+  Measured on hard test pages, the first line lands about 1.5–2 s after the
+  request; two identical requests race and the slower is cancelled, which
+  cuts Google's occasional 3–6 s stalls. Pages go up at 1280 px (Gemini
+  reads them at a fixed budget anyway), and the connection is opened while
+  you scroll so no stop pays the handshake.
+- **Best model by measurement.** `gemini-flash-latest` (currently Gemini 3.8
+  Flash) is the default: on the test pages it found every line with tight
+  boxes and read like a scanlation. 3.5 Flash-Lite answered ~0.6 s sooner but
+  mistranslated, merged separate balloons into one and invented a sound
+  effect; it stays selectable for plain pages.
+- **Expert translation, reviewed by experts.** A panel of reviewers
+  (Japanese manga, Korean and Chinese, lettering) critiqued live output and
+  the prompt now carries their rules: one English per source sound, chosen by
+  meaning (BA-DUMP, SHRAK, DOOM), never asterisks or romanized cries; breaths,
+  moans and giggles lettered as the sound ("Hah... hah♡", "Heh heh"); rough
+  speech kept rough and crude words matched; stammers the English way;
+  titles translated, name honorifics kept. Faithful and complete — nothing
+  omitted, summarised or softened.
+- **Balloons instantly on scroll.** Lettering translated at an earlier stop
+  is found again by its own pixels — searched along the scroll, verified
+  stroke by stroke at near full resolution — and repainted before any request
+  goes out. Never by position: two balloons side by side, a line one
+  character different, or a new balloon in an old balloon's place are never
+  confused, and a line shown twice is never guessed at.
+- **A small scroll reads only what it revealed.** When a webtoon stop only
+  nudged the page, the model is sent just the new strip and everything
+  already read repaints from memory at once, so the new balloon arrives
+  first — about 1.6 s after the stop on the test strip — instead of after
+  every line you have already seen. A nudge that revealed nothing new sends
+  no request.
+- **Never wipes art that looks like a balloon.** A face in line art, a
+  highlight, screentone or the inside of a big glyph can pass for a balloon.
+  A detection is now cleaned only when its interior holds nothing but the
+  lettering the model found there; otherwise that lettering is erased on its
+  own. Two balloons drawn joined keep a line each, in their own lobes.
+- **Text on the art is erased, not covered.** Narration on the art, side
+  comments on screentone and white-outlined thoughts over a figure are
+  erased stroke by stroke — screentone continued, gradients followed — and
+  re-lettered in their own colours and outline. No more rounded cards.
+- **Sound effects like a scanlation handles them.** Only the ones that tell
+  you something are translated; decorative action lettering is left alone.
+  A small one on plain ground is erased and re-lettered; a big one drawn
+  across the art keeps its place and gets a small English note — on empty
+  ground beside it, or on the sound itself where everything around it is
+  drawn, never over a face or a figure. A heartbeat drawn four times down a
+  column is noted "BA-DUMP BA-DUMP", once, and a long column is lettered
+  down the column rather than spilling across the art beside it.
+- **Lettering styles.** Shouts heavier, thoughts in italic, narration calmer,
+  sound effects bold italic and outlined; the English fades in rather than
+  popping.
+- **Steadier on a scroll.** A line read again at the next stop keeps the
+  words you already saw, but a balloon the model now reads in pieces (or
+  whole) is never said twice or halved. A read abandoned by a quick scroll
+  is cancelled instead of streaming on, a reply that broke off part-way is
+  never cached as the whole page, and a rejected API key says so instead of
+  failing silently.
+- **Optional AI redraw.** Off by default. When on, an image model redraws
+  detailed art under lettering drawn on it; only crops around that
+  lettering are sent, the redraw is used only where it matches the art
+  around each letter, and after two refusals it rests for 15 minutes.
 
 ## 0.10.1
 

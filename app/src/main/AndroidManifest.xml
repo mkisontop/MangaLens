@@ -7,6 +7,11 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION" />
     <uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
 
+    <!-- Android 11+ hides other apps unless named: "Open Brave" needs to find it. -->
+    <queries>
+        <package android:name="com.brave.browser" />
+    </queries>
+
     <application
         android:name=".MangaLensApp"
         android:allowBackup="true"
@@ -30,5 +35,30 @@
             android:name=".capture.ScreenCaptureService"
             android:exported="false"
             android:foregroundServiceType="mediaProjection" />
+
+        <!--
+            Auto-scroll drags the page through this accessibility service:
+            only an accessibility service may touch another app's screen. It
+            asks for gestures alone (res/xml/auto_scroll.xml). The reader
+            chose to have it despite the price: Play Protect's enhanced
+            fraud protection refuses to install a sideloaded app that
+            declares an accessibility service, as it did 1.0.1.
+            LetteringHostService (solid lettering) stays undeclared: the
+            No ghosts veil keeps the original from showing through without
+            it, and one switch in Accessibility is all a reader should
+            have to find.
+        -->
+        <service
+            android:name=".scroll.AutoScrollService"
+            android:exported="true"
+            android:label="@string/auto_scroll_label"
+            android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE">
+            <intent-filter>
+                <action android:name="android.accessibilityservice.AccessibilityService" />
+            </intent-filter>
+            <meta-data
+                android:name="android.accessibilityservice"
+                android:resource="@xml/auto_scroll" />
+        </service>
     </application>
 </manifest>

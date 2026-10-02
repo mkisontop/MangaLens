@@ -1,22 +1,55 @@
 package app.mangalens.translate
 
+import android.graphics.Bitmap
+import android.graphics.Color
+import android.graphics.Rect
+import app.mangalens.ocr.Bubble
 import app.mangalens.settings.AiReasoning
 import app.mangalens.settings.AppSettings
 import app.mangalens.settings.LlmProvider
+import app.mangalens.settings.SourceLang
+import java.util.concurrent.atomic.AtomicBoolean
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
+import kotlinx.coroutines.yield
+import okhttp3.Call
+import okhttp3.Callback
+import okhttp3.MediaType
+import okhttp3.Protocol
+import okhttp3.Request
+import okhttp3.Response
+import okhttp3.ResponseBody
+import okio.Buffer
+import okio.BufferedSource
+import okio.ForwardingSource
+import okio.Timeout
+import okio.buffer
+import org.json.JSONArray
 import org.json.JSONObject
+import org.junit.After
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
+import org.junit.Assert.fail
+import org.junit.Before
 import org.junit.Test
 import org.junit.runner.RunWith
 import org.robolectric.RobolectricTestRunner
+import org.robolectric.RuntimeEnvironment
 import org.robolectric.annotation.Config
+import org.robolectric.annotation.GraphicsMode
 
 /**
- * The request each provider actually receives. A wrong field here is not a
- * visible failure: the provider answers 400, the engine falls back to
- * Google, and the reader sees a slightly worse page with "fallback" in the
- * pill — every benefit of the model they chose silently discarded.
+ * The request each provider actually receives. A wrong field here fails
+ * every page: the provider answers 400, nothing else translates the page,
+ * and the reader is left with raw lettering and an error in the pill — the
+ * model they chose lost to one field it would not take.
  */
 @RunWith(RobolectricTestRunner::class)
 @Config(sdk = [34])
@@ -78,30 +111,84 @@ class LlmRequestTest {
         assertEquals(balanced.getInt("max_tokens") * 2, thorough.getInt("max_tokens"))
     }
 
-    // ---- Gemini ----
+    // ---- Gemini (native API) ----
+
+    private fun gemini(settings: AppSettings, images: List<String> = emptyList(), vision: Boolean = images.isNotEmpty()) =
+        LlmHttp.geminiBody(
+            settings, "SYS", "STABLE", images, "PAGE",
+            effort = LlmHttp.effortLevel(settings, vision), vision = vision,
+        )
+
+    private fun thinking(body: JSONObject): JSONObject? =
+        body.getJSONObject("generationConfig").optJSONObject("thinkingConfig")
 
     @Test
-    fun `gemini 3 keeps its default temperature and takes low or high thinking only`() {
-        val balanced = openAi(settings(LlmProvider.GEMINI, "gemini-3.8-flash"), images = listOf("P"))
-        assertFalse("Google warns lowering Gemini 3's temperature causes loops", balanced.has("temperature"))
-        assertEquals("low", balanced.getString("reasoning_effort"))
-        val thorough = openAi(settings(LlmProvider.GEMINI, "gemini-3.5-flash-lite", AiReasoning.THOROUGH), images = listOf("P"))
-        assertEquals("high", thorough.getString("reasoning_effort"))
-        assertTrue(balanced.has("max_tokens"))
+    fun `gemini gets the native shape, system prompt apart and the page last`() {
+        val body = gemini(settings(LlmProvider.GEMINI, "gemini-3.8-flash"), images = listOf("PAGEJPEG", "CROP2"))
+        assertEquals("SYS", body.getJSONObject("systemInstruction").getJSONArray("parts").getJSONObject(0).getString("text"))
+        val parts = body.getJSONArray("contents").getJSONObject(0).getJSONArray("parts")
+        assertEquals("STABLE", parts.getJSONObject(0).getString("text"))
+        assertEquals("PAGEJPEG", parts.getJSONObject(1).getJSONObject("inlineData").getString("data"))
+        assertEquals("image/jpeg", parts.getJSONObject(1).getJSONObject("inlineData").getString("mimeType"))
+        assertEquals("CROP2", parts.getJSONObject(2).getJSONObject("inlineData").getString("data"))
+        assertEquals("PAGE", parts.getJSONObject(3).getString("text"))
+        val config = body.getJSONObject("generationConfig")
+        assertEquals("application/json", config.getString("responseMimeType"))
+        assertTrue(config.getInt("maxOutputTokens") >= 16384)
+        assertFalse("the key goes in a header, the model in the URL", body.has("model"))
+        assertFalse(body.has("safetySettings"))
     }
 
     @Test
-    fun `gemini 2_5 is greedy and takes all three thinking levels`() {
-        val body = openAi(settings(LlmProvider.GEMINI, "gemini-2.5-flash"), images = listOf("P"))
-        assertEquals(0, body.getInt("temperature"))
-        assertEquals("medium", body.getString("reasoning_effort"))
+    fun `gemini 3 keeps its default temperature and thinks in levels`() {
+        val balanced = gemini(settings(LlmProvider.GEMINI, "gemini-3.8-flash"), images = listOf("P"))
+        assertFalse("Google warns lowering Gemini 3's temperature causes loops", balanced.getJSONObject("generationConfig").has("temperature"))
+        assertEquals("low", thinking(balanced)!!.getString("thinkingLevel"))
+        val thorough = gemini(settings(LlmProvider.GEMINI, "gemini-3.5-flash-lite", AiReasoning.THOROUGH), images = listOf("P"))
+        assertEquals("high", thinking(thorough)!!.getString("thinkingLevel"))
+        assertEquals(
+            thorough.getJSONObject("generationConfig").getInt("maxOutputTokens"),
+            balanced.getJSONObject("generationConfig").getInt("maxOutputTokens") * 2,
+        )
     }
 
     @Test
-    fun `gemini models without thinking get no reasoning field`() {
-        val body = openAi(settings(LlmProvider.GEMINI, "gemini-2.0-flash"))
-        assertFalse(body.has("reasoning_effort"))
-        assertEquals(0, body.getInt("temperature"))
+    fun `fast asks for minimal thinking only where the model takes it`() {
+        fun fast(model: String) = thinking(gemini(settings(LlmProvider.GEMINI, model, AiReasoning.FAST)))!!.getString("thinkingLevel")
+        assertEquals("minimal", fast("gemini-3.5-flash"))
+        assertEquals("minimal", fast("gemini-3.5-flash-lite"))
+        assertEquals("minimal", fast("gemini-3.1-flash-lite"))
+        // 3.6 Flash, the stand-in, takes it (checked live).
+        assertEquals("minimal", fast("gemini-3.6-flash"))
+        // 3.7 and 3.8 Flash answer 400 to "minimal"; the default alias points at 3.8.
+        assertEquals("low", fast("gemini-3.8-flash"))
+        assertEquals("low", fast("gemini-3.7-flash"))
+        assertEquals("low", fast("gemini-flash-latest"))
+    }
+
+    @Test
+    fun `the default model alias counts as gemini 3`() {
+        val body = gemini(settings(LlmProvider.GEMINI, ""))
+        assertEquals("low", thinking(body)!!.getString("thinkingLevel"))
+        assertFalse(body.getJSONObject("generationConfig").has("temperature"))
+    }
+
+    @Test
+    fun `gemini 2_5 is greedy and takes a thinking budget`() {
+        val body = gemini(settings(LlmProvider.GEMINI, "gemini-2.5-flash"), images = listOf("P"))
+        assertEquals(0, body.getJSONObject("generationConfig").getInt("temperature"))
+        assertTrue(thinking(body)!!.getInt("thinkingBudget") > 0)
+        assertEquals(0, thinking(gemini(settings(LlmProvider.GEMINI, "gemini-2.5-flash", AiReasoning.FAST)))!!.getInt("thinkingBudget"))
+        assertEquals(-1, thinking(gemini(settings(LlmProvider.GEMINI, "gemini-2.5-flash", AiReasoning.THOROUGH)))!!.getInt("thinkingBudget"))
+        // 2.5 Pro cannot switch thinking off.
+        assertEquals(128, thinking(gemini(settings(LlmProvider.GEMINI, "gemini-2.5-pro", AiReasoning.FAST)))!!.getInt("thinkingBudget"))
+    }
+
+    @Test
+    fun `gemini models without thinking get no thinking config`() {
+        val body = gemini(settings(LlmProvider.GEMINI, "gemini-2.0-flash"))
+        assertNull(thinking(body))
+        assertEquals(0, body.getJSONObject("generationConfig").getInt("temperature"))
     }
 
     // ---- OpenAI ----
@@ -151,7 +238,7 @@ class LlmRequestTest {
 
     @Test
     fun `images are sent page first, close-ups after, page text last`() {
-        val body = openAi(settings(LlmProvider.GEMINI, "gemini-3.8-flash"), images = listOf("PAGEJPEG", "CROP2", "CROP5"))
+        val body = openAi(settings(LlmProvider.OPENROUTER, "google/gemini-3.8-flash"), images = listOf("PAGEJPEG", "CROP2", "CROP5"))
         val parts = body.getJSONArray("messages").getJSONObject(1).getJSONArray("content")
         assertEquals("STABLE", parts.getJSONObject(0).getString("text"))
         for ((i, expected) in listOf("PAGEJPEG", "CROP2", "CROP5").withIndex()) {
@@ -165,5 +252,208 @@ class LlmRequestTest {
     fun `a bare array reply is still read as bubbles`() {
         val o: JSONObject = LlmHttp.extractJsonObject("[{\"id\":0,\"en\":\"Hi\"}]")
         assertEquals("Hi", o.getJSONArray("bubbles").getJSONObject(0).getString("en"))
+    }
+
+    // ---- over HTTP ----
+
+    private var server: FakeHttpServer? = null
+
+    @Before
+    fun setUp() = GeminiApi.resetLearned()
+
+    @After
+    fun tearDown() {
+        server?.close()
+        GeminiApi.base = GeminiApi.BASE
+        GeminiApi.resetLearned()
+    }
+
+    private fun serve(handler: (FakeHttpServer.Exchange) -> Unit): FakeHttpServer =
+        FakeHttpServer(handler).also {
+            server = it
+            GeminiApi.base = it.base
+        }
+
+    private fun answer(text: String): String = JSONObject().put(
+        "candidates",
+        JSONArray().put(
+            JSONObject()
+                .put("content", JSONObject().put("role", "model").put("parts", JSONArray().put(JSONObject().put("text", text))))
+                .put("finishReason", "STOP")
+        ),
+    ).toString()
+
+    private fun modelOf(target: String) = target.substringAfterLast('/').substringBefore(':')
+
+    @Test
+    @GraphicsMode(GraphicsMode.Mode.NATIVE)
+    fun `a reply that lands after a new series began teaches it nothing, on the region paths too`() = runBlocking {
+        val ctx = RuntimeEnvironment.getApplication()
+        val glossary = GlossaryStore(ctx)
+        val cast = CastBook(ctx)
+        StoryContext.reset()
+        val newSeries = AtomicBoolean(false)
+        val reply = JSONObject()
+            .put("bubbles", JSONArray().put(JSONObject().put("id", 0).put("en", "Hello.").put("who", "Kaito")))
+            .put("new_terms", JSONObject().put("海斗", "Kaito"))
+            .put("characters", JSONObject().put("Kaito", JSONObject().put("pronoun", "he")))
+            .toString()
+        serve { ex ->
+            // The reader taps "New series" while the page is out.
+            if (newSeries.get()) StoryContext.reset()
+            ex.respond(200, answer(reply))
+        }
+        val s = settings(LlmProvider.GEMINI, "gemini-test-flash")
+        val page = Bitmap.createBitmap(400, 600, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.WHITE) }
+        val anchors = listOf(Bubble("こんにちは", Rect(40, 60, 200, 160), false))
+        val paths = listOf<suspend () -> String>(
+            { LlmEngine(s, glossary, cast).translate(listOf("こんにちは"), SourceLang.JA).single() },
+            { VisionLlmEngine(s, glossary, cast).translatePage(page, SourceLang.JA, anchors).single().en },
+        )
+        try {
+            for (read in paths) {
+                // Answered in time, the page teaches what it established...
+                newSeries.set(false)
+                assertEquals("Hello.", read())
+                assertEquals("Kaito", glossary.snapshot()["海斗"])
+                assertEquals("he", cast.snapshot()["Kaito"]?.pronoun)
+                assertEquals(listOf("Kaito: Hello."), StoryContext.snapshot())
+                glossary.clear()
+                cast.clear()
+                StoryContext.reset()
+
+                // ...answered after the reader moved on, it still translates
+                // its own page, and teaches the new series nothing.
+                newSeries.set(true)
+                assertEquals("Hello.", read())
+                assertTrue(glossary.snapshot().isEmpty())
+                assertTrue(cast.snapshot().isEmpty())
+                assertTrue(StoryContext.snapshot().isEmpty())
+            }
+        } finally {
+            glossary.clear()
+            cast.clear()
+            StoryContext.reset()
+        }
+    }
+
+    @Test
+    fun `a retired gemini model falls back to the newest flash on the text path too`() = runBlocking {
+        val retired = "gemini-2.5-retired-test"
+        val srv = serve { ex ->
+            when {
+                ex.target.contains(retired) ->
+                    ex.respond(404, "{\"error\":{\"code\":404,\"message\":\"models/$retired is not found\"}}")
+                ex.target.contains("alt=sse") -> {
+                    ex.startEvents()
+                    ex.event(answer("{\"bubbles\":[]}"))
+                }
+                else -> ex.respond(200, answer("{\"bubbles\":[]}"))
+            }
+        }
+        val s = settings(LlmProvider.GEMINI, retired)
+        assertEquals("{\"bubbles\":[]}", LlmHttp.complete(s, "SYS", "STABLE", emptyList(), "PAGE", "low", vision = false))
+        val deltas = ArrayList<String>()
+        val streamed = LlmHttp.complete(s, "SYS", "STABLE", emptyList(), "PAGE", "low", vision = false) { deltas += it }
+        assertEquals("{\"bubbles\":[]}", streamed)
+        assertEquals(listOf(streamed), deltas)
+        // Asked once; after that the retired model is skipped outright.
+        assertEquals(listOf(retired, GeminiApi.FALLBACK_MODEL, GeminiApi.FALLBACK_MODEL), srv.exchanges.map { modelOf(it.target) })
+        // The fallback's request is built for the fallback: a thinking level, not the old model's budget.
+        val config = JSONObject(srv.exchanges[1].body).getJSONObject("generationConfig")
+        assertTrue(config.getJSONObject("thinkingConfig").has("thinkingLevel"))
+        assertFalse(config.has("temperature"))
+    }
+
+    @Test
+    fun `a pasted key is cleaned on the compatible path too, and one of nothing but invisibles is no key`() = runBlocking {
+        val srv = FakeHttpServer { ex -> ex.respond(200, "{\"choices\":[{\"message\":{\"content\":\"ok\"}}]}") }.also { server = it }
+        val s = AppSettings(provider = LlmProvider.CUSTOM, model = "m", customUrl = srv.base + "chat", apiKey = "\u200bSECRETKEY ")
+        assertEquals("ok", LlmHttp.complete(s, "SYS", "STABLE", emptyList(), "PAGE", "low", vision = false))
+        assertEquals("Bearer SECRETKEY", srv.exchanges.single().headers["authorization"])
+        try {
+            LlmHttp.requireConfig(settings(LlmProvider.GEMINI, "").copy(apiKey = "\u200b\u00a0"))
+            fail("expected no key")
+        } catch (e: RuntimeException) {
+            assertEquals("No API key set for Gemini", e.message)
+        }
+    }
+
+    @Test
+    fun `what is missing before the AI can be asked is said as what to add`() {
+        assertEquals("Add your Gemini key in MangaLens", LlmHttp.setupNeeded(AppSettings()))
+        assertEquals(
+            "Add your Gemini key in MangaLens",
+            LlmHttp.setupNeeded(settings(LlmProvider.GEMINI, "").copy(apiKey = "​ ")),
+        )
+        assertEquals("Add your Claude key in MangaLens", LlmHttp.setupNeeded(settings(LlmProvider.ANTHROPIC, "").copy(apiKey = "")))
+        assertNull(LlmHttp.setupNeeded(settings(LlmProvider.GEMINI, "")))
+        // A local server may take no key at all; it only needs its address.
+        assertEquals("Add your AI endpoint in MangaLens", LlmHttp.setupNeeded(AppSettings(provider = LlmProvider.CUSTOM)))
+        assertNull(LlmHttp.setupNeeded(AppSettings(provider = LlmProvider.CUSTOM, customUrl = "http://127.0.0.1/v1/chat")))
+    }
+
+    /** A call that holds on to its callback, so a test decides when the response lands. */
+    private class HeldCall(private val request: Request) : Call {
+        @Volatile
+        var callback: Callback? = null
+
+        override fun request(): Request = request
+        override fun execute(): Response = throw UnsupportedOperationException()
+        override fun enqueue(responseCallback: Callback) {
+            callback = responseCallback
+        }
+        override fun cancel() = Unit
+        override fun isExecuted(): Boolean = callback != null
+        override fun isCanceled(): Boolean = false
+        override fun timeout(): Timeout = Timeout.NONE
+        override fun clone(): Call = HeldCall(request)
+    }
+
+    @Test
+    fun `a response that lands just as its caller is cancelled is closed, not leaked`() = runBlocking {
+        val request = Request.Builder().url("http://127.0.0.1/").build()
+        val call = HeldCall(request)
+        var closed = false
+        val source = object : ForwardingSource(Buffer().writeUtf8("{}")) {
+            override fun close() {
+                closed = true
+                super.close()
+            }
+        }.buffer()
+        val body = object : ResponseBody() {
+            override fun contentType(): MediaType? = null
+            override fun contentLength(): Long = -1L
+            override fun source(): BufferedSource = source
+        }
+        val response = Response.Builder().request(request).protocol(Protocol.HTTP_1_1).code(200).message("OK").body(body).build()
+        val waiting = launch { LlmHttp.await(call).close() }
+        yield()
+        // The response is handed over, and the caller is cancelled before it
+        // gets to run again: the response never reaches it.
+        call.callback!!.onResponse(call, response)
+        waiting.cancel()
+        waiting.join()
+        assertTrue("the dropped response was closed", closed)
+    }
+
+    @Test
+    fun `cancelling a streamed reply from a compatible server aborts it at once`() = runBlocking {
+        val srv = FakeHttpServer { ex ->
+            ex.startEvents()
+            ex.awaitHangUp()
+        }.also { server = it }
+        val s = AppSettings(provider = LlmProvider.CUSTOM, model = "m", customUrl = srv.base + "chat")
+        // Its own scope: were the cancel lost, the stuck read must not hold the test up.
+        val reading = CoroutineScope(Dispatchers.IO).async {
+            LlmHttp.complete(s, "SYS", "STABLE", emptyList(), "PAGE", "low", vision = false) { }
+        }
+        withTimeout(5_000) { while (srv.exchanges.isEmpty()) delay(10) }
+        delay(200)
+        val t0 = System.nanoTime()
+        reading.cancel()
+        withTimeout(3_000) { reading.join() }
+        val ms = (System.nanoTime() - t0) / 1_000_000
+        assertTrue("cancel took $ms ms", ms < 1_000)
     }
 }

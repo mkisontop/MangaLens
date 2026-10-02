@@ -2,9 +2,7 @@ package app.mangalens.overlay
 
 import android.annotation.SuppressLint
 import android.content.Context
-import android.graphics.Color
 import android.graphics.PixelFormat
-import android.graphics.drawable.GradientDrawable
 import android.os.Build
 import android.view.Gravity
 import android.view.HapticFeedbackConstants
@@ -13,11 +11,15 @@ import android.view.View
 import android.view.WindowManager
 import android.widget.LinearLayout
 import android.widget.TextView
+import androidx.core.view.ViewCompat
+import app.mangalens.R
 import kotlin.math.abs
 
 /**
  * Owns the three overlay windows: the untouchable full-screen result layer, the
  * draggable floating button with its status pill, and the long-press quick menu.
+ * The result layer goes through [LetteringHost] when it is connected, so it is
+ * drawn at full strength; see [placeLettering].
  * All methods must be called from the main thread.
  */
 class OverlayController(private val context: Context, private val listener: Listener) {
@@ -27,15 +29,25 @@ class OverlayController(private val context: Context, private val listener: List
         fun onTogglePause()
         fun onToggleMode()
         fun onPeek()
-        /** Turn the manhwa night mode — dark gaps between panels — on or off. */
-        fun onToggleDarkGaps()
         /** Forget this series' glossary, cast and story so far, and start fresh. */
         fun onNewSeries()
         fun onOpenSettings()
         fun onStopRequested()
         fun isPaused(): Boolean
         fun isAutoMode(): Boolean
-        fun isDarkGapsOn(): Boolean
+
+        /** Starts auto-scroll, or stops it. */
+        fun onToggleAutoScroll() {}
+
+        /** Auto-scroll [step] levels faster (or slower, below zero). */
+        fun onScrollSpeed(step: Int) {}
+
+        fun isAutoScrolling(): Boolean = false
+
+        /** Turn the manhwa night mode — dark gaps between panels — on or off. */
+        fun onToggleDarkGaps() {}
+
+        fun isDarkGapsOn(): Boolean = false
     }
 
     private val wm = context.getSystemService(WindowManager::class.java)
@@ -47,77 +59,144 @@ class OverlayController(private val context: Context, private val listener: List
 
     private var controls: LinearLayout? = null
     private var button: FloatingButtonView? = null
+    private var scrollButton: ScrollButtonView? = null
+    private var slower: ScrollButtonView? = null
+    private var faster: ScrollButtonView? = null
+    private var scrollShown = true
+    private var scrolling = false
     private var pill: TextView? = null
     private var menu: LinearLayout? = null
     private var controlsLp: WindowManager.LayoutParams? = null
     private var attached = false
     private val hidePill = Runnable { pill?.visibility = View.GONE }
 
+    /** The window manager [bubbleView] is in, [LetteringHost]'s or [wm]; null while it is in neither. */
+    private var letteringWm: WindowManager? = null
+
+    /**
+     * Whether the lettering is drawn over the controls: always from the
+     * accessibility layer, which sits above every app overlay, and from ours
+     * once it has been added again after them. It then keeps their
+     * footprint bare (see [BubbleOverlayView.keepClear]).
+     */
+    private var letteringOverControls = false
+
+    private val hostChanged: () -> Unit = { if (attached) placeLettering() }
+
     /**
      * Called on the main thread whenever the screen area the controls
      * occupy changes: the pill comes or goes or is re-measured, the button
-     * is dragged, the menu opens or closes. The capture loop masks that
-     * area out of its comparisons and must learn of every change before
-     * the frame that shows it is drawn — which is why the row's own layout
-     * pass reports it, ahead of that frame's draw.
+     * is dragged, the menu opens, is laid out or closes. The capture loop
+     * masks that area out of its comparisons and must learn of every change
+     * before the frame that shows it is drawn — which is why the row's and
+     * the menu's own layout passes report it, ahead of that frame's draw.
      */
     var onFootprintChanged: (() -> Unit)? = null
+
+    /**
+     * Whether the quick menu is open. Auto-scroll waits while it is: any
+     * touch outside the menu closes it, the drag's own strokes included.
+     */
+    val menuOpen: Boolean get() = menu != null
 
     private fun dp(v: Float): Int = (v * context.resources.displayMetrics.density).toInt()
 
     fun attach() {
         if (attached) return
-        val shadeLp = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.MATCH_PARENT,
-            WindowManager.LayoutParams.MATCH_PARENT,
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
-                // Redrawn every frame while the page moves: that belongs on the GPU.
-                WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
-            PixelFormat.TRANSLUCENT
-        )
-        shadeLp.gravity = Gravity.TOP or Gravity.START
-        if (Build.VERSION.SDK_INT >= 28) {
-            shadeLp.layoutInDisplayCutoutMode =
-                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
-        }
-        // Off until the reader turns dark gaps on: a hidden window costs the compositor nothing.
-        shadeView.visibility = View.GONE
-        wm.addView(shadeView, shadeLp)
+        addShadeWindow()
+        placeLettering()
+        buildControls()
+        LetteringHost.addListener(hostChanged)
+        attached = true
+    }
 
-        val bubbleLp = WindowManager.LayoutParams(
+    fun detach() {
+        if (!attached) return
+        LetteringHost.removeListener(hostChanged)
+        dismissMenu()
+        watchTouches(false) {}
+        letteringWm?.let { w -> runCatching { w.removeView(bubbleView) } }
+        letteringWm = null
+        runCatching { wm.removeView(shadeView) }
+        controls?.let { runCatching { wm.removeView(it) } }
+        controls = null
+        onFootprintChanged = null
+        attached = false
+    }
+
+    /**
+     * Puts the lettering in the best window there is, and moves it there
+     * whenever [LetteringHost] comes or goes. Since Android 12 an ordinary
+     * overlay that lets touches through is drawn at no more than 80%
+     * opacity, which leaves a grey ghost of the original in every cleaned
+     * balloon and turns black ink dark grey. An accessibility overlay is a
+     * trusted window, drawn exactly as painted, so while the host is
+     * connected the lettering goes there; otherwise, or if the host turns
+     * the window down, it is an ordinary overlay as before.
+     *
+     * On a move the view leaves its window at once, so it is gone from the
+     * old window before it joins the new one; the system may already have
+     * taken that window down along with an unbound service. Added after the
+     * controls, or from the host's layer, the lettering is drawn over them.
+     */
+    private fun placeLettering() {
+        val host = LetteringHost.windowManager
+        val current = letteringWm
+        if (current != null && current === (host ?: wm)) return
+        current?.let { old -> runCatching { old.removeViewImmediate(bubbleView) } }
+        val strength = OverlayStrength.of(context)
+        val placed = when {
+            host != null && runCatching {
+                host.addView(bubbleView, letteringParams(WindowManager.LayoutParams.TYPE_ACCESSIBILITY_OVERLAY, 1f))
+            }.isSuccess -> host
+            runCatching {
+                wm.addView(bubbleView, letteringParams(WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY, strength))
+            }.isSuccess -> wm
+            else -> null
+        }
+        bubbleView.windowAlpha = if (placed != null && placed === host) 1f else strength
+        letteringWm = placed
+        letteringOverControls = (host != null && placed === host) || controls != null
+        footprintChanged()
+    }
+
+    /**
+     * The lettering's window: full screen in screen coordinates, never
+     * focused or touched, drawn at [alpha]. An app overlay is asked for
+     * exactly the strength Android allows one that lets touches through
+     * ([OverlayStrength]) rather than left for the system to cut back, so
+     * the view knows the strength it is drawn at. New each time, since
+     * adding a window writes the token of the window manager it goes
+     * through into its parameters.
+     */
+    private fun letteringParams(type: Int, alpha: Float): WindowManager.LayoutParams {
+        val lp = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
             WindowManager.LayoutParams.MATCH_PARENT,
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            type,
             WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
                 WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
                 WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                 WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS,
             PixelFormat.TRANSLUCENT
         )
-        bubbleLp.gravity = Gravity.TOP or Gravity.START
+        lp.gravity = Gravity.TOP or Gravity.START
+        lp.alpha = alpha
         if (Build.VERSION.SDK_INT >= 28) {
-            bubbleLp.layoutInDisplayCutoutMode =
+            lp.layoutInDisplayCutoutMode =
                 WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
         }
-        wm.addView(bubbleView, bubbleLp)
-        buildControls()
-        attached = true
+        return lp
     }
 
-    fun detach() {
-        if (!attached) return
-        dismissMenu()
-        watchTouches(false) {}
-        runCatching { wm.removeView(bubbleView) }
-        runCatching { wm.removeView(shadeView) }
-        controls?.let { runCatching { wm.removeView(it) } }
-        controls = null
-        onFootprintChanged = null
-        attached = false
+    /**
+     * The controls moved, grew, shrank, or opened or closed the menu. The
+     * lettering keeps off them if it is drawn over them, and the capture
+     * loop hears of it (see [onFootprintChanged]).
+     */
+    private fun footprintChanged() {
+        bubbleView.keepClear = if (letteringOverControls) overlayExclusions() else emptyList()
+        onFootprintChanged?.invoke()
     }
 
     /**
@@ -129,17 +208,44 @@ class OverlayController(private val context: Context, private val listener: List
         val lp = controlsLp
         val row = controls
         if (lp != null && row != null) {
-            val w = if (row.width > 0) row.width else dp(220f)
+            val w = if (row.width > 0) row.width else dp(260f)
             val h = if (row.height > 0) row.height else dp(52f)
             val m = dp(6f)
             out.add(android.graphics.Rect(lp.x - m, lp.y - m, lp.x + w + m, lp.y + h + m))
             menu?.let { mv ->
-                val mw = if (mv.width > 0) mv.width else dp(220f)
-                val mh = if (mv.height > 0) mv.height else dp(280f)
+                val mw = if (mv.width > 0) mv.width else dp(240f)
+                val mh = if (mv.height > 0) mv.height else dp(380f)
                 out.add(android.graphics.Rect(lp.x - m, lp.y + dp(58f) - m, lp.x + mw + m, lp.y + dp(58f) + mh + m))
             }
         }
         return out
+    }
+
+    /**
+     * The window the dark gaps are drawn in: full screen, untouchable, hardware accelerated
+     * because it is redrawn every frame while the page moves. Off until the reader turns dark
+     * gaps on: a hidden window costs the compositor nothing. Added before anything else so the
+     * lettering and the controls are drawn on top of it.
+     */
+    private fun addShadeWindow() {
+        val lp = WindowManager.LayoutParams(
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.MATCH_PARENT,
+            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
+            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
+                WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
+            PixelFormat.TRANSLUCENT
+        )
+        lp.gravity = Gravity.TOP or Gravity.START
+        if (Build.VERSION.SDK_INT >= 28) {
+            lp.layoutInDisplayCutoutMode =
+                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
+        }
+        shadeView.visibility = View.GONE
+        wm.addView(shadeView, lp)
     }
 
     /**
@@ -184,7 +290,7 @@ class OverlayController(private val context: Context, private val listener: List
             p.visibility = View.GONE
             return
         }
-        p.text = text
+        OverlayStyle.showStatus(p, text)
         p.visibility = View.VISIBLE
         if (autoHideMs > 0) p.postDelayed(hidePill, autoHideMs)
     }
@@ -193,15 +299,54 @@ class OverlayController(private val context: Context, private val listener: List
         button?.setPaused(paused)
     }
 
+    /** Tap-to-translate mode: a tap on the button then translates the page. */
+    fun setManual(manual: Boolean) {
+        button?.setManual(manual)
+    }
+
     /** Sweeps the busy ring on the button while a translation pass runs. */
     fun setBusy(busy: Boolean) {
         button?.setBusy(busy)
     }
 
-    private fun rounded(color: Int, radiusDp: Float) = GradientDrawable().apply {
-        shape = GradientDrawable.RECTANGLE
-        cornerRadius = dp(radiusDp).toFloat()
-        setColor(color)
+    /**
+     * Whether auto-scroll's button is offered beside 文A. It stays while
+     * the page is moving, whatever the setting says: it is how the page is
+     * stopped.
+     */
+    fun setScrollButtonShown(shown: Boolean) {
+        scrollShown = shown
+        showScroll()
+    }
+
+    /** Auto-scroll started or stopped: the button says which, and the speed buttons come and go. */
+    fun setAutoScrolling(running: Boolean) {
+        scrolling = running
+        showScroll()
+    }
+
+    private fun showScroll() {
+        scrollButton?.let {
+            it.glyph = if (scrolling) ScrollButtonView.Glyph.PAUSE else ScrollButtonView.Glyph.SCROLL
+            it.visibility = if (scrollShown || scrolling) View.VISIBLE else View.GONE
+        }
+        val speed = if (scrolling) View.VISIBLE else View.GONE
+        slower?.visibility = speed
+        faster?.visibility = speed
+    }
+
+    /**
+     * What a tap on the button does. Paused, it wakes translation up. In
+     * hands-free mode it pauses; in tap-to-translate mode it translates the
+     * page, because there a pause would do nothing the reader can see and
+     * the home screen tells them the tap translates.
+     */
+    private fun onTap() {
+        when {
+            listener.isPaused() -> listener.onTogglePause()
+            listener.isAutoMode() -> listener.onTogglePause()
+            else -> listener.onTranslateNow()
+        }
     }
 
     @SuppressLint("ClickableViewAccessibility")
@@ -212,26 +357,23 @@ class OverlayController(private val context: Context, private val listener: List
         }
         val btn = FloatingButtonView(context).apply {
             layoutParams = LinearLayout.LayoutParams(dp(52f), dp(52f))
-            elevation = dp(4f).toFloat()
         }
-        val status = TextView(context).apply {
-            setTextColor(Color.WHITE)
-            textSize = 11f
-            maxLines = 2
-            setPadding(dp(10f), dp(5f), dp(10f), dp(5f))
-            background = rounded(0xD0202233.toInt(), 14f)
-            visibility = View.GONE
-            val lp = LinearLayout.LayoutParams(
-                LinearLayout.LayoutParams.WRAP_CONTENT,
-                LinearLayout.LayoutParams.WRAP_CONTENT
-            )
-            lp.marginStart = dp(6f)
-            layoutParams = lp
+        btn.setOnClickListener { v ->
+            v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+            btn.playTapPulse()
+            onTap()
         }
+        // Long-press is a touch gesture only; screen readers get the menu as an action.
+        ViewCompat.addAccessibilityAction(btn, "Open quick menu") { _, _ ->
+            showMenu()
+            true
+        }
+        val status = OverlayStyle.statusPill(context).apply { visibility = View.GONE }
         row.addView(btn)
+        for (v in buildScrollButtons()) row.addView(v)
         row.addView(status)
         row.addOnLayoutChangeListener { _, l, t, r, b, oldL, oldT, oldR, oldB ->
-            if (l != oldL || t != oldT || r != oldR || b != oldB) onFootprintChanged?.invoke()
+            if (l != oldL || t != oldT || r != oldR || b != oldB) footprintChanged()
         }
 
         val lp = WindowManager.LayoutParams(
@@ -277,16 +419,12 @@ class OverlayController(private val context: Context, private val listener: List
                         lp.x = startX + dx.toInt()
                         lp.y = startY + dy.toInt()
                         controls?.let { c -> runCatching { wm.updateViewLayout(c, lp) } }
-                        onFootprintChanged?.invoke()
+                        footprintChanged()
                     }
                 }
                 MotionEvent.ACTION_UP -> {
                     v.removeCallbacks(longPress)
-                    if (!moved && System.currentTimeMillis() - downTime < 450) {
-                        v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
-                        btn.playTapPulse()
-                        listener.onTogglePause()
-                    }
+                    if (!moved && System.currentTimeMillis() - downTime < 450) v.performClick()
                 }
                 MotionEvent.ACTION_CANCEL -> v.removeCallbacks(longPress)
             }
@@ -300,41 +438,31 @@ class OverlayController(private val context: Context, private val listener: List
         controlsLp = lp
     }
 
+    /** Auto-scroll's start/stop button and its speed buttons, which show only while the page moves. */
+    private fun buildScrollButtons(): List<View> {
+        fun button(glyph: ScrollButtonView.Glyph, size: Float, action: () -> Unit) =
+            ScrollButtonView(context, glyph).apply {
+                layoutParams = LinearLayout.LayoutParams(dp(size), dp(size)).apply { marginStart = dp(2f) }
+                setOnClickListener { v ->
+                    v.performHapticFeedback(HapticFeedbackConstants.KEYBOARD_TAP)
+                    action()
+                }
+            }
+        val go = button(ScrollButtonView.Glyph.SCROLL, 44f) { listener.onToggleAutoScroll() }
+        val down = button(ScrollButtonView.Glyph.SLOWER, 36f) { listener.onScrollSpeed(-1) }
+        val up = button(ScrollButtonView.Glyph.FASTER, 36f) { listener.onScrollSpeed(+1) }
+        scrollButton = go
+        slower = down
+        faster = up
+        scrolling = listener.isAutoScrolling()
+        showScroll()
+        return listOf(go, down, up)
+    }
+
     private fun showMenu() {
         if (menu != null) return
         val lpControls = controlsLp ?: return
-        val col = LinearLayout(context).apply {
-            orientation = LinearLayout.VERTICAL
-            background = rounded(0xF01B1C2E.toInt(), 12f)
-            elevation = dp(8f).toFloat()
-            setPadding(0, dp(4f), 0, dp(4f))
-        }
-
-        fun item(label: String, action: () -> Unit) {
-            col.addView(TextView(context).apply {
-                text = label
-                setTextColor(Color.WHITE)
-                textSize = 13f
-                setPadding(dp(16f), dp(10f), dp(16f), dp(10f))
-                setOnClickListener {
-                    dismissMenu()
-                    action()
-                }
-            })
-        }
-
-        item("⚡  Translate now") { listener.onTranslateNow() }
-        item(if (listener.isPaused()) "▶  Resume live mode" else "⏸  Pause") { listener.onTogglePause() }
-        item(if (listener.isAutoMode()) "✋  Switch to tap-to-translate" else "🔄  Switch to auto-live") {
-            listener.onToggleMode()
-        }
-        item("👁  Peek at original (4 s)") { listener.onPeek() }
-        item(if (listener.isDarkGapsOn()) "🌙  Dark gaps: on — tap to turn off" else "🌙  Dark gaps between panels") {
-            listener.onToggleDarkGaps()
-        }
-        item("📖  New series — forget names so far") { listener.onNewSeries() }
-        item("⚙  Settings") { listener.onOpenSettings() }
-        item("✕  Stop translating") { listener.onStopRequested() }
+        val col = buildQuickMenu(context, listener) { dismissMenu() }
 
         val lp = WindowManager.LayoutParams(
             WindowManager.LayoutParams.WRAP_CONTENT,
@@ -355,16 +483,66 @@ class OverlayController(private val context: Context, private val listener: List
                 true
             } else false
         }
+        // Until its first layout the menu's footprint is an estimate; report the real one.
+        col.addOnLayoutChangeListener { _, l, t, r, b, oldL, oldT, oldR, oldB ->
+            if (menu === col && (l != oldL || t != oldT || r != oldR || b != oldB)) footprintChanged()
+        }
 
         wm.addView(col, lp)
         menu = col
-        onFootprintChanged?.invoke()
+        footprintChanged()
+    }
+
+    companion object {
+        /**
+         * The quick menu's panel with every item wired to [listener]; a
+         * picked item first calls [dismiss]. Built apart from the window so
+         * it can be drawn on its own.
+         */
+        internal fun buildQuickMenu(context: Context, listener: Listener, dismiss: () -> Unit): LinearLayout {
+            val col = OverlayStyle.menuPanel(context)
+            fun item(label: String, icon: Int, color: Int = OverlayStyle.MENU_INK, action: () -> Unit) {
+                col.addView(OverlayStyle.menuRow(context, label, icon, color).apply {
+                    setOnClickListener {
+                        dismiss()
+                        action()
+                    }
+                })
+            }
+            item("Translate this page", R.drawable.ic_menu_bolt) { listener.onTranslateNow() }
+            if (listener.isPaused()) {
+                item("Wake up (resume)", R.drawable.ic_menu_play) { listener.onTogglePause() }
+            } else {
+                item("Pause for a nap", R.drawable.ic_menu_pause) { listener.onTogglePause() }
+            }
+            if (listener.isAutoScrolling()) {
+                item("Stop auto-scroll", R.drawable.ic_menu_pause) { listener.onToggleAutoScroll() }
+            } else {
+                item("Auto-scroll the page", R.drawable.ic_menu_scroll) { listener.onToggleAutoScroll() }
+            }
+            if (listener.isAutoMode()) {
+                item("Switch to tap-to-translate", R.drawable.ic_menu_tap) { listener.onToggleMode() }
+            } else {
+                item("Switch to hands-free", R.drawable.ic_menu_hands_free) { listener.onToggleMode() }
+            }
+            item("Peek at the original (4 s)", R.drawable.ic_menu_peek) { listener.onPeek() }
+            if (listener.isDarkGapsOn()) {
+                item("Dark gaps: on, tap to turn off", R.drawable.ic_menu_moon) { listener.onToggleDarkGaps() }
+            } else {
+                item("Dark gaps between panels", R.drawable.ic_menu_moon) { listener.onToggleDarkGaps() }
+            }
+            item("New series: forget names", R.drawable.ic_menu_book) { listener.onNewSeries() }
+            item("Tweaks", R.drawable.ic_menu_tweaks) { listener.onOpenSettings() }
+            col.addView(OverlayStyle.menuDivider(context))
+            item("Stop translating", R.drawable.ic_menu_stop, OverlayStyle.MENU_STOP) { listener.onStopRequested() }
+            return col
+        }
     }
 
     fun dismissMenu() {
         val open = menu ?: return
         runCatching { wm.removeView(open) }
         menu = null
-        onFootprintChanged?.invoke()
+        footprintChanged()
     }
 }

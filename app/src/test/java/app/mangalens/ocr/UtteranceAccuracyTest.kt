@@ -60,6 +60,10 @@ class UtteranceAccuracyTest {
         Case("そうだな", "行こうか", SourceLang.JA, false, "な is a sentence-final particle"),
         Case("きれいだね", "ほんとに", SourceLang.JA, false, "ね closes the line"),
         Case("いいよ", "ありがとう", SourceLang.JA, false, "よ closes the line"),
+        Case("뭐야", "누구세요", SourceLang.KO, false, "야 is the banmal copula, closing the line"),
+        Case("민수야", "왜", SourceLang.KO, false, "야 is a vocative, then a reply"),
+        Case("빨리 가라", "싫어", SourceLang.KO, false, "라 is an imperative ending"),
+        Case("맛있더라", "그래?", SourceLang.KO, false, "-더라 closes a recollection"),
     )
 
     /** Stacks the pair as two balloons in one panel, close enough to link. */

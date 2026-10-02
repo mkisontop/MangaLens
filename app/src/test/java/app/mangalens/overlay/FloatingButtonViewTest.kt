@@ -59,4 +59,16 @@ class FloatingButtonViewTest {
         v.setPaused(false)
         assertEquals("Translation on: tap to pause", v.contentDescription)
     }
+
+    @Test
+    fun `in tap-to-translate mode the button says a tap translates`() {
+        val v = FloatingButtonView(RuntimeEnvironment.getApplication())
+        v.setManual(true)
+        assertEquals("Tap to translate this page", v.contentDescription)
+        v.setPaused(true)
+        assertEquals("Translation paused: tap to resume", v.contentDescription)
+        v.setPaused(false)
+        v.setManual(false)
+        assertEquals("Translation on: tap to pause", v.contentDescription)
+    }
 }
