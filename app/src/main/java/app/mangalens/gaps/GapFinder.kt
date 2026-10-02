@@ -94,6 +94,9 @@ object GapFinder {
 
     private const val MAX_RECTS = 6000
 
+    /** Thickest band of full-width paper rows that is a seam between images rather than a gutter. */
+    private const val MAX_SEAM = 6
+
     /** Side of the blocks the art check counts, in plane pixels, and the share of one that must be ink. */
     private const val ART_BLOCK = 16
     private const val ART_DENSITY = 55
@@ -139,10 +142,12 @@ object GapFinder {
             val right = labels.maxX[c] >= reachR
             if ((left && right) || ((left || right) && labels.maxRun[c] >= wideMin)) picked.add(c)
         }
-        if (picked.isEmpty()) return GapResult(IntArray(0), 0, 0L, sawArt, 0)
+        val seams = seamRows(planes, colL, colR, edge)
+        if (picked.isEmpty() && seams == null) return GapResult(IntArray(0), 0, 0L, sawArt, 0)
 
         val seed = BitPlane(w, h)
         for (c in picked) labels.paintComponent(c, seed)
+        if (seams != null) seed.or(seams)
         var gutter = seed.copy().dilate(sealR).and(planes.paper)
 
         // 4. Everything that is not gutter, labelled eight-connected.
@@ -215,10 +220,15 @@ object GapFinder {
         if (!halo3.isEmpty()) halo.or(halo3.dilate(radius(HALO_LARGE, step)))
 
         // 5. Drop gutters the margins swallow.
-        var kept = picked.size
+        val extra = if (seams != null) 1 else 0
+        var kept = picked.size + extra
         if (!halo.isEmpty()) {
             val keepSeed = BitPlane(w, h)
             kept = 0
+            if (seams != null) {
+                keepSeed.or(seams)
+                kept++
+            }
             for (c in picked) {
                 var coreArea = 0L
                 var haloed = 0L
@@ -231,7 +241,7 @@ object GapFinder {
                     kept++
                 }
             }
-            if (kept < picked.size) gutter = keepSeed.dilate(sealR).and(planes.paper)
+            if (kept < picked.size + extra) gutter = keepSeed.dilate(sealR).and(planes.paper)
         }
         if (kept == 0) return GapResult(IntArray(0), 0, 0L, sawArt, 0)
 
@@ -250,6 +260,44 @@ object GapFinder {
         }
 
         return extractRects(shade, step, planes.frameW, planes.frameH, kept)
+    }
+
+    /**
+     * Hairline seams: the one to six rows of white that fractional scaling leaves between two
+     * stacked images. Too thin to survive the seal, they would stay lit across the whole width
+     * of the screen. A row that is paper from one edge of the reading column to the other can
+     * only be a gutter, whatever its thickness, so thin bands of such rows are taken as one
+     * (thicker ones are the business of the labelling above, and the gaps between lines of
+     * lettering are kept clear by the margins). Only the exact pass looks: a coarse row would
+     * take in a row of art with the seam.
+     */
+    private fun seamRows(planes: Planes, colL: Int, colR: Int, edge: Int): BitPlane? {
+        if (planes.step != 1) return null
+        val w = planes.w
+        val lo = colL + edge
+        val hi = w - colR - edge
+        var seams: BitPlane? = null
+        var y = planes.validY0
+        while (y < planes.validY1) {
+            if (!spansRow(planes.paper, y, lo, hi)) {
+                y++
+                continue
+            }
+            var end = y + 1
+            while (end < planes.validY1 && spansRow(planes.paper, end, lo, hi)) end++
+            if (end - y <= MAX_SEAM) {
+                val plane = seams ?: BitPlane(w, planes.h).also { seams = it }
+                for (r in y until end) planes.paper.forEachRun(r) { a, b -> if (a <= lo && b >= hi) plane.setRun(r, a, b) }
+            }
+            y = end
+        }
+        return seams
+    }
+
+    private fun spansRow(paper: BitPlane, y: Int, lo: Int, hi: Int): Boolean {
+        var spans = false
+        paper.forEachRun(y) { a, b -> if (a <= lo && b >= hi) spans = true }
+        return spans
     }
 
     /**

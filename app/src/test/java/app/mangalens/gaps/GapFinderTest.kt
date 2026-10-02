@@ -184,12 +184,23 @@ class GapFinderTest {
     }
 
     @Test
-    fun `a thin white line of art inside a panel is not mistaken for a gutter`() {
+    fun `a thin white line that stops short of the edge is not mistaken for a gutter`() {
+        val s = Strip(w, h)
+        s.art(0, 0, w, h)
+        s.solid(40, 600, w - 40, 603, Strip.WHITE)
+        val f = find(s.px)
+        assertEquals(0, f.result.rectCount)
+    }
+
+    @Test
+    fun `a thin white line right across the screen is a seam, and the art either side is left alone`() {
+        // Indistinguishable from the hairline between two stacked images, and harmless to shade.
         val s = Strip(w, h)
         s.art(0, 0, w, h)
         s.solid(0, 600, w, 603, Strip.WHITE)
         val f = find(s.px)
-        assertEquals(0, f.result.rectCount)
+        assertNoDamage(f, "seam")
+        for (y in 600 until 603) for (x in 0 until w) assertTrue("seam pixel ($x,$y)", f.isCovered(x, y))
     }
 
     @Test
@@ -514,5 +525,39 @@ class GapFinderTest {
         val f = find(s.px)
         assertNoDamage(f, "cut letter")
         assertLetteringStaysOnLight(f, w - 40, 540, w, 620, 6)
+    }
+
+    @Test
+    fun `hairline seams between stacked images are shaded and no art goes with them`() {
+        val s = Strip(w, h)
+        var y = 0
+        var k = 0
+        val widths = intArrayOf(1, 2, 3, 4)
+        val seams = ArrayList<IntRange>()
+        while (y < h) {
+            val ph = 200 + (k * 37) % 80
+            s.art(0, y, w, minOf(h, y + ph))
+            y += ph
+            val t = widths[k % widths.size]
+            if (y + t < h) {
+                s.solid(0, y, w, y + t, Strip.WHITE)
+                seams.add(y until y + t)
+            }
+            y += t
+            k++
+        }
+        val f = find(s.px)
+        assertNoDamage(f, "seams")
+        for (r in seams) for (row in r) for (x in 0 until w) assertTrue("seam pixel ($x,$row) left lit", f.isCovered(x, row))
+    }
+
+    @Test
+    fun `the gaps between close lines of lettering are not turned into dark stripes`() {
+        val s = simpleStrip()
+        // five lines of block lettering, 16 rows tall at a pitch of 20: a 4-row gap between lines
+        for (line in 0 until 5) for (x in 80 until 640 step 18) s.solid(x, 450 + line * 20, x + 9, 466 + line * 20, Strip.BLACK)
+        val f = find(s.px)
+        assertNoDamage(f, "close lines")
+        assertLetteringStaysOnLight(f, 70, 440, 660, 560, 6)
     }
 }
