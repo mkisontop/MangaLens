@@ -167,13 +167,19 @@ object GapFinder {
             var paperCount = 0L
             var inkCount = 0L
             var coreCount = 0L
+            var faintCount = 0L
+            val faint = planes.faint
             rest.forEachSegment(c) { y, x0, x1 ->
                 paperCount += planes.paper.countRow(y, x0, x1)
                 inkCount += planes.ink.countRow(y, x0, x1)
                 coreCount += core.countRow(y, x0, x1)
+                if (faint != null) faintCount += faint.countRow(y, x0, x1)
             }
             when {
-                inkCount == 0L && a <= speckMax -> roles[c] = ROLE_SPECK
+                // A speck is dust: a few pixels too pale to be lettering. A grey hairline or a
+                // fleck of a light watermark is also not ink, but it is more than dust — and the
+                // shade reads it back as ink, so it must be protected here as it will be there.
+                inkCount == 0L && faintCount == 0L && a <= speckMax -> roles[c] = ROLE_SPECK
                 a >= artMin -> Unit
                 // A solid rectangle with hardly any paper in it: a panel, or a black narration box.
                 // (Not merely a full bounding box: a word of lettering fills its box too, with

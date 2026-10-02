@@ -64,6 +64,14 @@ class ShadeStyle(val level: ShadeLevel = ShadeLevel.DARK, val observedComposite:
     /** What pure white becomes under the shade. */
     val whiteComposite: Int = observedComposite ?: Math.round((1f - alpha) * 255f)
 
+    /**
+     * The lightest value a pixel can have, unshaded, and still read as paper once the shade is
+     * on it: the shaded-paper window opens at [sigLo], which is what this value becomes. Pixels
+     * lighter than it are the faintest ringing and read as paper through the shade; pixels below
+     * it, and above ink, are faint marks — hairlines, a light watermark — and read as ink.
+     */
+    val faintLight: Int = Math.ceil(255.0 * sigLo / maxOf(1, whiteComposite)).toInt().coerceIn(192, PAPER_MIN)
+
     fun isShadedPaper(p: Int): Boolean {
         val r = (p ushr 16) and 0xFF
         val g = (p ushr 8) and 0xFF
@@ -107,6 +115,13 @@ class Planes(
     val lum: ByteArray? = null,
     /** The top of the grey paper takes on under the shade: dark pixels up to this are candidates for a shaded edge. */
     val shadedHi: Int = 28,
+    /**
+     * Pixels that are neither paper nor ink but not near-paper either: some channel in 192..231,
+     * the grey of a hairline or of a light watermark. Under the shade they read as ink, so they
+     * must be told apart from the faintest ringing, which reads as paper under it. Null when the
+     * builder was not asked to keep them.
+     */
+    val faint: BitPlane? = null,
 ) {
     val w: Int get() = paper.w
     val h: Int get() = paper.h
@@ -136,11 +151,13 @@ object PlaneBuilder {
         val ph = (fh + step - 1) / step
         val paper = BitPlane(pw, ph)
         val ink = BitPlane(pw, ph)
+        val faint = BitPlane(pw, ph)
         val lum = if (step == 1) ByteArray(pw * ph) else null
         val row = IntArray(fw)
         val wpr = paper.wpr
         val lo = style.sigLo
         val hi = style.sigHi
+        val faintLight = style.faintLight
         for (py in 0 until ph) {
             val y = py * step
             if (y < ignoreTop || y >= fh - ignoreBottom) continue
@@ -149,6 +166,7 @@ object PlaneBuilder {
             for (k in 0 until wpr) {
                 var pv = 0L
                 var iv = 0L
+                var fv = 0L
                 val x0 = k shl 6
                 val n = minOf(64, pw - x0)
                 var x = x0 * step
@@ -171,15 +189,19 @@ object PlaneBuilder {
                         } else {
                             iv = iv or (1L shl i)
                         }
+                    } else if (((p ushr 16) and 0xFF) < faintLight || ((p ushr 8) and 0xFF) < faintLight || (p and 0xFF) < faintLight) {
+                        // light, but not light enough to pass for paper under the shade
+                        fv = fv or (1L shl i)
                     }
                 }
                 paper.bits[base + k] = pv
                 ink.bits[base + k] = iv
+                faint.bits[base + k] = fv
             }
         }
         val y0 = ((ignoreTop + step - 1) / step).coerceIn(0, ph)
         val y1 = ((fh - ignoreBottom + step - 1) / step).coerceIn(y0, ph)
-        return Planes(fw, fh, step, paper, ink, y0, y1, lum, style.sigHi)
+        return Planes(fw, fh, step, paper, ink, y0, y1, lum, style.sigHi, faint)
     }
 
     private fun inWindow(p: Int, lo: Int, hi: Int): Boolean {

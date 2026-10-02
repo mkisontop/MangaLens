@@ -222,4 +222,15 @@ class ShadeEngineTest {
         assertTrue("shade restored in full at rest: ${r.restCoverage}", r.restCoverage > 0.99)
         assertTrue("the engine learned the grey: ${sm.engine.style.whiteComposite}", sm.engine.style.whiteComposite in 80..100)
     }
+
+    @Test
+    fun `off-white grainy paper with soft edges is shaded in motion without covering art`() {
+        // paper at 245 with grain down to 242, a ramp at every edge: nothing a site's own JPEGs would not do
+        val grit = gritty(scrollStrip(w, seed = 31), paper = 245, grain = 3)
+        val sm = ShadeSimulation(grit, w, h, style, 1000.0 / 60, 16.0, 2, 25.0)
+        val r = sm.run(Scrolls.ramp(2000.0, 600.0, 150.0, 2000.0), 2300.0, touchLeadMs = touch)
+        report("gritty paper", r)
+        assertClean(r, "gritty", speed = 600.0)
+        assertTrue("shade present while moving: ${r.coverageMovingSum / r.coverageMovingN}", r.coverageMovingSum / r.coverageMovingN > 0.5)
+    }
 }

@@ -181,6 +181,15 @@ internal class ShadeSimulation(
         return report
     }
 
+    private fun nearPaper(page: IntArray, x: Int, y: Int, reach: Int): Boolean {
+        for (dy in -reach..reach) for (dx in -reach..reach) {
+            val xx = x + dx
+            val yy = y + dy
+            if (xx in 0 until w && yy in 0 until h && Strip.isPaper(page[yy * w + xx])) return true
+        }
+        return false
+    }
+
     private fun score(report: Report, page: IntArray, shown: Draw, k: Int, atRest: Boolean, moving: Boolean) {
         var damage = 0
         for (i in 0 until shown.count) {
@@ -188,7 +197,13 @@ internal class ShadeSimulation(
             val x1 = shown.rects[i * 4 + 2].coerceIn(0, w)
             val y0 = (shown.rects[i * 4 + 1] + shown.shift).coerceIn(0, h)
             val y1 = (shown.rects[i * 4 + 3] + shown.shift).coerceIn(0, h)
-            for (y in y0 until y1) for (x in x0 until x1) if (!Strip.isPaper(page[y * w + x])) damage++
+            for (y in y0 until y1) for (x in x0 until x1) {
+                if (Strip.isPaper(page[y * w + x])) continue
+                // At rest the exact pass takes in the anti-aliased edge of the art on purpose: a pixel
+                // of ramp within three of paper is the edge, not damage. In motion nothing is tolerated.
+                if (atRest && nearPaper(page, x, y, 3)) continue
+                damage++
+            }
         }
         if (damage > 0) {
             report.damagedFrames++
@@ -246,6 +261,40 @@ internal fun scrollStrip(w: Int, seed: Long = 11): Strip {
         n++
     }
     return s
+}
+
+/**
+ * [scrollStrip], made harder the way real pages are: the paper is off-white and grainy, the
+ * edges of the art are soft (a ramp of two or three greys rather than a cliff), and the art
+ * has dark ink in it right up to its border. Nothing here is stricter than a real site's images.
+ */
+internal fun gritty(strip: Strip, paper: Int = 245, grain: Int = 3, soft: Boolean = true, seed: Long = 5): Strip {
+    val rnd = kotlin.random.Random(seed)
+    val w = strip.w
+    val h = strip.h
+    val px = strip.px
+    for (y in 0 until h) for (x in 0 until w) {
+        val p = px[y * w + x]
+        if ((p and 0xFFFFFF) == 0xFFFFFF) {
+            // grain only ever dims the paper; it stays inside the paper band
+            val v = (paper - rnd.nextInt(grain + 1)).coerceIn(240, 255)
+            px[y * w + x] = Strip.rgb(v, v, v)
+        }
+    }
+    if (soft) {
+        // one pixel of ramp either side of every vertical edge between paper and anything darker
+        for (y in 1 until h - 1) for (x in 0 until w) {
+            val a = px[(y - 1) * w + x]
+            val b = px[y * w + x]
+            val c = px[(y + 1) * w + x]
+            fun lum(p: Int) = minOf((p ushr 16) and 0xFF, (p ushr 8) and 0xFF, p and 0xFF)
+            if (lum(b) >= 240 && lum(c) < 120 && lum(a) >= 240) {
+                val m = (lum(b) + lum(c)) / 2
+                px[y * w + x] = Strip.rgb(m + 30, m + 30, m + 30)
+            }
+        }
+    }
+    return strip
 }
 
 /**
