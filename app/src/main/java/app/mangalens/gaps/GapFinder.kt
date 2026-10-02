@@ -6,12 +6,12 @@ import kotlin.math.min
 /** Thresholds of the gap finder. Fractions are of the frame's area or of the reading column's width. */
 class GapParams(
     /**
-     * A white region that reaches only one edge of the reading column — art has cut into the
-     * gutter from the other side — is still a gutter when it runs this share of the column's
-     * width unbroken at some row. A region that reaches both edges is a gutter at any width,
+     * A white region that reaches only one edge of the reading column — art, or a balloon whose
+     * tail reaches the panel, has cut into the gutter and left it in two — is still a gutter
+     * when it runs this share of the column's width unbroken at some row. A region that reaches both edges is a gutter at any width,
      * and one that reaches neither is a balloon.
      */
-    val wideRun: Float = 0.75f,
+    val wideRun: Float = 0.4f,
 
     /** Smallest gutter, as a share of the frame, measured on the sealed (eroded) region. */
     val minGapArea: Float = 0.0015f,
@@ -130,11 +130,12 @@ object GapFinder {
         // A gutter is the page itself: it runs out to the reading column's edge, on both sides if
         // it is a band, however slanted, and on one if art has cut into it. A balloon is shut in
         // by its outline and reaches neither, however wide it is.
-        // (Not looser than the seal: a white panel boxed in a border flush with the column's edge
-        // would otherwise count as reaching it.)
-        val edge = 2 * sealR
-        val reachL = colL + edge
-        val reachR = w - colR - edge
+        // A column that runs to the frame's edge is reached only by paper at the very edge: a white
+        // panel boxed in a border, however thin, flush with the frame never gets there. Beside a bar
+        // the sealed paper stops a seal's width short of the bar, plus the ramp of a soft edge, and
+        // the tolerance says so.
+        val reachL = if (colL == 0) 1 else colL + 2 * sealR + 2
+        val reachR = if (colR == 0) w - 1 else w - colR - 2 * sealR - 2
         val picked = ArrayList<Int>()
         for (c in 0 until labels.compCount) {
             if (labels.area[c] < minArea) continue
@@ -142,7 +143,7 @@ object GapFinder {
             val right = labels.maxX[c] >= reachR
             if ((left && right) || ((left || right) && labels.maxRun[c] >= wideMin)) picked.add(c)
         }
-        val seams = seamRows(planes, colL, colR, edge)
+        val seams = seamRows(planes, reachL, reachR)
         if (picked.isEmpty() && seams == null) return GapResult(IntArray(0), 0, 0L, sawArt, 0)
 
         val seed = BitPlane(w, h)
@@ -190,6 +191,9 @@ object GapFinder {
                 // (Not merely a full bounding box: a word of lettering fills its box too, with
                 // the paper between its strokes.)
                 fill >= 0.85f && a >= solidMin && paperCount <= 0.2f * a -> Unit
+                // A big block is a panel whatever is inside it: a screentone is mostly paper between
+                // its dots. Lettering is never a tenth of the column deep.
+                fill >= 0.85f && a >= solidMin && min(bw, bh) >= 0.1f * colW -> Unit
                 // The same, rounded: an inset panel in a circle or an oval. Nothing a letterer draws
                 // is this big, this dense and this full of ink.
                 fill >= 0.7f && a >= solidMin && paperCount <= 0.2f * a && min(bw, bh) >= 0.15f * colW -> Unit
@@ -271,11 +275,9 @@ object GapFinder {
      * lettering are kept clear by the margins). Only the exact pass looks: a coarse row would
      * take in a row of art with the seam.
      */
-    private fun seamRows(planes: Planes, colL: Int, colR: Int, edge: Int): BitPlane? {
+    private fun seamRows(planes: Planes, lo: Int, hi: Int): BitPlane? {
         if (planes.step != 1) return null
         val w = planes.w
-        val lo = colL + edge
-        val hi = w - colR - edge
         var seams: BitPlane? = null
         var y = planes.validY0
         while (y < planes.validY1) {
