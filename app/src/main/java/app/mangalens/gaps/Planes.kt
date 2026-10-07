@@ -144,7 +144,10 @@ object PlaneBuilder {
      * mask-and-compare per pixel and, because all three channels sit in a 16-wide band, a
      * chroma bound for free. Ink is "some channel below 192", `(p and 0xC0C0C0) != 0xC0C0C0`.
      * Rows within [ignoreTop] / [ignoreBottom] frame rows of the edges are left unclassified:
-     * the browser's own bars are not the manhwa's gaps.
+     * the browser's own bars are not the manhwa's gaps. Inside the [keepOut] rectangles
+     * (`x0, y0, x1, y1` in frame pixels) — MangaLens's own controls, over the page — every
+     * pixel is ink: they are not the page, and are never to be shaded, nor to cut a black bar
+     * beside the strip in two.
      */
     fun build(
         src: PixelSource,
@@ -152,6 +155,7 @@ object PlaneBuilder {
         style: ShadeStyle,
         ignoreTop: Int = 0,
         ignoreBottom: Int = 0,
+        keepOut: List<IntArray> = emptyList(),
     ): Planes {
         val fw = src.width
         val fh = src.height
@@ -205,6 +209,21 @@ object PlaneBuilder {
                 paper.bits[base + k] = pv
                 ink.bits[base + k] = iv
                 faint.bits[base + k] = fv
+            }
+        }
+        for (r in keepOut) {
+            // the plane pixels whose sample falls inside the rectangle
+            val x0 = (r[0].coerceAtLeast(0) + step - 1) / step
+            val x1 = (r[2].coerceAtMost(fw) + step - 1) / step
+            val ry0 = (r[1].coerceAtLeast(0) + step - 1) / step
+            val ry1 = (r[3].coerceAtMost(fh) + step - 1) / step
+            for (py in ry0 until minOf(ry1, ph)) {
+                val y = py * step
+                if (y < ignoreTop || y >= fh - ignoreBottom) continue
+                paper.clearRun(py, x0, x1)
+                faint.clearRun(py, x0, x1)
+                ink.setRun(py, x0, x1)
+                if (lum != null) for (x in x0 until minOf(x1, pw)) lum[py * pw + x] = 0
             }
         }
         val y0 = ((ignoreTop + step - 1) / step).coerceIn(0, ph)

@@ -47,6 +47,26 @@ class BitPlane(val w: Int, val h: Int) {
         }
     }
 
+    /** Clears pixels [x0, x1) of row [y]. */
+    fun clearRun(y: Int, x0: Int, x1: Int) {
+        if (y !in 0 until h) return
+        val a = x0.coerceIn(0, w)
+        val b = x1.coerceIn(0, w)
+        if (a >= b) return
+        val row = y * wpr
+        val wa = a ushr 6
+        val wb = (b - 1) ushr 6
+        val first = -1L shl (a and 63)
+        val last = if (b and 63 == 0) -1L else (1L shl (b and 63)) - 1
+        if (wa == wb) {
+            bits[row + wa] = bits[row + wa] and (first and last).inv()
+        } else {
+            bits[row + wa] = bits[row + wa] and first.inv()
+            for (k in wa + 1 until wb) bits[row + k] = 0L
+            bits[row + wb] = bits[row + wb] and last.inv()
+        }
+    }
+
     fun copy(): BitPlane = BitPlane(w, h).also { System.arraycopy(bits, 0, it.bits, 0, bits.size) }
 
     fun clear() = bits.fill(0L)

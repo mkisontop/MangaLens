@@ -294,8 +294,14 @@ class ShadeEngine(
         }
     }
 
+    /** The app's own controls, as the last [setExclusions] gave them. */
+    private var keepOut: List<IntArray> = emptyList()
+
     /** Rectangles to leave unmeasured and unshaded: the app's own controls. */
-    fun setExclusions(rects: List<IntArray>) = tracker.setExclusions(rects)
+    fun setExclusions(rects: List<IntArray>) {
+        keepOut = rects
+        tracker.setExclusions(rects)
+    }
 
     /** The shade is switched off, or the screen changed shape. */
     fun reset(nowMs: Double) {
@@ -619,7 +625,7 @@ class ShadeEngine(
     private fun maybeFast(src: PixelSource, nowMs: Double): DetectJob? {
         if (pendingBusy(nowMs) || nowMs - lastDetectAtMs < tuning.detectIntervalMs) return null
         lastDetectAtMs = nowMs
-        val planes = PlaneBuilder.build(src, 2, style, ignoreTopRows, ignoreBottomRows)
+        val planes = PlaneBuilder.build(src, 2, style, ignoreTopRows, ignoreBottomRows, keepOut)
         val job = DetectJob(planes, marginPx(nowMs), artRecently(nowMs), false, hardEpoch, moveEpoch, offset, nowMs)
         pending = job
         return job
@@ -635,7 +641,7 @@ class ShadeEngine(
         val p = pending
         if (p != null && p.full && p.moveEpoch == moveEpoch && p.hardEpoch == hardEpoch && pendingBusy(nowMs)) return null
         lastDetectAtMs = nowMs
-        val planes = PlaneBuilder.build(src, 1, style, ignoreTopRows, ignoreBottomRows)
+        val planes = PlaneBuilder.build(src, 1, style, ignoreTopRows, ignoreBottomRows, keepOut)
         val job = DetectJob(planes, 0, artRecently(nowMs), true, hardEpoch, moveEpoch, offset, nowMs)
         pending = job
         return job

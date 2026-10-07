@@ -97,6 +97,26 @@ object GapFinder {
     /** Thickest band of full-width paper rows that is a seam between images rather than a gutter. */
     private const val MAX_SEAM = 6
 
+    /** Narrowest black bar that the gutters meeting it are asked about: wider than a panel's border. */
+    private const val BAR_MIN = 6
+    private const val BAR_MIN_SHARE = 0.02f
+
+    /** Share of the gutter rows that must meet a bar in the same column. */
+    private const val BAR_STRAIGHT_SHARE = 0.6f
+
+    /** Plane pixels between a black bar and the paper beside it: the soft edge between them. */
+    private const val BAR_EDGE = 3
+
+    /** Sampled rows of gutter that must meet a bar before they are believed. */
+    private const val MIN_GUTTER_ROWS = 2
+
+    /** Share of the rows that may cross a bar — the browser's bars, a site's header and footer. */
+    private const val MAX_CROSSING_SHARE = 0.4f
+
+    /** Shares of the screen, at the top and at the bottom, where the browser's and a site's bars may be. */
+    private const val CHROME_TOP_SHARE = 0.2f
+    private const val CHROME_BOTTOM_SHARE = 0.15f
+
     /** Side of the blocks the art check counts, in plane pixels, and the share of one that must be ink. */
     private const val ART_BLOCK = 16
     private const val ART_DENSITY = 55
@@ -114,7 +134,9 @@ object GapFinder {
         val step = planes.step
         val sealR = if (step == 1) 2 else 1
 
-        val (colL, colR) = readingColumn(planes)
+        val column = column(planes)
+        val colL = column.left
+        val colR = column.right
         val colW = max(1, w - colL - colR)
 
         val sawArt = hasArt(planes, colL, colR, params)
@@ -136,14 +158,20 @@ object GapFinder {
         // the tolerance says so.
         val reachL = if (colL == 0) 1 else colL + 2 * sealR + 2
         val reachR = if (colR == 0) w - 1 else w - colR - 2 * sealR - 2
+        // Paper that runs on into a black bar, near the top or the bottom of the screen, is on
+        // the browser's or the site's bars — a grey of theirs that passes for paper under the
+        // shade — and not the page's: beside a gutter the bar is black.
+        val chrome = Chrome(planes, column, sealR)
         val picked = ArrayList<Int>()
         for (c in 0 until labels.compCount) {
             if (labels.area[c] < minArea) continue
             val left = labels.minX[c] <= reachL
             val right = labels.maxX[c] >= reachR
-            if ((left && right) || ((left || right) && labels.maxRun[c] >= wideMin)) picked.add(c)
+            if (!((left && right) || ((left || right) && labels.maxRun[c] >= wideMin))) continue
+            if (chrome.into(labels.minX[c], labels.maxX[c]) && chrome.holds(labels, c)) continue
+            picked.add(c)
         }
-        val seams = seamRows(planes, reachL, reachR)
+        val seams = seamRows(planes, reachL, reachR, chrome)
         if (picked.isEmpty() && seams == null) return GapResult(IntArray(0), 0, 0L, sawArt, 0)
 
         val seed = BitPlane(w, h)
@@ -276,7 +304,7 @@ object GapFinder {
      * lettering are kept clear by the margins). Only the exact pass looks: a coarse row would
      * take in a row of art with the seam.
      */
-    private fun seamRows(planes: Planes, lo: Int, hi: Int): BitPlane? {
+    private fun seamRows(planes: Planes, lo: Int, hi: Int, chrome: Chrome): BitPlane? {
         if (planes.step != 1) return null
         val w = planes.w
         var seams: BitPlane? = null
@@ -290,7 +318,9 @@ object GapFinder {
             while (end < planes.validY1 && spansRow(planes.paper, end, lo, hi)) end++
             if (end - y <= MAX_SEAM) {
                 val plane = seams ?: BitPlane(w, planes.h).also { seams = it }
-                for (r in y until end) planes.paper.forEachRun(r) { a, b -> if (a <= lo && b >= hi) plane.setRun(r, a, b) }
+                for (r in y until end) planes.paper.forEachRun(r) { a, b ->
+                    if (a <= lo && b >= hi && !(chrome.into(a, b) && chrome.holds(r))) plane.setRun(r, a, b)
+                }
             }
             y = end
         }
@@ -467,43 +497,187 @@ object GapFinder {
     private const val ROLE_SPECK = 1
     private const val ROLE_HALO = 2
 
+    /** Where the browser's and a site's bars may be: bands at the top and bottom, and the black bars beside the strip. */
+    private class Chrome(planes: Planes, column: Column, sealR: Int) {
+        private val left = if (column.barLeft) column.left - 2 * sealR - BAR_EDGE else Int.MIN_VALUE
+        private val right = if (column.barRight) planes.w - column.right + 2 * sealR + BAR_EDGE else Int.MAX_VALUE
+        private val top = planes.validY0 + (CHROME_TOP_SHARE * (planes.validY1 - planes.validY0)).toInt()
+        private val bottom = planes.validY1 - (CHROME_BOTTOM_SHARE * (planes.validY1 - planes.validY0)).toInt()
+
+        /** Whether paper over columns [x0, x1) runs on into a black bar. */
+        fun into(x0: Int, x1: Int) = x0 < left || x1 > right
+
+        fun holds(y: Int) = y < top || y >= bottom
+
+        /** Whether all of component [c] lies in the bands at the top or the bottom. */
+        fun holds(labels: Labels, c: Int): Boolean {
+            var above = true
+            var below = true
+            labels.forEachRun(c) { y, _, _ ->
+                if (y >= top) above = false
+                if (y < bottom) below = false
+            }
+            return above || below
+        }
+    }
+
     // ---- the reading column ------------------------------------------------------------
 
     /**
      * Columns at either edge that are uniform from the top of the frame to the bottom — the
      * black bars a reader leaves around a narrow strip, or a site's white margin — are not
      * part of the strip. A gutter spans the strip, not the screen.
+     *
+     * Not every row of the screen is the strip's, though. The browser's bars, a site's own
+     * header and footer with their buttons, a floating button: all of them cross a black bar,
+     * and one row of them would make the bar no bar at all — and leave no gutter able to reach
+     * the strip's edge. So a black bar is also read where the gutters show it ([barPastCrossings]).
      */
-    internal fun readingColumn(planes: Planes): Pair<Int, Int> {
+    internal fun readingColumn(planes: Planes): Pair<Int, Int> = column(planes).let { it.left to it.right }
+
+    /**
+     * The strip's place on the screen: [left] and [right] plane columns at the edges are not part
+     * of it. [barLeft] and [barRight] say that side's black bar was read past rows that cross it.
+     */
+    internal class Column(val left: Int, val right: Int, val barLeft: Boolean, val barRight: Boolean)
+
+    internal fun column(planes: Planes): Column {
         val w = planes.w
-        val h = planes.h
         val wpr = planes.paper.wpr
         val allPaper = LongArray(wpr) { -1L }
         val allInk = LongArray(wpr) { -1L }
+        val cap = (0.4f * w).toInt()
+        val barMin = max(BAR_MIN, (BAR_MIN_SHARE * w).toInt())
+        val minPaper = max(8, (0.2f * w).toInt())
+        val sampled = max(0, (planes.validY1 - planes.validY0 + 3) / 4)
+        val left = SideRows(sampled)
+        val right = SideRows(sampled)
+        val ink = planes.ink.bits
+        val paper = planes.paper.bits
         var rows = 0
         var y = planes.validY0
         while (y < planes.validY1) {
             val base = y * wpr
             for (k in 0 until wpr) {
-                allPaper[k] = allPaper[k] and planes.paper.bits[base + k]
-                allInk[k] = allInk[k] and planes.ink.bits[base + k]
+                allPaper[k] = allPaper[k] and paper[base + k]
+                allInk[k] = allInk[k] and ink[base + k]
+            }
+            // Black in from each edge, and what follows it: paper running on for a fifth of the screen?
+            val l = runForward(ink, base, 0, cap, w)
+            left.run[rows] = l
+            for (x in l..min(l + BAR_EDGE, w - 1)) {
+                if (planes.paper.get(x, y)) {
+                    left.paperAfter[rows] = runForward(paper, base, x, minPaper, w) >= minPaper
+                    break
+                }
+            }
+            val r = runBackward(ink, base, w - 1, cap)
+            right.run[rows] = r
+            val edge = w - 1 - r
+            for (x in edge downTo max(edge - BAR_EDGE, 0)) {
+                if (planes.paper.get(x, y)) {
+                    right.paperAfter[rows] = runBackward(paper, base, x, minPaper) >= minPaper
+                    break
+                }
             }
             rows++
             y += 4
         }
-        if (rows < 4) return 0 to 0
+        if (rows < 4) return Column(0, 0, false, false)
         fun uniform(x: Int): Boolean {
             val k = x ushr 6
             val bit = 1L shl (x and 63)
             return (allPaper[k] and bit) != 0L || (allInk[k] and bit) != 0L
         }
-        val cap = (0.4f * w).toInt()
         var l = 0
         while (l < cap && uniform(l)) l++
         var r = 0
         while (r < cap && uniform(w - 1 - r)) r++
-        if (w - l - r < 0.3f * w) return 0 to 0
-        return l to r
+        val barL = barPastCrossings(left, rows, barMin, cap)
+        val barR = barPastCrossings(right, rows, barMin, cap)
+        if (barL > l) l = barL
+        if (barR > r) r = barR
+        if (w - l - r < 0.3f * w) return Column(0, 0, false, false)
+        return Column(l, r, barL > 0 && barL == l, barR > 0 && barR == r)
+    }
+
+    /** Per sampled row, from one edge: how far black runs in, and whether paper then runs on for a good stretch. */
+    private class SideRows(n: Int) {
+        val run = IntArray(n)
+        val paperAfter = BooleanArray(n)
+    }
+
+    /**
+     * The width of a black bar on one side, read from the gutters that meet it; 0 when the rows
+     * do not show one.
+     *
+     * A row that runs black from the screen's edge and then paper for a fifth of the screen is a
+     * gutter meeting the bar, and the bar ends where its paper begins. The bar is believed when
+     * those rows agree on where that is, it is wider than a panel's border, and the rows that
+     * cross it short of there are a minority — what crosses a bar is a band of the screen, never
+     * most of it. Paper that runs right out to the screen's edge in the middle of the frame is
+     * a gutter with no bar beside it, and then there is none.
+     */
+    private fun barPastCrossings(side: SideRows, rows: Int, barMin: Int, cap: Int): Int {
+        val run = side.run
+        var bar = Int.MAX_VALUE
+        var meeting = 0
+        for (i in 0 until rows) {
+            if (side.paperAfter[i] && run[i] >= barMin && run[i] < cap) {
+                meeting++
+                if (run[i] < bar) bar = run[i]
+            }
+        }
+        if (meeting < MIN_GUTTER_ROWS) return 0
+        // a bar's edge is straight: the gutters meet it in the same column
+        var straight = 0
+        for (i in 0 until rows) if (side.paperAfter[i] && run[i] >= bar && run[i] <= bar + 2 * BAR_EDGE) straight++
+        if (straight < BAR_STRAIGHT_SHARE * meeting) return 0
+        // The rows that cross the bar. Near the top and the bottom of the screen they are the
+        // browser's and the site's bars, whose grey can even pass for paper under the shade;
+        // paper that reaches the edge between those is the page's own.
+        val top = (CHROME_TOP_SHARE * rows).toInt()
+        val bottom = rows - (CHROME_BOTTOM_SHARE * rows).toInt()
+        var crossings = 0
+        var reachesEdge = 0
+        for (i in 0 until rows) {
+            if (run[i] >= bar - BAR_EDGE) continue
+            crossings++
+            if (i in top until bottom && run[i] < BAR_EDGE && side.paperAfter[i]) reachesEdge++
+        }
+        if (crossings > MAX_CROSSING_SHARE * rows) return 0
+        if (reachesEdge >= MIN_GUTTER_ROWS) return 0
+        return bar
+    }
+
+    /** How many pixels from [x0] onwards, at most [limit], are set in the row at [base] of a plane [w] wide. */
+    private fun runForward(bits: LongArray, base: Int, x0: Int, limit: Int, w: Int): Int {
+        var run = 0
+        while (run < limit) {
+            val x = x0 + run
+            if (x >= w) return run
+            val word = bits[base + (x ushr 6)] ushr (x and 63)
+            val avail = 64 - (x and 63)
+            val ones = java.lang.Long.numberOfTrailingZeros(word.inv())
+            if (ones < avail) return min(limit, run + ones)
+            run += avail
+        }
+        return limit
+    }
+
+    /** How many pixels from [x0] back towards the row's start, at most [limit], are set in the row at [base]. */
+    private fun runBackward(bits: LongArray, base: Int, x0: Int, limit: Int): Int {
+        var run = 0
+        while (run < limit) {
+            val x = x0 - run
+            if (x < 0) return run
+            val b = x and 63
+            val word = bits[base + (x ushr 6)] shl (63 - b)
+            val ones = java.lang.Long.numberOfLeadingZeros(word.inv())
+            if (ones < b + 1) return min(limit, run + ones)
+            run += b + 1
+        }
+        return limit
     }
 
     /**

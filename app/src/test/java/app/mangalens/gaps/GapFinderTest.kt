@@ -25,8 +25,9 @@ class GapFinderTest {
         artRecently: Boolean = false,
         ignoreTop: Int = 0,
         ignoreBottom: Int = 0,
+        keepOut: List<IntArray> = emptyList(),
     ): Found {
-        val planes = PlaneBuilder.build(ArrayPixels(w, h, frame), step, style, ignoreTop, ignoreBottom)
+        val planes = PlaneBuilder.build(ArrayPixels(w, h, frame), step, style, ignoreTop, ignoreBottom, keepOut)
         val result = GapFinder.find(planes, margin, GapParams(), artRecently)
         return Found(frame, result, coverage(result.rects, result.rectCount, w, h), w, h)
     }
@@ -235,6 +236,63 @@ class GapFinderTest {
             val dy = (y - 650).toDouble() / 100
             dx * dx + dy * dy <= 1.0
         } > 0.995)
+    }
+
+    /** A strip between black bars, with a browser's bars and a site's header and footer across the top and bottom. */
+    private fun stripUnderChrome(): Strip {
+        val s = Strip(w, h)
+        val bar = Strip.rgb(0, 0, 0)
+        s.solid(0, 0, 120, h, bar)
+        s.solid(600, 0, w, h, bar)
+        // tabs in a grey that reads as paper under the shade, then the address bar, then the site's header
+        s.solid(0, 0, w, 60, Strip.rgb(23, 23, 25))
+        s.text(14, 22, 700, 40, Strip.rgb(230, 230, 232))
+        s.solid(0, 60, w, 130, Strip.rgb(35, 38, 47))
+        s.text(14, 84, 520, 104, Strip.rgb(232, 232, 232))
+        s.solid(0, 130, w, 200, Strip.rgb(33, 33, 35))
+        s.solid(20, 140, 70, 190, Strip.rgb(250, 250, 250))
+        s.text(90, 150, 260, 172, Strip.rgb(240, 240, 240))
+        // the page
+        s.art(120, 200, 600, 520); s.rules(120, 200, 600, 520)
+        s.balloon(360, 690, 150, 70)
+        s.art(120, 880, 600, 1290); s.rules(120, 880, 600, 1290)
+        // the site's footer: a button at each end, and the system's navigation bar
+        s.solid(0, 1290, w, 1360, Strip.rgb(33, 33, 35))
+        s.solid(16, 1300, 110, 1350, Strip.rgb(124, 58, 237)); s.text(30, 1312, 100, 1334, Strip.WHITE)
+        s.solid(610, 1300, 704, 1350, Strip.rgb(124, 58, 237)); s.text(620, 1312, 694, 1334, Strip.WHITE)
+        s.solid(0, 1360, w, h, Strip.rgb(26, 25, 31))
+        return s
+    }
+
+    @Test
+    fun `a gutter reaches black bars that the browser's and the site's bars cross`() {
+        val s = stripUnderChrome()
+        val f = find(s.px)
+        assertNoDamage(f)
+        assertTrue("gutter shaded, was ${coverageOfPaper(f, 520, 880)}", coverageOfPaper(f, 520, 880) { x, y ->
+            val dx = (x - 360).toDouble() / 160
+            val dy = (y - 690).toDouble() / 80
+            x !in 120 until 600 || dx * dx + dy * dy <= 1.0
+        } > 0.99)
+        // the browser's grey passes for paper under the shade, and is still not the page's
+        for (y in 0 until 200) for (x in 0 until w) assertFalse("chrome shaded at ($x,$y)", f.isCovered(x, y))
+        for (y in 1290 until h) for (x in 0 until w) assertFalse("footer shaded at ($x,$y)", f.isCovered(x, y))
+        // half resolution, as in motion, reads the bars the same way
+        val half = find(s.px, step = 2)
+        assertNoDamage(half, "half")
+        assertTrue(coverageOfPaper(half, 560, 600) > 0.9)
+    }
+
+    @Test
+    fun `the app's own controls over a bar and a gutter are left alone`() {
+        val s = stripUnderChrome()
+        // a pale button that sits half on the bar and half on the gutter
+        s.solid(70, 560, 170, 620, Strip.rgb(245, 245, 245))
+        val f = find(s.px, keepOut = listOf(intArrayOf(64, 554, 176, 626)))
+        assertNoDamage(f)
+        for (y in 554 until 626) for (x in 64 until 176) assertFalse("control shaded at ($x,$y)", f.isCovered(x, y))
+        assertTrue(f.isCovered(360, 560))
+        assertTrue(f.isCovered(190, 800))
     }
 
     @Test

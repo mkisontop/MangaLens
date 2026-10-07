@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.1.2
+
+Dark gaps show up again on sites that put their own bars on screen.
+
+**Download:** `MangaLens.apk` below updates 0.9.2 and newer in place. Still on
+0.9.1? Use `MangaLens-legacy-update.apk` once (Android 9+), as described in
+the README.
+
+- **Gutters reach the black bars again.** A gutter is only darkened when it runs
+  out to the edges of the reading strip, and the strip's edges were found from
+  black bars that had to be unbroken from the top of the screen to the bottom.
+  The browser's tabs and address bar, a site's own header (*Chapter 31*, the home
+  button) and its *Prev* / *Next* footer all cross those bars, so with any of them
+  on screen there were no bars, no gutter could reach them, and nothing was
+  darkened. The bars are now read where the gutters meet them, past the rows
+  that cross them at the top and bottom of the screen.
+- **MangaLens's own buttons are not the page.** The floating buttons and their
+  status pill neither break a black bar nor get darkened.
+- **The browser's bars are never darkened.** A dark tab strip whose grey happens
+  to match the shade no longer passes for a gutter.
+
 ## 1.1.1
 
 The page scrolls again with dark gaps on.

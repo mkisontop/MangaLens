@@ -19,7 +19,7 @@ about 1.5–2 s after you stop.
 · [all releases](https://github.com/mkisontop/mangalens/releases)
 · [changelog](CHANGELOG.md)
 
-Current release: **1.1.1**. Still on 0.9.1? Follow the
+Current release: **1.1.2**. Still on 0.9.1? Follow the
 [one-time update instructions](#one-time-update-from-091) instead of using
 the normal APK.
 
@@ -595,6 +595,12 @@ it works in any browser or reader. What it does with them:
   across; a balloon, enclosed by its outline, reaches neither however wide it
   is. The one-to-four-row hairlines that fractional scaling leaves between
   stacked images are darkened too, when the page is at rest.
+- **The reading column is found past the browser's bars.** Where a reader
+  leaves black bars beside a narrow strip, the column's edges are the bars'
+  edges. The browser's tabs and address bar, a site's own header and footer, and
+  MangaLens's floating buttons all cross those bars; the bars are read where the
+  gutters meet them, past the bands that cross them at the top and bottom of the
+  screen, and the app's own buttons are never taken for the page.
 - **Edges are followed down, not left as a pale line.** Where a black panel
   border meets the white, the anti-aliased pixels between them (242, 210, 146,
   61…) would stay light and glow against the dark. A fringe is a *ramp* — brightness
