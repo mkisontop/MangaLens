@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Page not found · MangaLens</title>
+<meta name="robots" content="noindex">
+<meta name="color-scheme" content="light dark">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self'; base-uri 'self'; form-action 'none'; object-src 'none'">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/favicon-32.png" sizes="32x32" type="image/png">
+<script src="/theme.js"></script>
+<style>
+@font-face { font-family: "Comic Neue"; src: url("/fonts/comic-neue-bold.woff2") format("woff2"); font-weight: 700; font-display: swap; }
+:root { --paper:#FFF4DC; --surface:#FFFBF0; --ink:#1C1424; --ink-soft:#5A4B5E; --punch:#D92B17; --zap:#FFCC1A; --stroke:#1C1424; --shadow:#1C1424; --dots:rgba(217,43,23,.16); color-scheme: light; }
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) { --paper:#15101A; --surface:#221A29; --ink:#FFF4DC; --ink-soft:#CDBFCF; --punch:#FF5A43; --zap:#FFD233; --stroke:#F2E6CC; --shadow:#000; --dots:rgba(255,90,67,.14); color-scheme: dark; } }
+:root[data-theme="dark"] { --paper:#15101A; --surface:#221A29; --ink:#FFF4DC; --ink-soft:#CDBFCF; --punch:#FF5A43; --zap:#FFD233; --stroke:#F2E6CC; --shadow:#000; --dots:rgba(255,90,67,.14); color-scheme: dark; }
+* { box-sizing: border-box; }
+body { margin: 0; min-height: 100vh; display: grid; place-items: center; padding: 32px 16px; background: var(--paper); color: var(--ink); font: 400 17px/1.6 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; position: relative; overflow-x: hidden; }
+body::before { content: ""; position: fixed; inset: 0 0 auto auto; width: min(520px, 80vw); height: 420px; pointer-events: none;
+  background: radial-gradient(circle, var(--dots) 2.7px, transparent 3.1px) 0 0 / 15px 15px;
+  -webkit-mask-image: radial-gradient(circle at 100% 0, #000 0, transparent 70%); mask-image: radial-gradient(circle at 100% 0, #000 0, transparent 70%); }
+main { position: relative; max-width: 560px; text-align: center; }
+svg.fuki { width: 220px; height: 220px; margin: 0 auto 8px; display: block; }
+h1 { margin: 0; font: 700 clamp(40px, 8vw, 64px)/1 "Comic Neue", "Comic Sans MS", sans-serif; letter-spacing: -.02em; }
+p { margin: 16px 0 0; color: var(--ink-soft); font-size: 19px; }
+.cta { display: flex; flex-wrap: wrap; gap: 14px; justify-content: center; margin-top: 30px; }
+a.btn { display: inline-flex; align-items: center; min-height: 54px; padding: 10px 22px; border: 3px solid var(--stroke); border-radius: 16px; box-shadow: 5px 6px 0 var(--shadow); background: var(--surface); color: var(--ink); text-decoration: none; font: 700 19px/1 "Comic Neue", "Comic Sans MS", sans-serif; }
+a.btn.zap { background: var(--zap); color: #1C1424; }
+a.btn:hover { transform: translate(-1px, -1px); box-shadow: 7px 8px 0 var(--shadow); }
+a.btn:focus-visible { outline: 3px solid var(--punch); outline-offset: 3px; }
+</style>
+</head>
+<body>
+<main>
+  <svg class="fuki" viewBox="-165 -165 330 330" aria-hidden="true">
+    <g transform="translate(9 10)" style="fill:var(--shadow)"><circle r="100"/><path d="M-52,72 Q-74,98 -96,109 Q-104,116 -90,118 Q-50,112 -18,90 Z"/></g>
+    <g style="fill:#FFCC1A;stroke:#1C1424;stroke-width:12;stroke-linejoin:round"><path d="M-52,72 Q-74,98 -96,109 Q-104,116 -90,118 Q-50,112 -18,90 Z"/><circle r="100"/></g>
+    <g style="fill:#FFCC1A"><path d="M-52,72 Q-74,98 -96,109 Q-104,116 -90,118 Q-50,112 -18,90 Z"/><circle r="100"/></g>
+    <g stroke="#1C1424" stroke-width="3"><ellipse cx="-27" cy="-24" rx="10" ry="12.5" fill="#fff"/><ellipse cx="27" cy="-24" rx="10" ry="12.5" fill="#fff"/></g>
+    <g fill="#1C1424"><circle cx="-25.5" cy="-23.5" r="6.5"/><circle cx="28.5" cy="-23.5" r="6.5"/></g>
+    <g stroke="#1C1424" stroke-width="4" stroke-linecap="round"><path d="M-38,-42 L-18,-49"/><path d="M38,-42 L18,-49"/></g>
+    <path d="M-10,2 Q-5,-3 0,2 Q5,7 10,2" fill="none" stroke="#1C1424" stroke-width="4.5" stroke-linecap="round" stroke-linejoin="round"/>
+    <path d="M55,-68 Q62.4,-58.3 62,-52 A7,7 0 1 1 48,-52 Q47.6,-58.3 55,-68 Z" fill="#9ED8FF" stroke="#1C1424" stroke-width="2.5"/>
+    <text x="0" y="62" text-anchor="middle" font-family="Comic Neue, Comic Sans MS, sans-serif" font-weight="700" font-size="40" fill="#1C1424">404</text>
+  </svg>
+  <h1>This page got lost in translation.</h1>
+  <p>Fuki looked everywhere, but there's nothing here. The link may be old, or mistyped.</p>
+  <div class="cta">
+    <a class="btn zap" href="/">Back to MangaLens</a>
+    <a class="btn" href="https://github.com/mkisontop/MangaLens/releases/latest/download/MangaLens.apk">Download the APK</a>
+  </div>
+</main>
+</body>
+</html>
