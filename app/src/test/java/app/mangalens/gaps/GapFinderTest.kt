@@ -244,23 +244,11 @@ class GapFinderTest {
         val bar = Strip.rgb(0, 0, 0)
         s.solid(0, 0, 120, h, bar)
         s.solid(600, 0, w, h, bar)
-        // tabs in a grey that reads as paper under the shade, then the address bar, then the site's header
-        s.solid(0, 0, w, 60, Strip.rgb(23, 23, 25))
-        s.text(14, 22, 700, 40, Strip.rgb(230, 230, 232))
-        s.solid(0, 60, w, 130, Strip.rgb(35, 38, 47))
-        s.text(14, 84, 520, 104, Strip.rgb(232, 232, 232))
-        s.solid(0, 130, w, 200, Strip.rgb(33, 33, 35))
-        s.solid(20, 140, 70, 190, Strip.rgb(250, 250, 250))
-        s.text(90, 150, 260, 172, Strip.rgb(240, 240, 240))
         // the page
         s.art(120, 200, 600, 520); s.rules(120, 200, 600, 520)
         s.balloon(360, 690, 150, 70)
         s.art(120, 880, 600, 1290); s.rules(120, 880, 600, 1290)
-        // the site's footer: a button at each end, and the system's navigation bar
-        s.solid(0, 1290, w, 1360, Strip.rgb(33, 33, 35))
-        s.solid(16, 1300, 110, 1350, Strip.rgb(124, 58, 237)); s.text(30, 1312, 100, 1334, Strip.WHITE)
-        s.solid(610, 1300, 704, 1350, Strip.rgb(124, 58, 237)); s.text(620, 1312, 694, 1334, Strip.WHITE)
-        s.solid(0, 1360, w, h, Strip.rgb(26, 25, 31))
+        overlayBars(chromeBars(w, h, 200, 1290), 200, 1290)(s.px)
         return s
     }
 
@@ -281,6 +269,26 @@ class GapFinderTest {
         val half = find(s.px, step = 2)
         assertNoDamage(half, "half")
         assertTrue(coverageOfPaper(half, 560, 600) > 0.9)
+        // and both know where the page scrolls: between the bars across the top and the bottom, give
+        // or take the dark art against them, which wants no shade anyway
+        for (r in listOf(f.result, half.result)) {
+            assertTrue("page starts below the top bars: ${r.pageTop}", r.pageTop in 200..240)
+            assertTrue("page ends above the bottom bars: ${r.pageBottom}", r.pageBottom in 1250..1290)
+        }
+    }
+
+    @Test
+    fun `a dark panel at the screen's edge is not taken for a browser's bar`() {
+        // black bars, a gutter, and dark art running off the bottom of the screen: nothing crosses the bars
+        val s = Strip(w, h)
+        s.solid(0, 0, 120, h, Strip.BLACK)
+        s.solid(600, 0, w, h, Strip.BLACK)
+        s.art(120, 0, 600, 400); s.rules(120, 0, 600, 400)
+        s.solid(120, 1100, 600, h, Strip.rgb(20, 18, 30))
+        val f = find(s.px)
+        assertEquals(0, f.result.pageTop)
+        assertEquals(Int.MAX_VALUE, f.result.pageBottom)
+        assertTrue("gutter shaded down to the panel: ${coverageOfPaper(f, 400, 1100)}", coverageOfPaper(f, 400, 1100) > 0.99)
     }
 
     @Test

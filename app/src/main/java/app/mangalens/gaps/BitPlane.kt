@@ -67,6 +67,13 @@ class BitPlane(val w: Int, val h: Int) {
         }
     }
 
+    /** Clears rows [y0, y1). */
+    fun clearRows(y0: Int, y1: Int) {
+        val a = y0.coerceIn(0, h)
+        val b = y1.coerceIn(a, h)
+        bits.fill(0L, a * wpr, b * wpr)
+    }
+
     fun copy(): BitPlane = BitPlane(w, h).also { System.arraycopy(bits, 0, it.bits, 0, bits.size) }
 
     fun clear() = bits.fill(0L)

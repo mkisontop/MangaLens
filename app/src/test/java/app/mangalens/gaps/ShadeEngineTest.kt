@@ -224,6 +224,31 @@ class ShadeEngineTest {
     }
 
     @Test
+    fun `the shade rides the page under a browser's and a site's bars and never onto them`() {
+        // a strip between black bars, scrolling under bars that stay put at the top and bottom
+        val page = scrollStrip(w, seed = 17).also { s ->
+            s.solid(0, 0, 120, s.h, Strip.BLACK)
+            s.solid(600, 0, w, s.h, Strip.BLACK)
+        }
+        val top = 200
+        val bottom = 1290
+        val bars = overlayBars(chromeBars(w, h, top, bottom), top, bottom)
+        val onBars = BooleanArray(w * h) { it / w < top || it / w >= bottom }
+        for ((name, run) in listOf<Pair<String, (ShadeSimulation) -> ShadeSimulation.Report>>(
+            "drag" to { sm -> sm.run(Scrolls.drag(1500.0), 2200.0, touchLeadMs = touch) },
+            "fling" to { sm -> sm.run(Scrolls.fling(1000.0, 3500.0, 350.0, 0.5), 2000.0, touchLeadMs = touch) },
+            "reverse" to { sm -> sm.run(Scrolls.reverse(3000.0, 700.0, 900.0), 2000.0, touchLeadMs = touch) },
+        )) {
+            val r = run(ShadeSimulation(page, w, h, style, fixed = bars, keepClear = onBars))
+            report("under bars: $name", r)
+            assertEquals("$name: shade on the bars that stay put", 0, r.clearHits)
+            assertEquals("$name: art covered at rest", 0, r.restDamage)
+            assertTrue("$name: exact again at rest: ${r.restCoverage}", r.restCoverage > 0.995)
+            assertTrue("$name: art covered in steady motion: ${r.steadyMax}px", r.steadyMax <= 8 * w)
+        }
+    }
+
+    @Test
     fun `off-white grainy paper with soft edges is shaded in motion without covering art`() {
         // paper at 245 with grain down to 242, a ramp at every edge: nothing a site's own JPEGs would not do
         val grit = gritty(scrollStrip(w, seed = 31), paper = 245, grain = 3)

@@ -130,6 +130,13 @@ class Planes(
      * builder was not asked to keep them.
      */
     val faint: BitPlane? = null,
+    /** MangaLens's own controls, `x0, y0, x1, y1` in frame pixels: read as ink, and as no evidence about the page. */
+    val keepOut: List<IntArray> = emptyList(),
+    /**
+     * Per plane row, whether it is one flat colour from edge to edge, MangaLens's controls aside:
+     * the padding of a browser's or site's bar, which spans the screen, black bars and all.
+     */
+    val flat: BooleanArray? = null,
 ) {
     val w: Int get() = paper.w
     val h: Int get() = paper.h
@@ -170,10 +177,12 @@ object PlaneBuilder {
         val lo = style.sigLo
         val hi = style.sigHi
         val faintLight = style.faintLight
+        val flat = BooleanArray(ph)
         for (py in 0 until ph) {
             val y = py * step
             if (y < ignoreTop || y >= fh - ignoreBottom) continue
             src.readRow(y, row)
+            flat[py] = flatRow(row, fw, step, y, keepOut)
             val base = py * wpr
             for (k in 0 until wpr) {
                 var pv = 0L
@@ -228,8 +237,36 @@ object PlaneBuilder {
         }
         val y0 = ((ignoreTop + step - 1) / step).coerceIn(0, ph)
         val y1 = ((fh - ignoreBottom + step - 1) / step).coerceIn(y0, ph)
-        return Planes(fw, fh, step, paper, ink, y0, y1, lum, style.sigHi, faint)
+        return Planes(fw, fh, step, paper, ink, y0, y1, lum, style.sigHi, faint, keepOut, flat)
     }
+
+    /** Whether every [step]-th pixel of frame [row] [y], those under [keepOut] aside, is within [FLAT_RANGE] of one colour. */
+    private fun flatRow(row: IntArray, fw: Int, step: Int, y: Int, keepOut: List<IntArray>): Boolean {
+        var rLo = 255; var rHi = 0; var gLo = 255; var gHi = 0; var bLo = 255; var bHi = 0
+        var x = 0
+        while (x < fw) {
+            var skip = false
+            for (k in keepOut) if (y >= k[1] && y < k[3] && x >= k[0] && x < k[2]) { skip = true; break }
+            if (!skip) {
+                val p = row[x]
+                val r = (p ushr 16) and 0xFF
+                val g = (p ushr 8) and 0xFF
+                val b = p and 0xFF
+                if (r < rLo) rLo = r
+                if (r > rHi) rHi = r
+                if (g < gLo) gLo = g
+                if (g > gHi) gHi = g
+                if (b < bLo) bLo = b
+                if (b > bHi) bHi = b
+                if (rHi - rLo > FLAT_RANGE || gHi - gLo > FLAT_RANGE || bHi - bLo > FLAT_RANGE) return false
+            }
+            x += step
+        }
+        return true
+    }
+
+    /** How far apart, per channel, the pixels of a flat row may be: compression noise, a faint gradient. */
+    private const val FLAT_RANGE = 20
 
     private fun inWindow(p: Int, lo: Int, hi: Int): Boolean {
         val r = (p ushr 16) and 0xFF

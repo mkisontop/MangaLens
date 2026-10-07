@@ -124,11 +124,47 @@ internal class Strip(val w: Int, val h: Int, seed: Long = 7L) {
     }
 }
 
+/**
+ * The bars that stay put over a page [w] wide and [h] tall: a browser's tabs (in a grey that
+ * reads as paper under the shade) and address bar and a site's header across rows [0, top), a
+ * site's footer with a button at either end and the system's navigation bar across [bottom, h).
+ * Only those rows are painted; the rest is left white.
+ */
+internal fun chromeBars(w: Int, h: Int, top: Int, bottom: Int, seed: Long = 3): Strip {
+    val s = Strip(w, h, seed)
+    val tabs = top * 3 / 10
+    val address = top * 13 / 20
+    s.solid(0, 0, w, tabs, Strip.rgb(23, 23, 25))
+    s.text(14, tabs / 3, w - 20, tabs / 3 + 18, Strip.rgb(230, 230, 232))
+    s.solid(0, tabs, w, address, Strip.rgb(35, 38, 47))
+    s.text(14, tabs + 24, w * 3 / 4, tabs + 44, Strip.rgb(232, 232, 232))
+    s.solid(0, address, w, top, Strip.rgb(33, 33, 35))
+    s.solid(20, address + 10, 70, top - 10, Strip.rgb(250, 250, 250))
+    s.text(90, address + 20, 260, address + 42, Strip.rgb(240, 240, 240))
+    s.solid(w - 70, address + 10, w - 20, top - 10, Strip.rgb(250, 250, 250))
+    val nav = bottom + (h - bottom) * 6 / 10
+    s.solid(0, bottom, w, nav, Strip.rgb(33, 33, 35))
+    s.solid(16, bottom + 10, 110, nav - 10, Strip.rgb(124, 58, 237)); s.text(30, bottom + 22, 100, bottom + 44, Strip.WHITE)
+    s.solid(w - 110, bottom + 10, w - 16, nav - 10, Strip.rgb(124, 58, 237)); s.text(w - 96, bottom + 22, w - 26, bottom + 44, Strip.WHITE)
+    s.solid(0, nav, w, h, Strip.rgb(26, 25, 31))
+    s.solid(w - 90, nav + 8, w - 60, h - 8, Strip.rgb(220, 220, 224))
+    return s
+}
+
+/** Paints the rows of [bars] outside [top, bottom) over a frame of the same size. */
+internal fun overlayBars(bars: Strip, top: Int, bottom: Int): (IntArray) -> Unit = { f ->
+    System.arraycopy(bars.px, 0, f, 0, top * bars.w)
+    System.arraycopy(bars.px, bottom * bars.w, f, bottom * bars.w, (bars.h - bottom) * bars.w)
+}
+
 /** Blends an overlay of [rects] over [page] the way the compositor does. */
 internal fun composite(
     page: IntArray, w: Int, h: Int, rects: IntArray, count: Int, style: ShadeStyle, dy: Int = 0,
     /** A compositor that blends in linear light rather than in the encoded values. */
     linear: Boolean = false,
+    /** The screen rows the overlay is cut to. */
+    top: Int = 0,
+    bottom: Int = Int.MAX_VALUE,
 ): IntArray {
     val out = page.copyOf()
     val a = style.alpha
@@ -139,9 +175,9 @@ internal fun composite(
     }
     for (i in 0 until count) {
         val x0 = rects[i * 4].coerceIn(0, w)
-        val y0 = (rects[i * 4 + 1] + dy).coerceIn(0, h)
+        val y0 = (rects[i * 4 + 1] + dy).coerceIn(maxOf(0, top), h)
         val x1 = rects[i * 4 + 2].coerceIn(0, w)
-        val y1 = (rects[i * 4 + 3] + dy).coerceIn(0, h)
+        val y1 = (rects[i * 4 + 3] + dy).coerceIn(0, minOf(h, bottom))
         for (y in y0 until y1) for (x in x0 until x1) {
             val p = out[y * w + x]
             out[y * w + x] = Strip.rgb(chan((p ushr 16) and 0xFF), chan((p ushr 8) and 0xFF), chan(p and 0xFF))

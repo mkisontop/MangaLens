@@ -1,5 +1,28 @@
 # Changelog
 
+## 1.1.3
+
+Dark gaps stay off the browser's and the site's bars while you scroll.
+
+**Download:** `MangaLens.apk` below updates 0.9.2 and newer in place. Still on
+0.9.1? Use `MangaLens-legacy-update.apk` once (Android 9+), as described in
+the README.
+
+- **The shade stops at the bars that stay put.** The dark gaps ride the page as
+  it scrolls, and nothing stopped them riding on under the bars that do not
+  scroll: the browser's tabs and address bar, a site's own header and its
+  *Prev* / *Next* footer, the navigation bar. With a site's header on screen, a
+  fast scroll slid slabs of shade over its title and buttons. The rows the page
+  scrolls in are now found on every detection, between the bars across the top
+  and the bottom of the screen, and the shade is cut to them.
+- **Steadier while those bars are up.** The page's motion is measured from the
+  page alone; bars that never move no longer argue that nothing moved.
+- **Tested on real pages.** Besides the unit tests and the image corpus, the
+  whole engine was run over two screenshots of a real chapter, scrolling under
+  a fixed header and footer at reading speed, in a drag, a fling, a reversal
+  and at 120 Hz: no shade on the bars in any frame, no art covered in steady
+  motion, and every gutter dark again at rest.
+
 ## 1.1.2
 
 Dark gaps show up again on sites that put their own bars on screen.

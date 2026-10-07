@@ -26,7 +26,8 @@ object GapClock {
  * It draws one thing: a list of rectangles, each a slab of black. Which rectangles, and how far
  * down the screen, come from the engine's newest [ShadeSnapshot], read at the moment of
  * drawing; while the page moves it asks for every frame, because the position is a prediction
- * that advances with the clock.
+ * that advances with the clock. They are cut to the rows the page scrolls in, so that riding
+ * the page never carries them onto the browser's or a site's bars.
  *
  * The black is painted so that what reaches the glass is [ShadeStyle.alpha] of black, whatever
  * the window is drawn at, and so that under the veil MangaLens lays over the page the capture,
@@ -77,17 +78,9 @@ class GapShadeLayer : BubbleOverlayView.Underlay {
         val shift = snap.shiftAt(now)
         onDrawn?.invoke(snap, shift, now)
         paint.alpha = ShadeWindow.paintAlpha(style.alpha, view.windowAlpha, view.screenLevel)
-        val rects = snap.rects
-        val h = view.height
-        var i = 0
-        while (i < snap.rectCount) {
-            val j = i * 4
-            val top = rects[j + 1] + shift
-            val bottom = rects[j + 3] + shift
-            if (bottom > 0 && top < h) {
-                canvas.drawRect(rects[j].toFloat(), top.toFloat(), rects[j + 2].toFloat(), bottom.toFloat(), paint)
-            }
-            i++
+        // Cut to the rows the page scrolls in: the bars above and below it stay put.
+        snap.forEachDrawn(shift, view.height) { x0, y0, x1, y1 ->
+            canvas.drawRect(x0.toFloat(), y0.toFloat(), x1.toFloat(), y1.toFloat(), paint)
         }
         return snap.moving
     }

@@ -28,8 +28,29 @@ internal class ShadeSimulation(
     private val quietMs: Double = 130.0,
     tuning: ShadeTuning = ShadeTuning(),
     private val linearBlend: Boolean = false,
+    /**
+     * What else is on the screen under the shade and does not scroll — the browser's bars, a
+     * site's own header and footer — painted over each frame of the page.
+     */
+    private val fixed: ((IntArray) -> Unit)? = null,
+    /** What is drawn over the shade — MangaLens's own controls — and declared to the engine as [exclusions]. */
+    private val onTop: ((IntArray) -> Unit)? = null,
+    private val exclusions: List<IntArray> = emptyList(),
+    private val ignoreTopRows: Int = 0,
+    private val ignoreBottomRows: Int = 0,
+    /** Screen pixels the shade must never reach, whatever is under them: the fixed bars, the controls. */
+    private val keepClear: BooleanArray? = null,
+    /** Shown each vsync's glass, for a look at it. */
+    private val onGlass: ((Int, IntArray) -> Unit)? = null,
 ) {
-    val engine = ShadeEngine(w, h, style, GapParams(), tuning)
+    val engine = ShadeEngine(w, h, style, GapParams(), tuning).also { e ->
+        e.ignoreTopRows = ignoreTopRows
+        e.ignoreBottomRows = ignoreBottomRows
+        e.setExclusions(exclusions)
+    }
+
+    /** The screen with the page scrolled to [top], before the shade: the page and whatever is fixed over it. */
+    private fun screen(top: Int): IntArray = strip.frame(top, h).also { fixed?.invoke(it) }
 
     private class Event(val at: Double, val seq: Int, val run: () -> Unit) : Comparable<Event> {
         override fun compareTo(other: Event): Int = if (at != other.at) at.compareTo(other.at) else seq.compareTo(other.seq)
@@ -40,7 +61,8 @@ internal class ShadeSimulation(
         const val STOP_MS = 260.0
     }
 
-    private class Draw(val rects: IntArray, val count: Int, val shift: Int)
+    /** A draw as the view makes it: the rectangles, how far down, and the rows of the page they are cut to. */
+    private class Draw(val rects: IntArray, val count: Int, val shift: Int, val top: Int, val bottom: Int)
 
     private val queue = PriorityQueue<Event>()
     private var seq = 0
@@ -53,6 +75,7 @@ internal class ShadeSimulation(
     private var lastGlass: IntArray? = null
     private var lastDelivered = -1.0
     private var quietGen = 0
+    private var shownRects = 0
 
     class Report {
         var frames = 0
@@ -66,6 +89,12 @@ internal class ShadeSimulation(
         var restDamage = 0
         var restCoverage = 1.0
 
+        /** Times the shade was up and the engine took all of it down. */
+        var drops = 0
+
+        /** Most pixels of [keepClear] the shade on the glass covered in any one frame. */
+        var clearHits = 0
+
         /** Worst damage in the first moments of motion, in steady motion, and just after the page stops. */
         var maxSpeed = 0f
         var onsetMax = 0
@@ -74,7 +103,7 @@ internal class ShadeSimulation(
         fun log() = damageLog.joinToString(" ")
         override fun toString() = "onset=${onsetMax}px steady=${steadyMax}px stop=${stopMax}px | frames=$frames maxDamage=${maxDamage}px damagedFrames=$damagedFrames " +
             "meanCoverageMoving=${"%.3f".format(if (coverageMovingN == 0) 1.0 else coverageMovingSum / coverageMovingN)} " +
-            "restDamage=$restDamage restCoverage=${"%.4f".format(restCoverage)}"
+            "restDamage=$restDamage restCoverage=${"%.4f".format(restCoverage)} drops=$drops clearHits=$clearHits"
     }
 
     private fun at(t: Double, run: () -> Unit) {
@@ -136,7 +165,7 @@ internal class ShadeSimulation(
 
         // The shade is switched on with the page at rest.
         firstTop = Math.round(scroll(0.0)).toInt()
-        val first = strip.frame(scroll(0.0).toInt(), h)
+        val first = screen(scroll(0.0).toInt()).also { onTop?.invoke(it) }
         lastGlass = first
         runJob(engine.kick(ArrayPixels(w, h, first), 0.0), 0.0)
 
@@ -145,19 +174,23 @@ internal class ShadeSimulation(
             drain(t)
             engine.tick(t)
             val top = scroll(minOf(t, durationMs)).let { Math.round(it).toInt() }
-            val page = strip.frame(top, h)
+            val page = screen(top)
 
             // The view draws, now, from the newest snapshot.
             val snap = engine.snapshot
+            if (snap.rectCount == 0 && shownRects > 0) report.drops++
+            shownRects = snap.rectCount
             val shift = snap.shiftAt(t)
             if (Math.abs(snap.velocity) > report.maxSpeed) report.maxSpeed = Math.abs(snap.velocity)
             if (trace && t in traceFrom..traceTo) println("TRACE t=${"%.0f".format(t)} top=$top truthShift=${firstTop - top} drawnShift=$shift base=${snap.baseOffset} off=${snap.offset} v=${"%.3f".format(snap.velocity)} a=${"%.4f".format(snap.accel)} lead=${"%.0f".format(snap.leadMs)} rects=${snap.rectCount} moving=${snap.moving}")
-            draws.add(Draw(snap.rects, snap.rectCount, shift))
+            draws.add(Draw(snap.rects, snap.rectCount, shift, snap.pageTop, snap.pageBottom))
             engine.noteDraw(snap, shift, t)
 
             // What is on the glass at this vsync: the page, with the overlay drawn `displayFrames` ago.
             val shown = draws.getOrNull(k - displayFrames)
-            val glass = if (shown == null) page else composite(page, w, h, shown.rects, shown.count, style, shown.shift, linearBlend)
+            val glass = if (shown == null) page.copyOf() else composite(page, w, h, shown.rects, shown.count, style, shown.shift, linearBlend, shown.top, shown.bottom)
+            onTop?.invoke(glass)
+            onGlass?.invoke(k, glass)
 
             if (shown != null) score(report, page, shown, k, t > durationMs + 300, t <= durationMs)
 
@@ -192,12 +225,14 @@ internal class ShadeSimulation(
 
     private fun score(report: Report, page: IntArray, shown: Draw, k: Int, atRest: Boolean, moving: Boolean) {
         var damage = 0
+        var clear = 0
         for (i in 0 until shown.count) {
             val x0 = shown.rects[i * 4].coerceIn(0, w)
             val x1 = shown.rects[i * 4 + 2].coerceIn(0, w)
-            val y0 = (shown.rects[i * 4 + 1] + shown.shift).coerceIn(0, h)
-            val y1 = (shown.rects[i * 4 + 3] + shown.shift).coerceIn(0, h)
+            val y0 = (shown.rects[i * 4 + 1] + shown.shift).coerceIn(max(0, shown.top), h)
+            val y1 = (shown.rects[i * 4 + 3] + shown.shift).coerceIn(0, minOf(h, shown.bottom))
             for (y in y0 until y1) for (x in x0 until x1) {
+                if (keepClear != null && keepClear[y * w + x]) clear++
                 if (Strip.isPaper(page[y * w + x])) continue
                 // At rest the exact pass takes in the anti-aliased edge of the art on purpose: a pixel
                 // of ramp within three of paper is the edge, not damage. In motion nothing is tolerated.
@@ -215,6 +250,7 @@ internal class ShadeSimulation(
             }
         }
         if (atRest) report.restDamage = max(report.restDamage, damage)
+        report.clearHits = max(report.clearHits, clear)
         val t = k * vsyncMs
         when {
             t < motionStartMs + ONSET_MS -> report.onsetMax = max(report.onsetMax, damage)
@@ -223,15 +259,15 @@ internal class ShadeSimulation(
         }
         if (k % 8 == 0) {
             // coverage against what an exact pass on the clean page would shade
-            val ref = GapFinder.find(PlaneBuilder.build(ArrayPixels(w, h, page), 1, style), 0, GapParams(), true)
+            val ref = GapFinder.find(PlaneBuilder.build(ArrayPixels(w, h, page), 1, style, ignoreTopRows, ignoreBottomRows, exclusions), 0, GapParams(), true)
             if (ref.shadedPixels > 0) {
                 val refMask = coverage(ref.rects, ref.rectCount, w, h)
                 var hit = 0L
                 for (i in 0 until shown.count) {
                     val x0 = shown.rects[i * 4].coerceIn(0, w)
                     val x1 = shown.rects[i * 4 + 2].coerceIn(0, w)
-                    val y0 = (shown.rects[i * 4 + 1] + shown.shift).coerceIn(0, h)
-                    val y1 = (shown.rects[i * 4 + 3] + shown.shift).coerceIn(0, h)
+                    val y0 = (shown.rects[i * 4 + 1] + shown.shift).coerceIn(max(0, shown.top), h)
+                    val y1 = (shown.rects[i * 4 + 3] + shown.shift).coerceIn(0, minOf(h, shown.bottom))
                     for (y in y0 until y1) for (x in x0 until x1) if (refMask[y * w + x]) hit++
                 }
                 val c = hit.toDouble() / ref.shadedPixels

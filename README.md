@@ -19,7 +19,7 @@ about 1.5–2 s after you stop.
 · [all releases](https://github.com/mkisontop/mangalens/releases)
 · [changelog](CHANGELOG.md)
 
-Current release: **1.1.2**. Still on 0.9.1? Follow the
+Current release: **1.1.3**. Still on 0.9.1? Follow the
 [one-time update instructions](#one-time-update-from-091) instead of using
 the normal APK.
 
@@ -601,6 +601,11 @@ it works in any browser or reader. What it does with them:
   MangaLens's floating buttons all cross those bars; the bars are read where the
   gutters meet them, past the bands that cross them at the top and bottom of the
   screen, and the app's own buttons are never taken for the page.
+- **The shade never rides onto bars that stay put.** The rows those bands cross
+  — and the flat or dark rows that pad them — are the browser's, the site's and
+  the system's, not the page's. The page is taken to scroll between them, the
+  shade is cut to those rows as it rides the page, and the page's motion is
+  measured there alone.
 - **Edges are followed down, not left as a pale line.** Where a black panel
   border meets the white, the anti-aliased pixels between them (242, 210, 146,
   61…) would stay light and glow against the dark. A fringe is a *ramp* — brightness

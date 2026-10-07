@@ -53,7 +53,17 @@ class GapResult(
     /** Whether the frame carried artwork: shading is only trusted on a page that has some. */
     val sawArt: Boolean,
     val gapCount: Int,
+    /**
+     * The screen rows [pageTop, pageBottom) the page scrolls in: above and below them are bars
+     * that stay put while it scrolls — the browser's, a site's own header and footer. The shade
+     * rides the page, and must never be carried onto them.
+     */
+    val pageTop: Int = 0,
+    val pageBottom: Int = Int.MAX_VALUE,
 ) {
+    /** The same result, with the page found to scroll in rows [top, bottom). */
+    fun within(top: Int, bottom: Int) = GapResult(rects, rectCount, shadedPixels, sawArt, gapCount, top, bottom)
+
     companion object {
         val EMPTY = GapResult(IntArray(0), 0, 0L, false, 0)
     }
@@ -117,6 +127,18 @@ object GapFinder {
     private const val CHROME_TOP_SHARE = 0.2f
     private const val CHROME_BOTTOM_SHARE = 0.15f
 
+    /** The most of the screen the bars across its top, or across its bottom, are ever taken to be. */
+    private const val CHROME_MAX_SHARE = 0.3f
+
+    /** Sampled rows, at full resolution, of something else a bar across the screen may hold between rows that are plainly bar. */
+    private const val BAR_BREAK_ROWS = 10
+
+    /** Sampled rows, at full resolution, from a row that crosses a black bar within which a dark row is still the bar's. */
+    private const val BAR_DARK_ROWS = 8
+
+    /** Share of a row that must be ink for it to be dark. */
+    private const val DARK_ROW_SHARE = 0.9f
+
     /** Side of the blocks the art check counts, in plane pixels, and the share of one that must be ink. */
     private const val ART_BLOCK = 16
     private const val ART_DENSITY = 55
@@ -139,11 +161,20 @@ object GapFinder {
         val colR = column.right
         val colW = max(1, w - colL - colR)
 
+        // the rows the page scrolls in, in frame rows
+        val top = column.pageTop * step
+        // the page's last frame row is its last plane row's: the rows between samples after it may be the bar's
+        val bottom = if (column.pageBottom >= h) Int.MAX_VALUE else (column.pageBottom - 1) * step + 1
         val sawArt = hasArt(planes, colL, colR, params)
-        if (!sawArt && !artRecently) return GapResult(IntArray(0), 0, 0L, false, 0)
+        if (!sawArt && !artRecently) return GapResult(IntArray(0), 0, 0L, false, 0, top, bottom)
 
-        // 2. Seal.
-        val core = planes.paper.copy().erode(sealR, outside = true)
+        // 2. Seal. The browser's and a site's bars across the top and bottom are not the page:
+        // nothing on them is a gutter, nor may it join one — a dark bar can be the very grey of
+        // paper under the shade.
+        val core = planes.paper.copy()
+        core.clearRows(0, column.pageTop)
+        core.clearRows(column.pageBottom, h)
+        core.erode(sealR, outside = true)
 
         // 3. Label the sealed paper and pick the gutters.
         val labels = label(core, connect8 = false)
@@ -172,7 +203,7 @@ object GapFinder {
             picked.add(c)
         }
         val seams = seamRows(planes, reachL, reachR, chrome)
-        if (picked.isEmpty() && seams == null) return GapResult(IntArray(0), 0, 0L, sawArt, 0)
+        if (picked.isEmpty() && seams == null) return GapResult(IntArray(0), 0, 0L, sawArt, 0, top, bottom)
 
         val seed = BitPlane(w, h)
         for (c in picked) labels.paintComponent(c, seed)
@@ -276,7 +307,7 @@ object GapFinder {
             }
             if (kept < picked.size + extra) gutter = keepSeed.dilate(sealR).and(planes.paper)
         }
-        if (kept == 0) return GapResult(IntArray(0), 0, 0L, sawArt, 0)
+        if (kept == 0) return GapResult(IntArray(0), 0, 0L, sawArt, 0, top, bottom)
 
         val shade = gutter.or(specks).andNot(halo)
         // Only the exact pass takes in the edge: in motion the shade is pulled back from it anyway.
@@ -292,7 +323,7 @@ object GapFinder {
             if (marginRows == 0) shade.erodeV(1)
         }
 
-        return extractRects(shade, step, planes.frameW, planes.frameH, kept)
+        return extractRects(shade, step, planes.frameW, planes.frameH, kept).within(top, bottom)
     }
 
     /**
@@ -319,7 +350,7 @@ object GapFinder {
             if (end - y <= MAX_SEAM) {
                 val plane = seams ?: BitPlane(w, planes.h).also { seams = it }
                 for (r in y until end) planes.paper.forEachRun(r) { a, b ->
-                    if (a <= lo && b >= hi && !(chrome.into(a, b) && chrome.holds(r))) plane.setRun(r, a, b)
+                    if (a <= lo && b >= hi && !(chrome.into(a, b) && chrome.holds(r)) && chrome.onPage(r)) plane.setRun(r, a, b)
                 }
             }
             y = end
@@ -503,11 +534,16 @@ object GapFinder {
         private val right = if (column.barRight) planes.w - column.right + 2 * sealR + BAR_EDGE else Int.MAX_VALUE
         private val top = planes.validY0 + (CHROME_TOP_SHARE * (planes.validY1 - planes.validY0)).toInt()
         private val bottom = planes.validY1 - (CHROME_BOTTOM_SHARE * (planes.validY1 - planes.validY0)).toInt()
+        private val pageTop = column.pageTop
+        private val pageBottom = column.pageBottom
 
         /** Whether paper over columns [x0, x1) runs on into a black bar. */
         fun into(x0: Int, x1: Int) = x0 < left || x1 > right
 
         fun holds(y: Int) = y < top || y >= bottom
+
+        /** Whether plane row [y] is the page's, not the bars' across the top and bottom. */
+        fun onPage(y: Int) = y >= pageTop && y < pageBottom
 
         /** Whether all of component [c] lies in the bands at the top or the bottom. */
         fun holds(labels: Labels, c: Int): Boolean {
@@ -539,7 +575,15 @@ object GapFinder {
      * The strip's place on the screen: [left] and [right] plane columns at the edges are not part
      * of it. [barLeft] and [barRight] say that side's black bar was read past rows that cross it.
      */
-    internal class Column(val left: Int, val right: Int, val barLeft: Boolean, val barRight: Boolean)
+    internal class Column(
+        val left: Int,
+        val right: Int,
+        val barLeft: Boolean,
+        val barRight: Boolean,
+        /** Plane rows [pageTop, pageBottom) between the bars across the top and bottom of the screen. */
+        val pageTop: Int = 0,
+        val pageBottom: Int = Int.MAX_VALUE,
+    )
 
     internal fun column(planes: Planes): Column {
         val w = planes.w
@@ -580,6 +624,13 @@ object GapFinder {
                     break
                 }
             }
+            // A row through MangaLens's own controls says nothing about a bar on their side.
+            for (k in planes.keepOut) {
+                val fy = y * planes.step
+                if (fy < k[1] || fy >= k[3]) continue
+                if (k[0] < cap * planes.step) left.skip[rows] = true
+                if (k[2] > (w - cap) * planes.step) right.skip[rows] = true
+            }
             rows++
             y += 4
         }
@@ -598,13 +649,120 @@ object GapFinder {
         if (barL > l) l = barL
         if (barR > r) r = barR
         if (w - l - r < 0.3f * w) return Column(0, 0, false, false)
-        return Column(l, r, barL > 0 && barL == l, barR > 0 && barR == r)
+        val blackL = barL > 0 && barL == l
+        val blackR = barR > 0 && barR == r
+        // Only beside a black bar that something crosses is there a bar across the screen to find.
+        // A strip is centred: when only one bar shows its gutters, the other side, as black as far
+        // in, is the same bar.
+        val bandL = if (blackL) l else if (blackR && mostlyBlack(left, rows, r)) r else 0
+        val bandR = if (blackR) r else if (blackL && mostlyBlack(right, rows, l)) l else 0
+        val (top, bottom) = pageRows(planes, left, right, rows, bandL, bandR)
+        return Column(l, r, blackL, blackR, top, bottom)
     }
 
-    /** Per sampled row, from one edge: how far black runs in, and whether paper then runs on for a good stretch. */
+    /**
+     * The plane rows the page scrolls in: between the bars the browser, the system and a site lay
+     * across the top and the bottom of the screen. Those cross the black bars beside the strip —
+     * a row of tabs, a site's title and buttons, the navigation buttons — where the page never
+     * does, and what lies between their rows is mostly dark. So a bar is the run of such rows
+     * from the screen's edge, over short breaks (a row of app icons in the navigation bar), so
+     * long as one of them does cross a black bar: a dark panel at the top of the page is no bar.
+     * With no black bar, nothing is known.
+     */
+    private fun pageRows(planes: Planes, left: SideRows, right: SideRows, rows: Int, l: Int, r: Int): Pair<Int, Int> {
+        if (l < BAR_MIN && r < BAR_MIN) return 0 to Int.MAX_VALUE
+        fun rowAt(i: Int) = planes.validY0 + 4 * i
+        // Crossing deep into a black bar: tabs, buttons and titles sit well inside it, where the
+        // ringing of a compressed edge between the bar and the page never reaches.
+        fun crosses(i: Int) = (l >= BAR_MIN && left.run[i] < l - max(2 * BAR_EDGE, l / 4)) ||
+            (r >= BAR_MIN && right.run[i] < r - max(2 * BAR_EDGE, r / 4))
+        val reach = (CHROME_MAX_SHARE * rows).toInt()
+        // in sampled rows, the same stretch of screen whatever the plane's resolution
+        val breakRows = max(3, BAR_BREAK_ROWS / planes.step)
+        val darkRows = max(2, BAR_DARK_ROWS / planes.step)
+
+        /**
+         * The last sampled row, counting from the edge by [order], of a bar that crosses a black
+         * bar; -1 when there is none. Its rows cross a black bar, or are its flat padding, or are
+         * dark and close to a row that crosses (the rim of an address field, a row of icons):
+         * dark rows far from any are the page's own dark art.
+         */
+        fun barEnd(order: (Int) -> Int): Int {
+            var last = -1
+            var lastCross = -1
+            var k = 0
+            while (k < reach && k - last <= breakRows) {
+                val i = order(k)
+                val cross = crosses(i)
+                if (cross) lastCross = k
+                val y = rowAt(i)
+                if (cross || paddingRow(planes, y) || (lastCross >= 0 && k - lastCross <= darkRows && darkRow(planes, y))) last = k
+                k++
+            }
+            return if (lastCross < 0) -1 else last
+        }
+        // Between two sampled rows, the exact row where the bar ends: one that crosses a black
+        // bar, or is flat or dark, is still the bar's.
+        val wpr = planes.paper.wpr
+        fun barLike(y: Int): Boolean {
+            val base = y * wpr
+            val cross = (l >= BAR_MIN && runForward(planes.ink.bits, base, 0, l, planes.w) < l - max(2 * BAR_EDGE, l / 4)) ||
+                (r >= BAR_MIN && runBackward(planes.ink.bits, base, planes.w - 1, r) < r - max(2 * BAR_EDGE, r / 4))
+            return cross || paddingRow(planes, y) || darkRow(planes, y)
+        }
+        val topEnd = barEnd { it }
+        var top = 0
+        if (topEnd >= 0) {
+            // the page starts after the bar's last sampled row, by the next sampled row at the latest
+            top = rowAt(topEnd) + 1
+            val next = min(rowAt(topEnd + 1), planes.validY1)
+            while (top < next && barLike(top)) top++
+        }
+        val bottomEnd = barEnd { rows - 1 - it }
+        var bottom = Int.MAX_VALUE
+        if (bottomEnd >= 0) {
+            // the page ends before the bar's first sampled row, and after the sampled row above it
+            val first = rowAt(rows - 1 - bottomEnd)
+            val above = rowAt(rows - 1 - bottomEnd - 1)
+            var y = first - 1
+            while (y > above && barLike(y)) y--
+            bottom = max(y + 1, top)
+        }
+        return top to bottom
+    }
+
+    /** Whether plane row [y] is all but entirely ink. */
+    private fun darkRow(planes: Planes, y: Int): Boolean = planes.ink.countRow(y, 0, planes.w) >= DARK_ROW_SHARE * planes.w
+
+    /**
+     * Whether plane row [y] is the padding of a browser's or site's bar: one flat colour from edge
+     * to edge. A row of the page has the black bars beside it and something else between them.
+     */
+    private fun paddingRow(planes: Planes, y: Int): Boolean {
+        val flat = planes.flat ?: return false
+        return y in flat.indices && flat[y]
+    }
+
+    /**
+     * Per sampled row, from one edge: how far black runs in, whether paper then runs on for a good
+     * stretch, and whether MangaLens's own controls are in the way.
+     */
     private class SideRows(n: Int) {
         val run = IntArray(n)
         val paperAfter = BooleanArray(n)
+        val skip = BooleanArray(n)
+    }
+
+    /** Whether most rows of [side] run black at least [bar] in from the edge. */
+    private fun mostlyBlack(side: SideRows, rows: Int, bar: Int): Boolean {
+        var seen = 0
+        var black = 0
+        for (i in 0 until rows) {
+            if (side.skip[i]) continue
+            seen++
+            if (side.run[i] >= bar - BAR_EDGE) black++
+        }
+        return seen > 0 && black >= (1f - MAX_CROSSING_SHARE) * seen
     }
 
     /**
@@ -622,7 +780,10 @@ object GapFinder {
         val run = side.run
         var bar = Int.MAX_VALUE
         var meeting = 0
+        var seen = 0
         for (i in 0 until rows) {
+            if (side.skip[i]) continue
+            seen++
             if (side.paperAfter[i] && run[i] >= barMin && run[i] < cap) {
                 meeting++
                 if (run[i] < bar) bar = run[i]
@@ -631,7 +792,7 @@ object GapFinder {
         if (meeting < MIN_GUTTER_ROWS) return 0
         // a bar's edge is straight: the gutters meet it in the same column
         var straight = 0
-        for (i in 0 until rows) if (side.paperAfter[i] && run[i] >= bar && run[i] <= bar + 2 * BAR_EDGE) straight++
+        for (i in 0 until rows) if (!side.skip[i] && side.paperAfter[i] && run[i] >= bar && run[i] <= bar + 2 * BAR_EDGE) straight++
         if (straight < BAR_STRAIGHT_SHARE * meeting) return 0
         // The rows that cross the bar. Near the top and the bottom of the screen they are the
         // browser's and the site's bars, whose grey can even pass for paper under the shade;
@@ -641,11 +802,11 @@ object GapFinder {
         var crossings = 0
         var reachesEdge = 0
         for (i in 0 until rows) {
-            if (run[i] >= bar - BAR_EDGE) continue
+            if (side.skip[i] || run[i] >= bar - BAR_EDGE) continue
             crossings++
             if (i in top until bottom && run[i] < BAR_EDGE && side.paperAfter[i]) reachesEdge++
         }
-        if (crossings > MAX_CROSSING_SHARE * rows) return 0
+        if (crossings > MAX_CROSSING_SHARE * seen) return 0
         if (reachesEdge >= MIN_GUTTER_ROWS) return 0
         return bar
     }

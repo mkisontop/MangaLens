@@ -101,7 +101,28 @@ class ShadeSnapshot(
     val leadMs: Float,
     val maxExtrapolateMs: Float,
     val moving: Boolean,
+    /**
+     * The screen rows [pageTop, pageBottom) the page scrolls in. The bars above and below — the
+     * browser's, a site's header and footer — stay put while the rectangles ride the page, and
+     * nothing is drawn on them.
+     */
+    val pageTop: Int = 0,
+    val pageBottom: Int = Int.MAX_VALUE,
 ) {
+    /**
+     * Calls [f] with each rectangle as it is drawn [shift] rows down, cut to the page's rows and
+     * to a screen [height] rows tall; rectangles left with nothing are skipped.
+     */
+    inline fun forEachDrawn(shift: Int, height: Int, f: (x0: Int, y0: Int, x1: Int, y1: Int) -> Unit) {
+        val lo = max(pageTop, 0)
+        val hi = min(pageBottom, height)
+        for (i in 0 until rectCount) {
+            val y0 = max(rects[i * 4 + 1] + shift, lo)
+            val y1 = min(rects[i * 4 + 3] + shift, hi)
+            if (y1 > y0) f(rects[i * 4], y0, rects[i * 4 + 2], y1)
+        }
+    }
+
     /** Rows to draw the rectangles below where they were found, for a frame drawn at [nowMs]. */
     fun shiftAt(nowMs: Double): Int {
         var shift = (offset - baseOffset).toFloat()
@@ -219,6 +240,10 @@ class ShadeEngine(
     private var lastInstallMs = -1e9
     private var signatureChecked = false
 
+    /** The screen rows the page scrolls in, as the newest detection found them. */
+    private var pageTop = 0
+    private var pageBottom = Int.MAX_VALUE
+
     // ---- detections ----
     private var hardEpoch = 0
     private var moveEpoch = 0
@@ -233,6 +258,9 @@ class ShadeEngine(
          * the rectangles' own coordinates. A record never changes, so this is built once.
          */
         var edges: Array<IntArray>? = null
+
+        /** The record as it reached the glass, cut to the page's rows; built once, when first asked for. */
+        var cut: Displayed? = null
     }
 
     private val calibrationCols = IntArray(CAL_COLS) { ((it + 0.5f) * width / CAL_COLS).toInt().coerceIn(0, width - 1) }
@@ -270,8 +298,25 @@ class ShadeEngine(
         }
     }
 
-    /** A shade as it was drawn, and where. */
+    /** A shade as it was drawn, and where: [rects] are cut to what reached the glass. */
     class Displayed(val rects: IntArray, val rectCount: Int, val shift: Int)
+
+    /** What [rec] put on the glass: its rectangles cut to the page's rows, in their own coordinates. */
+    private fun displayed(rec: DrawRecord): Displayed {
+        val sn = rec.snap
+        if (sn.pageTop <= 0 && sn.pageBottom >= height) return Displayed(sn.rects, sn.rectCount, rec.shift)
+        rec.cut?.let { return it }
+        val out = IntArray(sn.rectCount * 4)
+        var n = 0
+        sn.forEachDrawn(rec.shift, height) { x0, y0, x1, y1 ->
+            out[n * 4] = x0
+            out[n * 4 + 1] = y0 - rec.shift
+            out[n * 4 + 2] = x1
+            out[n * 4 + 3] = y1 - rec.shift
+            n++
+        }
+        return Displayed(out, n, rec.shift).also { rec.cut = it }
+    }
 
     /**
      * The shade that is on the glass in a frame that arrived at [nowMs]: the newest draw old
@@ -286,11 +331,11 @@ class ShadeEngine(
             for (i in 0 until n) {
                 val rec = drawLog[(drawHead - 1 - i) % DRAW_LOG] ?: continue
                 if (fallback == null) fallback = rec
-                if (rec.atMs <= cutoff) return Displayed(rec.snap.rects, rec.snap.rectCount, rec.shift)
+                if (rec.atMs <= cutoff) return displayed(rec)
             }
             // Every draw is newer than the cutoff: the shade came up just now; the oldest is the best guess.
             val oldest = drawLog[(drawHead - n) % DRAW_LOG] ?: return null
-            return Displayed(oldest.snap.rects, oldest.snap.rectCount, oldest.shift)
+            return displayed(oldest)
         }
     }
 
@@ -332,8 +377,10 @@ class ShadeEngine(
         if (sinceLast in 2.0..60.0) frameMs = 0.85f * frameMs + 0.15f * sinceLast.toFloat()
         lastFrameAtMs = nowMs
 
-        val y0 = ignoreTopRows.coerceIn(0, height)
-        val y1 = (height - ignoreBottomRows).coerceIn(y0, height)
+        // The page's motion is read from the page: the bars that stay put above and below it
+        // would only argue that nothing moved.
+        val y0 = max(ignoreTopRows, pageTop).coerceIn(0, height)
+        val y1 = min(height - ignoreBottomRows, pageBottom).coerceIn(y0, height)
         val profile = tracker.profile(src, y0, y1, style)
         val prev = prevProfile
         var dy = 0
@@ -450,7 +497,7 @@ class ShadeEngine(
             val y1 = rects[i * 4 + 3] + shift
             if (y1 - y0 < 48 || x1 - x0 < 48) continue
             val y = (y0 + y1) / 2
-            if (y !in 0 until height) continue
+            if (y !in 0 until height || y < pageTop || y >= pageBottom) continue
             for (k in 1..3) {
                 val x = x0 + (x1 - x0) * k / 4
                 if (x !in 0 until width) continue
@@ -569,6 +616,8 @@ class ShadeEngine(
         // An exact pass describes a page at rest; if the page has moved since, it is stale.
         if (job.full && job.moveEpoch != moveEpoch) return
         if (result.sawArt) artSeenAtMs = nowMs
+        pageTop = result.pageTop
+        pageBottom = result.pageBottom
         srcRects = result.rects
         srcCount = result.rectCount
         srcMargin = job.marginPx
@@ -772,7 +821,7 @@ class ShadeEngine(
             val y1 = rects[i * 4 + 3] + shift
             if (y1 - y0 < 2 * depth + 6 || x1 - x0 < 24) continue
             val cy = (y0 + y1) / 2
-            if (cy !in 0 until height) continue
+            if (cy !in 0 until height || cy < pageTop || cy >= pageBottom) continue
             for (k in 1..3) {
                 val x = x0 + (x1 - x0) * k / 4
                 if (x !in 0 until width) continue
@@ -790,7 +839,7 @@ class ShadeEngine(
     private fun publish(nowMs: Double, moving: Boolean) {
         snapshot = ShadeSnapshot(
             rects, rectCount, baseOffset, offset, nowMs, velocity, accel, frameMs, leadMs(),
-            tuning.maxExtrapolateMs, moving,
+            tuning.maxExtrapolateMs, moving, pageTop, pageBottom,
         )
     }
 
