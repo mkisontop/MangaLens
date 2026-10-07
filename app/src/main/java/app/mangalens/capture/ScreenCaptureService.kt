@@ -38,6 +38,7 @@ import app.mangalens.R
 import app.mangalens.ocr.BalloonFinder
 import app.mangalens.ocr.OcrEngine
 import app.mangalens.gaps.LiftedPixels
+import app.mangalens.gaps.ShadeWindow
 import app.mangalens.overlay.GapClock
 import app.mangalens.overlay.Hyphenation
 import app.mangalens.overlay.OverlayController
@@ -708,9 +709,15 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                 scope.launch { settingsRepo.setDarkGaps(false) }
             },
         )
-        controller?.let { shadeController.attach(it.shadeView) }
+        controller?.let { shadeController.attach(it.shadeLayer) }
         shade = shadeController
-        controller?.bubbleView?.let { v -> v.onVeilChanged = { screenLevel = v.screenLevel } }
+        controller?.bubbleView?.let { v ->
+            v.onVeilChanged = {
+                screenLevel = v.screenLevel
+                // The lettering's window moved or changed strength: the shade is drawn in it.
+                applyShadeSettings()
+            }
+        }
         updateVeil()
         refreshOverlayMask()
         applyShadeSettings()
@@ -1118,7 +1125,9 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         val on = s.darkGaps && projection != null
         // The top band is the browser's bar and the status bar. The bottom band exists for OCR; to the
         // shade it would only leave a strip of white across real content, so the shade has none.
-        c.configure(on, s.gapShade, capW, capH, (capH * s.ignoreTopPct).toInt(), 0)
+        // The shade is drawn in the lettering's window, and can be no darker than that window can show.
+        val cap = ShadeWindow.cap(controller?.bubbleView?.windowAlpha ?: 1f)
+        c.configure(on, s.gapShade, cap, capW, capH, (capH * s.ignoreTopPct).toInt(), 0)
         controller?.watchTouches(on) { shade?.arm() }
     }
 

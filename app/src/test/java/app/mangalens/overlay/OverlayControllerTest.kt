@@ -114,6 +114,18 @@ class OverlayControllerTest {
     }
 
     @Test
+    fun `the dark gaps add no window of their own, so touches still reach the page`() {
+        val c = attach()
+        assertTrue("drawn in the lettering's window", c.bubbleView.underlay === c.shadeLayer)
+        // Android adds up the opacity of an app's windows that let touches through, and past its
+        // cap passes no touch on: the lettering's must stay the only one.
+        val passThrough = ownWindows.views.filter {
+            ((it.layoutParams as WindowManager.LayoutParams).flags and WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE) != 0
+        }
+        assertEquals(listOf<View>(c.bubbleView), passThrough)
+    }
+
+    @Test
     fun `with no host the lettering is an ordinary overlay`() {
         val c = attach()
         assertOrdinaryOverlay(c)
@@ -196,13 +208,13 @@ class OverlayControllerTest {
     fun `the menu is open from a long press on the button until a touch outside closes it`() {
         val c = attach()
         assertFalse(c.menuOpen)
-        val row = ownWindows.views.single { it !== c.bubbleView && it !== c.shadeView } as ViewGroup
+        val row = ownWindows.views.single { it !== c.bubbleView } as ViewGroup
         val button = (0 until row.childCount).map { row.getChildAt(it) }.single { it is FloatingButtonView }
         button.dispatchTouchEvent(MotionEvent.obtain(0L, 0L, MotionEvent.ACTION_DOWN, 10f, 10f, 0))
         shadowOf(Looper.getMainLooper()).idleFor(Duration.ofMillis(600))
         assertTrue("held open for auto-scroll to wait on", c.menuOpen)
         // Any touch outside it closes it, auto-scroll's own strokes included.
-        val menu = ownWindows.views.single { it !== c.bubbleView && it !== c.shadeView && it !== row }
+        val menu = ownWindows.views.single { it !== c.bubbleView && it !== row }
         menu.dispatchTouchEvent(MotionEvent.obtain(0L, 0L, MotionEvent.ACTION_OUTSIDE, 0f, 0f, 0))
         assertFalse(c.menuOpen)
     }

@@ -5,7 +5,6 @@ import android.graphics.Rect
 import android.media.Image
 import android.os.Handler
 import android.os.Looper
-import android.view.View
 import app.mangalens.gaps.DetectJob
 import app.mangalens.gaps.LiftedPixels
 import app.mangalens.gaps.PixelSource
@@ -15,7 +14,7 @@ import app.mangalens.gaps.ShadeSnapshot
 import app.mangalens.gaps.ShadeStyle
 import app.mangalens.gaps.Unshade
 import app.mangalens.overlay.GapClock
-import app.mangalens.overlay.GapShadeView
+import app.mangalens.overlay.GapShadeLayer
 import java.util.concurrent.ExecutorService
 import java.util.concurrent.Executors
 
@@ -44,12 +43,13 @@ class GapShadeController(
     }
 
     @Volatile private var engine: ShadeEngine? = null
-    @Volatile private var view: GapShadeView? = null
+    @Volatile private var view: GapShadeLayer? = null
     @Volatile private var enabled = false
 
     private var width = 0
     private var height = 0
     private var level = ShadeLevel.DARK
+    private var cap = 1f
     private var failures = 0
     private var tripped = false
     @Volatile private var exclusions: List<IntArray> = emptyList()
@@ -62,27 +62,30 @@ class GapShadeController(
     }
 
     /** Main thread. */
-    fun attach(v: GapShadeView) {
+    fun attach(v: GapShadeLayer) {
         view = v
         v.source = { engine?.snapshot ?: ShadeSnapshot.EMPTY }
         v.onDrawn = { snap, shift, now -> engine?.noteDraw(snap, shift, now) }
-        v.setStyle(ShadeStyle(level))
-        v.visibility = if (enabled) View.VISIBLE else View.GONE
+        v.style = ShadeStyle(level, cap = cap)
+        v.visible = enabled
     }
 
     /**
-     * Main thread. Applies the settings: whether the shade is on, how dark, and the size of
-     * the screen it will be reading. A change of any of these starts a fresh engine.
+     * Main thread. Applies the settings: whether the shade is on, how dark, the darkest the
+     * window it is drawn in can show ([newCap], see [app.mangalens.gaps.ShadeWindow.cap]), and the size of the
+     * screen it will be reading. A change of any of these starts a fresh engine.
      */
-    fun configure(on: Boolean, newLevel: ShadeLevel, w: Int, h: Int, ignoreTopRows: Int, ignoreBottomRows: Int) {
+    fun configure(on: Boolean, newLevel: ShadeLevel, newCap: Float, w: Int, h: Int, ignoreTopRows: Int, ignoreBottomRows: Int) {
         captureHandler.post {
             guard {
-                val rebuild = engine == null || w != width || h != height || newLevel != level
+                val rebuild = engine == null || w != width || h != height || newLevel != level || newCap != cap
                 width = w
                 height = h
                 level = newLevel
+                cap = newCap
+                val style = ShadeStyle(newLevel, cap = newCap)
                 if (rebuild) {
-                    engine = if (w > 0 && h > 0) ShadeEngine(w, h, ShadeStyle(newLevel)).also { e ->
+                    engine = if (w > 0 && h > 0) ShadeEngine(w, h, style).also { e ->
                         e.setExclusions(exclusions)
                     } else null
                 }
@@ -91,10 +94,10 @@ class GapShadeController(
                 e?.ignoreBottomRows = ignoreBottomRows
                 val wasOn = enabled
                 enabled = on && e != null
+                val shown = enabled
                 main.post {
-                    view?.setStyle(ShadeStyle(newLevel))
-                    view?.visibility = if (enabled) View.VISIBLE else View.GONE
-                    view?.postInvalidateOnAnimation()
+                    view?.style = style
+                    view?.visible = shown
                 }
                 if (e != null) {
                     if (!enabled) {
@@ -218,6 +221,7 @@ class GapShadeController(
         captureHandler.removeCallbacks(quiet)
         captureHandler.removeCallbacks(tick)
         worker.shutdownNow()
+        view?.visible = false
         view?.source = null
         view?.onDrawn = null
         view = null
@@ -254,7 +258,7 @@ class GapShadeController(
     }
 
     private fun invalidate() {
-        view?.postInvalidateOnAnimation()
+        view?.invalidate()
     }
 
     /** Runs [block], and turns the shade off if it keeps failing: it must never hurt the reader. */
@@ -268,7 +272,7 @@ class GapShadeController(
                 enabled = false
                 engine?.reset(GapClock.nowMs())
                 main.post {
-                    view?.visibility = View.GONE
+                    view?.visible = false
                     onProblem("Dark gaps stopped: ${t.javaClass.simpleName}")
                 }
             }

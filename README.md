@@ -19,7 +19,7 @@ about 1.5–2 s after you stop.
 · [all releases](https://github.com/mkisontop/mangalens/releases)
 · [changelog](CHANGELOG.md)
 
-Current release: **1.1.0**. Still on 0.9.1? Follow the
+Current release: **1.1.1**. Still on 0.9.1? Follow the
 [one-time update instructions](#one-time-update-from-091) instead of using
 the normal APK.
 
@@ -609,6 +609,14 @@ it works in any browser or reader. What it does with them:
   sealed first, so the dark cannot flow in through it. Narration set straight on
   the white keeps a margin of white round every stroke, so black ink is never
   left on a dark ground. A white-backed drawing is protected as a whole.
+- **It never gets in the way of your finger.** Since Android 12 an app's
+  see-through overlays may together be no more than about 80% opaque, or
+  Android stops passing touches to the page beneath. The shade is painted in
+  the lettering's own window rather than one of its own, so MangaLens stays a
+  single see-through layer and the page scrolls as it always does. Without
+  *Solid lettering* that window is held to Android's cap, so *Dark* and
+  *Black* come out a little lighter (about 75%); with it, every level is drawn
+  as chosen.
 - **The overlay is translucent on purpose.** It is painted at 80/90/95% over
   white, so the capture sees the page *through* it. Paper under the shade has a
   known grey, which means the detector reads its own output as paper — it never

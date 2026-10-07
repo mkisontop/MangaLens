@@ -46,8 +46,16 @@ enum class ShadeLevel(val alpha: Float) {
  * this device, when that is not what the arithmetic says: a compositor that blends in linear
  * light, not in the gamma-encoded values every other one uses, leaves a much lighter grey.
  */
-class ShadeStyle(val level: ShadeLevel = ShadeLevel.DARK, val observedComposite: Int? = null) {
-    val alpha: Float = level.alpha
+class ShadeStyle(
+    val level: ShadeLevel = ShadeLevel.DARK,
+    val observedComposite: Int? = null,
+    /**
+     * The darkest the window the shade is drawn in can show: an overlay that lets touches
+     * through is capped by Android, and the shade's alpha is the level's or this, the lower.
+     */
+    val cap: Float = 1f,
+) {
+    val alpha: Float = minOf(level.alpha, cap)
 
     /** The overlay colour's alpha channel, 0..255. */
     val alpha255: Int = Math.round(alpha * 255f)
@@ -80,7 +88,7 @@ class ShadeStyle(val level: ShadeLevel = ShadeLevel.DARK, val observedComposite:
     }
 
     /** The same style, with paper under the shade now known to look like [composite]. */
-    fun observed(composite: Int) = ShadeStyle(level, composite)
+    fun observed(composite: Int) = ShadeStyle(level, composite, cap)
 
     companion object {
         /** Darkest channel value still called paper. All three channels at or above it is `0xF0` in the top nibble. */

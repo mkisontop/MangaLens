@@ -53,8 +53,15 @@ class OverlayController(private val context: Context, private val listener: List
     private val wm = context.getSystemService(WindowManager::class.java)
     val bubbleView = BubbleOverlayView(context)
 
-    /** The dark gaps. Its window is added first, so everything else MangaLens draws sits on top of it. */
-    val shadeView = GapShadeView(context)
+    /**
+     * The dark gaps: drawn under the lettering, in the lettering's own window. A window of their
+     * own would stack on top of the lettering's and take MangaLens past the opacity Android lets
+     * touches through, and the page could not be scrolled.
+     */
+    val shadeLayer = GapShadeLayer().also { layer ->
+        layer.host = bubbleView
+        bubbleView.underlay = layer
+    }
     private var touchWatcher: View? = null
 
     private var controls: LinearLayout? = null
@@ -103,7 +110,6 @@ class OverlayController(private val context: Context, private val listener: List
 
     fun attach() {
         if (attached) return
-        addShadeWindow()
         placeLettering()
         buildControls()
         LetteringHost.addListener(hostChanged)
@@ -117,7 +123,6 @@ class OverlayController(private val context: Context, private val listener: List
         watchTouches(false) {}
         letteringWm?.let { w -> runCatching { w.removeView(bubbleView) } }
         letteringWm = null
-        runCatching { wm.removeView(shadeView) }
         controls?.let { runCatching { wm.removeView(it) } }
         controls = null
         onFootprintChanged = null
@@ -219,33 +224,6 @@ class OverlayController(private val context: Context, private val listener: List
             }
         }
         return out
-    }
-
-    /**
-     * The window the dark gaps are drawn in: full screen, untouchable, hardware accelerated
-     * because it is redrawn every frame while the page moves. Off until the reader turns dark
-     * gaps on: a hidden window costs the compositor nothing. Added before anything else so the
-     * lettering and the controls are drawn on top of it.
-     */
-    private fun addShadeWindow() {
-        val lp = WindowManager.LayoutParams(
-            WindowManager.LayoutParams.MATCH_PARENT,
-            WindowManager.LayoutParams.MATCH_PARENT,
-            WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY,
-            WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
-                WindowManager.LayoutParams.FLAG_NOT_TOUCHABLE or
-                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
-                WindowManager.LayoutParams.FLAG_LAYOUT_NO_LIMITS or
-                WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
-            PixelFormat.TRANSLUCENT
-        )
-        lp.gravity = Gravity.TOP or Gravity.START
-        if (Build.VERSION.SDK_INT >= 28) {
-            lp.layoutInDisplayCutoutMode =
-                WindowManager.LayoutParams.LAYOUT_IN_DISPLAY_CUTOUT_MODE_SHORT_EDGES
-        }
-        shadeView.visibility = View.GONE
-        wm.addView(shadeView, lp)
     }
 
     /**

@@ -267,7 +267,7 @@ private fun ReadingSection(settings: AppSettings, sink: SettingsSink, columns: I
     Spacer(Modifier.height(12.dp))
     PopToggleRow(
         "Dark gaps",
-        if (settings.darkGaps) "The white between a manhwa's panels is painted dark. The art and the lettering are left exactly as drawn."
+        if (settings.darkGaps) "The white between a manhwa's panels is painted dark. The art and the lettering are left exactly as drawn. Dark and Black need Solid lettering; without it Android keeps every overlay a little see-through."
         else "Paint the white between a manhwa's panels dark, for night reading. Also in the $MARK button's long-press menu.",
         settings.darkGaps,
         sink::setDarkGaps,

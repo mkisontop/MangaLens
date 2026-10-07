@@ -470,6 +470,23 @@ class BubbleOverlayView(context: Context) : View(context) {
     /** Grounds painted so far ([groundOf]), for tests to see what streaming costs. */
     internal var groundsPainted = 0
 
+    /**
+     * Drawn first, under the veil and the lettering: the dark gaps. It shares this window rather
+     * than having its own, because Android adds up the opacity of an app's windows that let
+     * touches through, and past its cap it stops passing the touches on.
+     */
+    var underlay: Underlay? = null
+        set(value) {
+            field = value
+            invalidate()
+        }
+
+    /** Something drawn under everything else in this view. */
+    interface Underlay {
+        /** Draws on [canvas]; true while it moves and wants the next frame as well. */
+        fun draw(canvas: Canvas, view: BubbleOverlayView): Boolean
+    }
+
     /** Told whenever [veil] may have changed, [screenLevel] with it. Main thread. */
     var onVeilChanged: (() -> Unit)? = null
 
@@ -2024,6 +2041,7 @@ class BubbleOverlayView(context: Context) : View(context) {
      * still fading does the view ask for another frame.
      */
     override fun onDraw(canvas: Canvas) {
+        underlay?.let { if (it.draw(canvas, this)) postInvalidateOnAnimation() }
         val k = veil
         if (k > 0f) {
             veilPaint.alpha = veilAlpha(k)

@@ -1,5 +1,26 @@
 # Changelog
 
+## 1.1.1
+
+The page scrolls again with dark gaps on.
+
+**Download:** `MangaLens.apk` below updates 0.9.2 and newer in place. Still on
+0.9.1? Use `MangaLens-legacy-update.apk` once (Android 9+), as described in
+the README.
+
+- **Touches reach the page.** 1.1.0 drew the dark gaps in a full-screen window
+  of their own, on top of the lettering's. Since Android 12 the see-through
+  windows of one app are added up, and past about 80% opacity Android passes no
+  touch through them: the page could not be scrolled, and Android said MangaLens
+  "isn't optimized for the latest version". The shade is now painted in the
+  lettering's own window, under the lettering, so MangaLens is one see-through
+  layer again.
+- **The shade's grey is kept exact.** It is painted so that the glass shows the
+  chosen darkness whatever the window is drawn at, and so that under MangaLens's
+  veil the capture still reads the shade as its own: the detector keeps finding
+  its gaps while lettering is up. Without *Solid lettering*, Android holds the
+  window to its cap and *Dark* and *Black* come out at about 75%.
+
 ## 1.1.0
 
 **Dark gaps — manhwa night mode.** The white gutters between a manhwa's panels
