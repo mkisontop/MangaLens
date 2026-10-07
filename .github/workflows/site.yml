@@ -1,6 +1,6 @@
 name: site
 
-# Deploys site/ to GitHub Pages. One-time setup in the repo:
+# Deploys site/ to GitHub Pages, served at https://mangalenz.net. One-time setup in the repo:
 # Settings → Pages → Source: "GitHub Actions".
 
 on:

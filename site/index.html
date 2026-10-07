@@ -2,232 +2,908 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>MangaLens — live manhwa &amp; manga translation on Android</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Ccircle cx='32' cy='32' r='32' fill='%23ff5c7a'/%3E%3Ctext x='32' y='42' text-anchor='middle' font-family='sans-serif' font-size='26' font-weight='800' fill='%23fff'%3E文A%3C/text%3E%3C/svg%3E">
-<meta name="description" content="MangaLens watches your screen, finds the speech bubbles, and re-letters them in English — like a human scanlation, live, in any app.">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>MangaLens — read raw manhwa &amp; manga in English, live on Android</title>
+<meta name="description" content="MangaLens translates raw manhwa, manga and manhua right on your Android screen: speech balloons wiped clean and re-lettered in English, live and hands-free, in any app. Free and open source.">
+<link rel="canonical" href="https://mangalenz.net/">
+<meta name="color-scheme" content="light dark">
+<meta name="theme-color" content="#FFF4DC" media="(prefers-color-scheme: light)">
+<meta name="theme-color" content="#15101A" media="(prefers-color-scheme: dark)">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; font-src 'self'; connect-src https://api.github.com; base-uri 'self'; form-action 'none'; object-src 'none'">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<link rel="icon" href="/favicon-32.png" sizes="32x32" type="image/png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="manifest" href="/site.webmanifest">
+<link rel="preload" href="/fonts/comic-neue-bold.woff2" as="font" type="font/woff2" crossorigin>
+
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="MangaLens">
+<meta property="og:url" content="https://mangalenz.net/">
+<meta property="og:title" content="MangaLens — read raws like they were translated all along">
+<meta property="og:description" content="Live on-screen translation for raw manhwa, manga and manhua on Android. Balloons wiped clean and re-lettered in English, in any app.">
+<meta property="og:image" content="https://mangalenz.net/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="MangaLens: a raw Korean speech balloon re-lettered in English, with Fuki the mascot">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="MangaLens — read raws like they were translated all along">
+<meta name="twitter:description" content="Live on-screen translation for raw manhwa, manga and manhua on Android.">
+<meta name="twitter:image" content="https://mangalenz.net/og.png">
+
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "MangaLens",
+  "url": "https://mangalenz.net/",
+  "applicationCategory": "UtilitiesApplication",
+  "operatingSystem": "Android 8.0 or later",
+  "description": "Live on-screen translation for raw manhwa, manga and manhua on Android: speech balloons wiped clean and re-lettered in English, in any app.",
+  "downloadUrl": "https://github.com/mkisontop/MangaLens/releases/latest/download/MangaLens.apk",
+  "license": "https://opensource.org/licenses/MIT",
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" }
+}
+</script>
+<script src="/theme.js"></script>
+
 <style>
-  :root {
-    --bg: #0e0f13;
-    --panel: #16181f;
-    --panel-2: #1c1f28;
-    --ink: #e9eaf0;
-    --muted: #9aa0b0;
-    --accent: #ff5c7a;
-    --accent-2: #6ea8ff;
-    --line: #2a2e3a;
-  }
-  * { margin: 0; padding: 0; box-sizing: border-box; }
-  body {
-    background: var(--bg);
-    color: var(--ink);
-    font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-    line-height: 1.6;
-  }
-  a { color: var(--accent-2); text-decoration: none; }
-  a:hover { text-decoration: underline; }
-  .wrap { max-width: 980px; margin: 0 auto; padding: 0 20px; }
+@font-face { font-family: "Comic Neue"; src: url("/fonts/comic-neue-bold.woff2") format("woff2"); font-weight: 700; font-style: normal; font-display: swap; }
+@font-face { font-family: "Comic Neue"; src: url("/fonts/comic-neue-regular.woff2") format("woff2"); font-weight: 400; font-style: normal; font-display: swap; }
 
-  header {
-    display: flex; align-items: center; justify-content: space-between;
-    padding: 18px 0;
-  }
-  .logo { display: flex; align-items: center; gap: 10px; font-weight: 700; font-size: 18px; color: var(--ink); }
-  .logo .badge {
-    width: 38px; height: 38px; border-radius: 50%;
-    background: var(--accent);
-    display: grid; place-items: center;
-    color: #fff; font-size: 15px; font-weight: 800;
-  }
-  nav a { color: var(--muted); margin-left: 18px; font-size: 14px; }
+/* ---------- tokens: the app's own pop palette ---------- */
+:root {
+  --paper: #FFF4DC;
+  --surface: #FFFBF0;
+  --surface-hi: #F6E7C3;
+  --ink: #1C1424;
+  --ink-soft: #5A4B5E;
+  --punch: #D92B17;
+  --on-punch: #FFFFFF;
+  --punch-text: #B81F0F;
+  --zap: #FFCC1A;
+  --on-zap: #1C1424;
+  --zap-soft: #FFEFB0;
+  --stroke: #1C1424;
+  --shadow: #1C1424;
+  --dots: rgba(217, 43, 23, .16);
+  --veil: rgba(255, 244, 220, .82);
 
-  .hero { text-align: center; padding: 44px 0 10px; }
-  .hero h1 {
-    font-size: clamp(30px, 5.4vw, 52px);
-    line-height: 1.12; letter-spacing: -0.02em;
-    margin-bottom: 14px;
+  --display: "Comic Neue", "Comic Sans MS", "Chalkboard SE", "Comic Sans", system-ui, sans-serif;
+  --body: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  --ko: "Noto Sans KR", "Apple SD Gothic Neo", "Malgun Gothic", "NanumGothic", sans-serif;
+  --bw: 3px;
+  --radius: 20px;
+  --pop: 6px 7px 0 var(--shadow);
+  --pop-lg: 9px 10px 0 var(--shadow);
+  --gutter: max(16px, env(safe-area-inset-left));
+  color-scheme: light;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper: #15101A; --surface: #221A29; --surface-hi: #2E2436; --ink: #FFF4DC; --ink-soft: #CDBFCF;
+    --punch: #FF5A43; --on-punch: #1C1424; --punch-text: #FF8A77; --zap: #FFD233; --on-zap: #1C1424;
+    --zap-soft: #2B2233; --stroke: #F2E6CC; --shadow: #000; --dots: rgba(255, 90, 67, .14);
+    --veil: rgba(21, 16, 26, .8);
+    color-scheme: dark;
   }
-  .hero h1 em { font-style: normal; color: var(--accent); }
-  .hero p.sub {
-    color: var(--muted); font-size: clamp(15px, 2.2vw, 18px);
-    max-width: 640px; margin: 0 auto 26px;
-  }
-  .cta { display: flex; gap: 12px; justify-content: center; flex-wrap: wrap; margin-bottom: 8px; }
-  .btn {
-    display: inline-block; padding: 13px 26px; border-radius: 12px;
-    font-weight: 700; font-size: 15px;
-  }
-  .btn.primary { background: var(--accent); color: #fff; }
-  .btn.primary:hover { text-decoration: none; filter: brightness(1.08); }
-  .btn.ghost { border: 1px solid var(--line); color: var(--ink); }
-  .btn.ghost:hover { text-decoration: none; border-color: var(--muted); }
-  .cta-note { color: var(--muted); font-size: 13px; margin-bottom: 8px; }
+}
+:root[data-theme="dark"] .hl { color: var(--zap); }
+:root[data-theme="dark"] .hl::before { background: var(--punch); height: .12em; bottom: -.06em; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .hl { color: var(--zap); }
+  :root:not([data-theme="light"]) .hl::before { background: var(--punch); height: .12em; bottom: -.06em; }
+}
+:root[data-theme="dark"] {
+  --paper: #15101A; --surface: #221A29; --surface-hi: #2E2436; --ink: #FFF4DC; --ink-soft: #CDBFCF;
+  --punch: #FF5A43; --on-punch: #1C1424; --punch-text: #FF8A77; --zap: #FFD233; --on-zap: #1C1424;
+  --zap-soft: #2B2233; --stroke: #F2E6CC; --shadow: #000; --dots: rgba(255, 90, 67, .14);
+  --veil: rgba(21, 16, 26, .8);
+  color-scheme: dark;
+}
 
-  .demo {
-    display: grid; grid-template-columns: 1fr 1fr; gap: 18px;
-    align-items: center; margin: 34px 0 8px;
-  }
-  .demo figure { background: var(--panel); border: 1px solid var(--line); border-radius: 16px; padding: 14px; }
-  .demo figcaption { color: var(--muted); font-size: 13px; padding-top: 10px; text-align: center; }
-  .demo svg { width: 100%; height: auto; display: block; border-radius: 8px; }
-  @media (max-width: 640px) { .demo { grid-template-columns: 1fr; } }
+/* ---------- base ---------- */
+*, *::before, *::after { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; scroll-behavior: smooth; scroll-padding-top: 84px; }
+body {
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font: 400 17px/1.62 var(--body);
+  overflow-x: hidden;
+  -webkit-font-smoothing: antialiased;
+}
+img, svg { display: block; max-width: 100%; }
+a { color: var(--punch-text); text-underline-offset: 3px; text-decoration-thickness: 2px; }
+a:hover { color: var(--punch); }
+:focus-visible { outline: 3px solid var(--punch); outline-offset: 3px; border-radius: 8px; }
+h1, h2, h3 { font-family: var(--display); font-weight: 700; line-height: 1.08; letter-spacing: -.01em; margin: 0; }
+p { margin: 0; }
+.sr-only { position: absolute !important; width: 1px; height: 1px; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; padding: 0; }
+.skip { position: absolute; left: 12px; top: -60px; z-index: 100; background: var(--zap); color: var(--on-zap); padding: 10px 16px; border: var(--bw) solid var(--stroke); border-radius: 12px; font: 700 16px var(--display); text-decoration: none; }
+.skip:focus { top: 12px; }
+.wrap { width: 100%; max-width: 1180px; margin: 0 auto; padding-inline: var(--gutter); }
 
-  section { padding: 44px 0 6px; }
-  h2 { font-size: 24px; margin-bottom: 18px; letter-spacing: -0.01em; }
-  .grid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; }
-  @media (max-width: 760px) { .grid { grid-template-columns: 1fr; } }
-  .card {
-    background: var(--panel); border: 1px solid var(--line);
-    border-radius: 14px; padding: 18px;
-  }
-  .card h3 { font-size: 15.5px; margin-bottom: 6px; }
-  .card p { color: var(--muted); font-size: 14px; }
-  .card .k { color: var(--accent); font-weight: 800; margin-right: 6px; }
+/* Ben-Day dots, the newsprint texture behind the app's own screens */
+.dots { position: absolute; pointer-events: none; z-index: 0;
+  background: radial-gradient(circle, var(--dots) 2.7px, transparent 3.1px) 0 0 / 15px 15px; }
+.dots.tr { top: 0; right: 0; width: min(560px, 70vw); height: 460px;
+  -webkit-mask-image: radial-gradient(circle at 100% 0, #000 0, transparent 70%); mask-image: radial-gradient(circle at 100% 0, #000 0, transparent 70%); }
+.dots.bl { bottom: 0; left: 0; width: min(520px, 70vw); height: 380px;
+  -webkit-mask-image: radial-gradient(circle at 0 100%, #000 0, transparent 70%); mask-image: radial-gradient(circle at 0 100%, #000 0, transparent 70%); }
 
-  ol.steps { counter-reset: s; list-style: none; display: grid; gap: 12px; }
-  ol.steps li {
-    background: var(--panel); border: 1px solid var(--line); border-radius: 14px;
-    padding: 16px 18px 16px 58px; position: relative; color: var(--muted); font-size: 14.5px;
-  }
-  ol.steps li strong { color: var(--ink); }
-  ol.steps li::before {
-    counter-increment: s; content: counter(s);
-    position: absolute; left: 16px; top: 50%; transform: translateY(-50%);
-    width: 28px; height: 28px; border-radius: 50%;
-    background: var(--panel-2); border: 1px solid var(--line);
-    display: grid; place-items: center; font-weight: 700; font-size: 13px; color: var(--accent);
-  }
+/* ---------- buttons ---------- */
+.btn {
+  --b-bg: var(--surface); --b-fg: var(--ink);
+  display: inline-flex; align-items: center; justify-content: center; gap: 10px;
+  min-height: 48px; padding: 10px 20px;
+  background: var(--b-bg); color: var(--b-fg);
+  border: var(--bw) solid var(--stroke); border-radius: 16px;
+  box-shadow: 4px 5px 0 var(--shadow);
+  font: 700 18px/1.1 var(--display); text-decoration: none; cursor: pointer;
+  transition: transform .12s ease, box-shadow .12s ease;
+}
+.btn:hover { color: var(--b-fg); transform: translate(-1px, -1px); box-shadow: 6px 7px 0 var(--shadow); }
+.btn:active { transform: translate(3px, 4px); box-shadow: 1px 1px 0 var(--shadow); }
+.btn svg { width: 22px; height: 22px; flex: none; }
+.btn-zap { --b-bg: var(--zap); --b-fg: var(--on-zap); }
+.btn-punch { --b-bg: var(--punch); --b-fg: var(--on-punch); }
+.btn-lg { min-height: 60px; padding: 14px 26px; font-size: 21px; border-radius: 18px; box-shadow: var(--pop); }
+.btn-lg:hover { box-shadow: 8px 9px 0 var(--shadow); }
+.btn small { display: block; font: 600 13px/1.2 var(--body); opacity: .82; letter-spacing: 0; }
+.btn .two { display: flex; flex-direction: column; align-items: flex-start; text-align: left; }
 
-  details {
-    background: var(--panel); border: 1px solid var(--line);
-    border-radius: 12px; padding: 14px 18px; margin-bottom: 10px;
-  }
-  details summary { cursor: pointer; font-weight: 600; font-size: 14.5px; }
-  details p { color: var(--muted); font-size: 14px; padding-top: 8px; }
+/* ---------- header ---------- */
+.top {
+  position: sticky; top: 0; z-index: 50;
+  background: var(--veil);
+  -webkit-backdrop-filter: saturate(1.4) blur(10px); backdrop-filter: saturate(1.4) blur(10px);
+  border-bottom: var(--bw) solid var(--stroke);
+}
+.top .wrap { display: flex; align-items: center; gap: 14px; min-height: 70px; }
+.brand { display: inline-flex; align-items: center; gap: 10px; color: var(--ink); text-decoration: none; font: 700 25px/1 var(--display); margin-right: auto; }
+.brand:hover { color: var(--ink); }
+.brand img { width: 42px; height: 42px; border-radius: 12px; border: var(--bw) solid var(--stroke); box-shadow: 3px 3px 0 var(--shadow); }
+.nav { display: flex; align-items: center; gap: 4px; }
+.nav a { color: var(--ink); text-decoration: none; font: 700 17px/1 var(--display); padding: 10px 12px; border-radius: 12px; }
+.nav a:hover { background: var(--zap-soft); }
+.icon-btn {
+  display: inline-grid; place-items: center; width: 46px; height: 46px; flex: none;
+  background: var(--surface); color: var(--ink); border: var(--bw) solid var(--stroke); border-radius: 14px;
+  box-shadow: 3px 3px 0 var(--shadow); cursor: pointer; padding: 0;
+}
+.icon-btn:hover { background: var(--zap-soft); }
+.icon-btn svg { width: 22px; height: 22px; }
+.theme-sun { display: none; }
+:root[data-theme="dark"] .theme-sun { display: block; }
+:root[data-theme="dark"] .theme-moon { display: none; }
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .theme-sun { display: block; }
+  :root:not([data-theme="light"]) .theme-moon { display: none; }
+}
+.top .btn { min-height: 46px; padding: 8px 16px; font-size: 17px; box-shadow: 3px 3px 0 var(--shadow); }
+.menu-btn { display: none; }
+@media (max-width: 900px) {
+  .nav { display: none; position: absolute; top: calc(100% + var(--bw)); left: 0; right: 0;
+    flex-direction: column; align-items: stretch; gap: 0; padding: 8px var(--gutter) 16px;
+    background: var(--paper); border-bottom: var(--bw) solid var(--stroke); }
+  .nav.open { display: flex; }
+  .nav a { padding: 14px 8px; font-size: 20px; border-radius: 10px; }
+  .menu-btn { display: inline-grid; }
+}
+@media (max-width: 520px) {
+  .top .wrap { gap: 8px; }
+  .top .btn { padding: 8px 12px; }
+  .top .btn > span { display: none; }
+  .icon-btn { width: 44px; height: 44px; }
+  .brand { font-size: 22px; gap: 8px; }
+  .brand img { width: 38px; height: 38px; }
+}
+@media (max-width: 340px) { .brand span { display: none; } }
 
-  footer {
-    border-top: 1px solid var(--line); margin-top: 54px;
-    padding: 26px 0 40px; color: var(--muted); font-size: 13.5px;
-  }
-  footer .heart { color: var(--accent); }
+/* ---------- hero ---------- */
+.hero { position: relative; overflow: hidden; padding: 56px 0 64px; }
+#how { padding-top: 40px; }
+.hero .wrap { position: relative; z-index: 1; display: grid; grid-template-columns: 1.14fr .86fr; gap: 40px; align-items: center; }
+.kicker { display: inline-flex; align-items: center; gap: 10px; flex-wrap: wrap; font: 700 17px/1.3 var(--display); color: var(--ink); text-decoration: none; margin-bottom: 22px; }
+.kicker:hover { color: var(--punch-text); }
+.tag { display: inline-block; padding: 4px 10px; background: var(--punch); color: var(--on-punch); border: var(--bw) solid var(--stroke); border-radius: 10px; transform: rotate(-3deg); font: 700 14px/1.2 var(--display); text-transform: uppercase; letter-spacing: .04em; }
+.hero h1 { font-size: clamp(42px, 5.3vw, 72px); line-height: 1; letter-spacing: -.025em; }
+.hl { position: relative; white-space: nowrap; z-index: 0; }
+.hl::before { content: ""; position: absolute; z-index: -1; left: -.12em; right: -.12em; bottom: .02em; height: .42em; background: var(--zap); border-radius: .2em; transform: rotate(-1.2deg); }
+.lede { margin-top: 24px; max-width: 34em; font-size: clamp(18px, 1.6vw, 20px); color: var(--ink-soft); }
+.lede strong { color: var(--ink); }
+.cta { display: flex; flex-wrap: wrap; gap: 16px; margin-top: 32px; }
+.facts { display: flex; flex-wrap: wrap; gap: 10px; list-style: none; padding: 0; margin: 28px 0 0; }
+.facts li { display: inline-flex; align-items: center; gap: 8px; padding: 6px 12px; background: var(--surface); border: 2px solid var(--stroke); border-radius: 999px; font-size: 15px; font-weight: 600; }
+.facts li svg { width: 16px; height: 16px; color: var(--punch); }
+.facts .ver { background: var(--zap-soft); }
+
+.hero-art { position: relative; display: grid; justify-items: center; padding: 12px 0 0; }
+.hero-art .fuki { position: absolute; z-index: 3; width: min(190px, 34vw); left: -36px; top: -30px; transform: rotate(-8deg); }
+.hero-art .note { margin-top: 20px; font: 700 17px/1.3 var(--display); color: var(--ink-soft); text-align: center; display: flex; align-items: center; gap: 8px; }
+.hero-art .note svg { width: 22px; height: 22px; color: var(--punch); }
+@media (max-width: 960px) {
+  .hero { padding-top: 36px; }
+  .hero .wrap { grid-template-columns: 1fr; gap: 56px; }
+  .hero-copy { text-align: left; }
+  .hero-art .fuki { left: max(-8px, calc(50% - 250px)); }
+}
+
+/* ---------- phone + compare ---------- */
+.phone {
+  position: relative; width: min(372px, 86vw);
+  padding: 12px; border-radius: 44px;
+  background: #1C1424; border: var(--bw) solid var(--stroke);
+  box-shadow: var(--pop-lg);
+}
+.phone::before { content: ""; position: absolute; top: 20px; left: 50%; width: 76px; height: 20px; margin-left: -38px; background: #1C1424; border-radius: 0 0 14px 14px; z-index: 4; }
+.screen { position: relative; overflow: hidden; border-radius: 32px; aspect-ratio: 9 / 16; background: #fff; isolation: isolate; }
+.screen > svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.compare { --split: 50%; touch-action: pan-y; cursor: ew-resize; user-select: none; -webkit-user-select: none; }
+.compare .after { clip-path: inset(0 calc(100% - var(--split)) 0 0); }
+.compare .handle { position: absolute; z-index: 3; top: 0; bottom: 0; left: var(--split); width: 0; pointer-events: none; }
+.compare .handle::before { content: ""; position: absolute; top: 0; bottom: 0; left: -2px; width: 4px; background: var(--zap); box-shadow: 0 0 0 2px #1C1424; }
+.compare .knob { position: absolute; top: 50%; left: 0; width: 58px; height: 58px; margin: -29px 0 0 -29px; display: grid; place-items: center;
+  background: var(--zap); color: #1C1424; border: 3px solid #1C1424; border-radius: 50%; box-shadow: 3px 4px 0 #1C1424; font: 700 19px/1 var(--display); }
+.compare:focus-within .knob { outline: 3px solid var(--punch); outline-offset: 3px; }
+.compare .lbl { position: absolute; z-index: 2; bottom: 14px; padding: 5px 10px; border: 2px solid #1C1424; border-radius: 10px; font: 700 13px/1 var(--display); letter-spacing: .06em; text-transform: uppercase; pointer-events: none; }
+.compare .lbl.raw { right: 14px; background: #fff; color: #1C1424; }
+.compare .lbl.en { left: 14px; background: var(--zap); color: #1C1424; }
+.compare input[type="range"] { position: absolute; inset: auto 0 0 0; width: 100%; height: 1px; opacity: 0; pointer-events: none; }
+
+/* ---------- sections ---------- */
+section { position: relative; }
+.band { padding: 96px 0; }
+.sec-head { max-width: 760px; margin-bottom: 48px; }
+.sec-head.center { margin-inline: auto; text-align: center; }
+.caption { display: inline-block; margin-bottom: 18px; padding: 6px 12px; background: var(--zap); color: var(--on-zap); border: var(--bw) solid var(--stroke); box-shadow: 3px 3px 0 var(--shadow); transform: rotate(-1.5deg); font: 700 15px/1.2 var(--display); text-transform: uppercase; letter-spacing: .06em; }
+.sec-head h2 { font-size: clamp(34px, 4.6vw, 56px); }
+.sec-head p:not(.caption) { margin-top: 18px; font-size: 19px; color: var(--ink-soft); }
+
+.pop {
+  background: var(--surface); border: var(--bw) solid var(--stroke); border-radius: var(--radius); box-shadow: var(--pop);
+}
+
+/* how it works: four panels of a strip */
+.strip, .install { list-style: none; margin: 0; padding: 0; }
+.strip { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; }
+.panel { position: relative; padding: 76px 22px 24px; }
+.panel .num { position: absolute; top: -18px; left: 18px; width: 64px; height: 64px; display: grid; place-items: center; font: 700 30px/1 var(--display); color: var(--on-punch); }
+.panel .num svg { position: absolute; inset: 0; width: 100%; height: 100%; }
+.panel .num b { position: relative; }
+.panel h3 { font-size: 25px; margin-bottom: 10px; }
+.panel p { color: var(--ink-soft); font-size: 16px; }
+@media (max-width: 1020px) { .strip { grid-template-columns: repeat(2, 1fr); row-gap: 44px; } }
+@media (max-width: 600px) { .strip { grid-template-columns: 1fr; } }
+
+/* features */
+.features { display: grid; grid-template-columns: repeat(4, 1fr); gap: 20px; }
+.feature { padding: 26px 22px 24px; transition: transform .15s ease, box-shadow .15s ease; }
+.feature:hover { transform: translate(-2px, -2px) rotate(-.4deg); box-shadow: var(--pop-lg); }
+.feature .ico { width: 56px; height: 56px; display: grid; place-items: center; margin-bottom: 18px; border: var(--bw) solid var(--stroke); border-radius: 16px; background: var(--zap); color: #1C1424; box-shadow: 3px 3px 0 var(--shadow); }
+.feature:nth-child(4n+2) .ico { background: var(--punch); color: #fff; }
+.feature:nth-child(4n+3) .ico { background: var(--surface-hi); color: var(--ink); }
+.feature:nth-child(4n+4) .ico { background: #9ED8FF; }
+.feature .ico svg { width: 28px; height: 28px; }
+.feature h3 { font-size: 23px; margin-bottom: 8px; }
+.feature p { color: var(--ink-soft); font-size: 16px; }
+@media (max-width: 1080px) { .features { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 600px) { .features { grid-template-columns: 1fr; } }
+
+/* dark gaps: always night */
+.night {
+  --n-paper: #120D17; --n-ink: #FFF4DC; --n-soft: #CDBFCF; --n-line: #F2E6CC;
+  background: var(--n-paper); color: var(--n-ink);
+  border-block: var(--bw) solid var(--stroke);
+  overflow: hidden;
+}
+.night .dots { --dots: rgba(255, 210, 51, .10); }
+.night .wrap { position: relative; z-index: 1; display: grid; grid-template-columns: 1fr 420px; gap: 64px; align-items: center; }
+.night .sec-head { margin-bottom: 30px; }
+.night .sec-head p:not(.caption) { color: var(--n-soft); }
+.night .caption { background: var(--zap); color: #1C1424; border-color: var(--n-line); box-shadow: 3px 3px 0 #000; }
+.night a { color: #FFB4A6; }
+.levels { display: inline-flex; flex-wrap: wrap; gap: 8px; padding: 6px; border: var(--bw) solid var(--n-line); border-radius: 18px; background: #221A29; box-shadow: 5px 6px 0 #000; }
+.levels label { position: relative; }
+.levels input { position: absolute; opacity: 0; inset: 0; margin: 0; cursor: pointer; }
+.levels span { display: inline-flex; align-items: center; gap: 8px; min-height: 46px; padding: 8px 16px; border-radius: 12px; font: 700 18px/1 var(--display); color: var(--n-ink); border: 2px solid transparent; }
+.levels span i { width: 16px; height: 16px; border-radius: 50%; border: 2px solid var(--n-line); }
+.levels input:checked + span { background: var(--zap); color: #1C1424; border-color: #1C1424; }
+.levels input:checked + span i { border-color: #1C1424; }
+.levels input:focus-visible + span { outline: 3px solid var(--punch); outline-offset: 2px; }
+.ticks { list-style: none; padding: 0; margin: 30px 0 0; display: grid; gap: 14px; }
+.ticks li { display: grid; grid-template-columns: 30px 1fr; gap: 12px; color: var(--n-soft); font-size: 16.5px; }
+.ticks li strong { color: var(--n-ink); }
+.ticks svg { width: 26px; height: 26px; color: var(--zap); margin-top: 1px; }
+.night .phone { box-shadow: 9px 10px 0 #000; border-color: var(--n-line); }
+.gaps .pill { opacity: 0; transition: opacity .3s ease; }
+.gaps.on .pill { opacity: 1; }
+@media (max-width: 960px) {
+  .night .wrap { grid-template-columns: 1fr; gap: 48px; }
+  .night .phone { justify-self: center; }
+}
+
+/* AI providers */
+.ai { display: grid; grid-template-columns: 1.15fr 1fr; gap: 24px; align-items: stretch; }
+.ai .main { padding: 30px; position: relative; overflow: hidden; }
+.ai .main h3 { font-size: 34px; margin: 10px 0 12px; }
+.ai .main p { color: var(--ink-soft); }
+.ai .badge { display: inline-block; padding: 4px 10px; border: 2px solid var(--stroke); border-radius: 999px; background: var(--zap); color: var(--on-zap); font: 700 14px/1.2 var(--display); text-transform: uppercase; letter-spacing: .05em; }
+.ai .stats { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 14px; margin-top: 22px; }
+.ai .stat { padding: 12px 16px; border: 2px solid var(--stroke); border-radius: 14px; background: var(--paper); }
+.ai .stat b { display: block; font: 700 26px/1.1 var(--display); color: var(--punch-text); }
+.ai .stat span { font-size: 14px; color: var(--ink-soft); }
+.ai .others { padding: 30px; }
+.ai .others h3 { font-size: 26px; margin-bottom: 10px; }
+.ai .others p { color: var(--ink-soft); font-size: 16px; }
+.chips { display: flex; flex-wrap: wrap; gap: 10px; margin: 18px 0; padding: 0; list-style: none; }
+.chips li { padding: 8px 14px; border: 2px solid var(--stroke); border-radius: 12px; background: var(--paper); font: 700 17px/1 var(--display); }
+@media (max-width: 860px) { .ai { grid-template-columns: 1fr; } }
+
+/* install */
+.install { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 20px; }
+.install .panel { padding-top: 70px; }
+.install .panel p + p { margin-top: 10px; }
+.callout { margin-top: 28px; padding: 22px 24px; display: grid; grid-template-columns: 44px 1fr; gap: 16px; background: var(--zap-soft); }
+.callout svg { width: 40px; height: 40px; color: var(--punch); }
+.callout h3 { font-size: 22px; margin-bottom: 6px; }
+.callout p { color: var(--ink-soft); font-size: 16px; }
+.callout p + p { margin-top: 8px; }
+@media (max-width: 900px) { .install { grid-template-columns: 1fr; row-gap: 40px; } }
+
+/* big download */
+.go { position: relative; overflow: hidden; padding: 56px 48px; display: grid; grid-template-columns: 1fr auto; gap: 32px; align-items: center; background: var(--zap); color: var(--on-zap); }
+.go h2 { font-size: clamp(36px, 5vw, 60px); }
+.go p { margin-top: 12px; font-size: 19px; color: #3A2D3E; max-width: 32em; }
+.go .cta { margin-top: 26px; }
+.go .btn-ghost-dark { --b-bg: #FFFBF0; --b-fg: #1C1424; border-color: #1C1424; box-shadow: 4px 5px 0 #1C1424; }
+.go .btn-punch { --b-fg: #fff; --b-bg: #D92B17; border-color: #1C1424; box-shadow: var(--pop); }
+.go .fuki { width: 230px; }
+.go .meta { margin-top: 18px; font-size: 14.5px; color: #3A2D3E; }
+.go .meta a { color: #1C1424; font-weight: 700; }
+@media (max-width: 820px) { .go { grid-template-columns: 1fr; padding: 40px 24px; } .go .fuki { width: 170px; justify-self: center; grid-row: 1; } }
+
+/* faq */
+.faq { display: grid; grid-template-columns: 1fr 1fr; gap: 16px 20px; align-items: start; }
+.faq details { padding: 0; box-shadow: 4px 5px 0 var(--shadow); border-radius: 16px; }
+.faq summary { list-style: none; cursor: pointer; display: grid; grid-template-columns: 1fr 30px; gap: 12px; align-items: center; padding: 18px 20px; font: 700 20px/1.25 var(--display); }
+.faq summary::-webkit-details-marker { display: none; }
+.faq summary .pm { width: 30px; height: 30px; display: grid; place-items: center; border: 2px solid var(--stroke); border-radius: 50%; background: var(--zap); color: #1C1424; transition: transform .2s ease; }
+.faq summary .pm svg { width: 16px; height: 16px; }
+.faq details[open] summary .pm { transform: rotate(45deg); background: var(--punch); color: #fff; }
+.faq details > div { padding: 0 20px 20px; color: var(--ink-soft); font-size: 16px; }
+.faq details > div p + p { margin-top: 10px; }
+@media (max-width: 820px) { .faq { grid-template-columns: 1fr; } }
+
+/* footer */
+.foot { border-top: var(--bw) solid var(--stroke); padding: 56px 0 40px; margin-top: 40px; }
+.foot .wrap { display: grid; grid-template-columns: 1.3fr 1fr; gap: 40px; }
+.respect { display: grid; grid-template-columns: 76px 1fr; gap: 18px; align-items: start; }
+.respect h3 { font-size: 23px; margin-bottom: 6px; }
+.respect p { color: var(--ink-soft); font-size: 16px; }
+.links { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 24px; align-content: start; }
+.links h4 { grid-column: 1 / -1; margin: 0 0 6px; font: 700 18px/1.2 var(--display); }
+.links a { color: var(--ink); font-weight: 600; text-decoration: none; padding: 4px 0; }
+.links a:hover { color: var(--punch-text); text-decoration: underline; }
+.legal { grid-column: 1 / -1; display: flex; flex-wrap: wrap; justify-content: space-between; gap: 12px; padding-top: 26px; margin-top: 8px; border-top: 2px dashed color-mix(in srgb, var(--stroke) 35%, transparent); color: var(--ink-soft); font-size: 14.5px; }
+@media (max-width: 760px) { .foot .wrap { grid-template-columns: 1fr; } }
+
+/* reveal on scroll (only when the script says motion is welcome) */
+.js-reveal .reveal { opacity: 0; transform: translateY(18px); transition: opacity .55s ease, transform .55s ease; }
+.js-reveal .reveal.in { opacity: 1; transform: none; }
+.fuki-bob { animation: bob 3.2s ease-in-out infinite; }
+@keyframes bob { 0%, 100% { translate: 0 0; } 50% { translate: 0 -8px; } }
+@media (prefers-reduced-motion: reduce) {
+  html { scroll-behavior: auto; }
+  *, *::before, *::after { animation: none !important; transition: none !important; }
+}
 </style>
 </head>
 <body>
-<div class="wrap">
+<a class="skip" href="#main">Skip to content</a>
 
-  <header>
-    <div class="logo"><span class="badge">文A</span> MangaLens</div>
-    <nav>
+<!-- shared art: Fuki, the app's mascot, and the comic page used by the demos -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true" focusable="false">
+  <defs>
+    <path id="fuki-tail" d="M-52,72 Q-74,98 -96,109 Q-104,116 -90,118 Q-50,112 -18,90 Z"/>
+    <polygon id="pow" points="2.5,-143.7 33.0,-103.7 60.0,-95.7 81.4,-77.2 155.4,-86.0 107.8,-28.7 120.5,-0.1 103.8,26.4 131.6,81.8 70.6,70.5 46.8,85.7 18.8,89.8 -24.1,156.7 -35.1,77.9 -68.9,72.7 -74.1,38.8 -128.9,22.4 -85.7,-15.1 -82.2,-43.3 -66.4,-66.9 -82.3,-134.4 -22.1,-99.9"/>
+    <path id="speed" d="M116.0,0.0L155.0,3.9L155.0,-3.9ZM112.9,26.6L133.4,35.4L135.2,27.9ZM103.8,51.8L132.5,70.4L136.0,63.5ZM96.5,64.4L107.6,76.5L111.9,70.1ZM57.6,100.7L65.1,121.7L71.8,117.9ZM44.4,107.2L53.8,140.1L61.0,137.1ZM18.6,114.5L17.4,130.9L25.0,129.7ZM-8.1,115.7L-14.7,154.4L-7.0,154.9ZM-113.8,22.6L-130.2,22.0L-128.7,29.5ZM-115.9,-4.0L-154.8,-9.3L-155.0,-1.6ZM-111.9,-30.5L-132.1,-40.0L-134.2,-32.6ZM-107.2,-44.4L-137.1,-61.0L-140.1,-53.8ZM-76.1,-87.5L-98.8,-119.5L-104.6,-114.5ZM-64.4,-96.5L-73.5,-116.9L-79.9,-112.6ZM-40.6,-108.7L-48.9,-141.8L-56.1,-139.2ZM-14.6,-115.1L-12.8,-131.4L-20.5,-130.5ZM26.6,-112.9L35.4,-133.4L27.9,-135.2ZM51.8,-103.8L70.4,-132.5L63.5,-136.0ZM64.4,-96.5L76.5,-107.6L70.1,-111.9ZM84.8,-79.1L116.0,-102.9L110.7,-108.5ZM107.2,-44.4L140.1,-53.8L137.1,-61.0ZM114.5,-18.6L130.9,-17.4L129.7,-25.0Z"/>
+    <linearGradient id="sky" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#BBD7FF"/><stop offset="1" stop-color="#FFE0EA"/></linearGradient>
+    <linearGradient id="night" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#161A36"/><stop offset="1" stop-color="#3E2B5E"/></linearGradient>
+    <linearGradient id="dusk" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#FF9A6B"/><stop offset=".6" stop-color="#C9568F"/><stop offset="1" stop-color="#4B2F7A"/></linearGradient>
+    <linearGradient id="teal" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#6FD3C6"/><stop offset="1" stop-color="#2E7C95"/></linearGradient>
+    <radialGradient id="blast" cx=".5" cy=".5" r=".5"><stop offset="0" stop-color="#FFF6C2"/><stop offset=".5" stop-color="#FFD233"/><stop offset="1" stop-color="#FF7A2F"/></radialGradient>
+    <clipPath id="p1"><rect x="16" y="16" width="328" height="284"/></clipPath>
+    <clipPath id="p2"><rect x="16" y="372" width="328" height="252"/></clipPath>
+    <clipPath id="teal-panel"><rect y="312" width="360" height="172"/></clipPath>
+  </defs>
+
+  <!-- Fuki ready: yellow body, wide awake, GO! on its belly -->
+  <symbol id="fuki-go" viewBox="-165 -165 330 330">
+    <use href="#speed" style="fill:var(--stroke)"/>
+    <use href="#pow" style="fill:var(--punch);stroke:var(--stroke);stroke-width:5;stroke-linejoin:round"/>
+    <use href="#pow" transform="translate(12 -8) scale(.72) translate(-12 8)" style="fill:var(--paper);stroke:var(--stroke);stroke-width:5;stroke-linejoin:round"/>
+    <g transform="translate(9 10)" style="fill:var(--shadow)"><circle r="100"/><use href="#fuki-tail"/></g>
+    <g style="fill:#FFCC1A;stroke:#1C1424;stroke-width:12;stroke-linejoin:round"><use href="#fuki-tail"/><circle r="100"/></g>
+    <g style="fill:#FFCC1A"><use href="#fuki-tail"/><circle r="100"/></g>
+    <g fill="#D92B17" fill-opacity=".45"><ellipse cx="-46" cy="-6" rx="8" ry="4"/><ellipse cx="46" cy="-6" rx="8" ry="4"/></g>
+    <g stroke="#1C1424" stroke-width="3"><ellipse cx="-27" cy="-24" rx="10" ry="12.5" fill="#fff"/><ellipse cx="27" cy="-24" rx="10" ry="12.5" fill="#fff"/></g>
+    <g fill="#1C1424"><circle cx="-25.5" cy="-20.5" r="6.5"/><circle cx="28.5" cy="-20.5" r="6.5"/></g>
+    <g fill="#fff"><circle cx="-27.5" cy="-22.5" r="2"/><circle cx="26.5" cy="-22.5" r="2"/></g>
+    <path d="M10.6,-0.2 A11,7 0 0 1 -10.6,-0.2" fill="none" stroke="#1C1424" stroke-width="4.5" stroke-linecap="round"/>
+    <text x="0" y="62" text-anchor="middle" font-family="Comic Neue, Comic Sans MS, sans-serif" font-weight="700" font-size="44" fill="#1C1424">GO!</text>
+  </symbol>
+
+  <!-- Fuki reading: red body, happy -->
+  <symbol id="fuki-happy" viewBox="-165 -165 330 330">
+    <use href="#pow" style="fill:#FFFBF0;stroke:#1C1424;stroke-width:5;stroke-linejoin:round"/>
+    <g transform="translate(9 10)" style="fill:#1C1424"><circle r="100"/><use href="#fuki-tail"/></g>
+    <g style="fill:#D92B17;stroke:#1C1424;stroke-width:12;stroke-linejoin:round"><use href="#fuki-tail"/><circle r="100"/></g>
+    <g style="fill:#D92B17"><use href="#fuki-tail"/><circle r="100"/></g>
+    <g fill="#fff" fill-opacity=".3"><ellipse cx="-46" cy="-6" rx="8" ry="4"/><ellipse cx="46" cy="-6" rx="8" ry="4"/></g>
+    <g fill="none" stroke="#1C1424" stroke-width="5.5" stroke-linecap="round"><path d="M-36.4,-26.7 A10,8 0 0 1 -17.6,-26.7"/><path d="M17.6,-26.7 A10,8 0 0 1 36.4,-26.7"/></g>
+    <path d="M12,-2 A12,12 0 0 1 -12,-2 Z" fill="#1C1424"/>
+    <text x="0" y="62" text-anchor="middle" font-family="Comic Neue, Comic Sans MS, sans-serif" font-weight="700" font-size="40" fill="#fff">READ!</text>
+  </symbol>
+
+  <!-- the comic page of the compare demo: art and empty balloons; the lettering is laid over it -->
+  <symbol id="page" viewBox="0 0 360 640">
+    <rect width="360" height="640" fill="#fff"/>
+    <!-- panel 1: a boy, a soft sky -->
+    <g clip-path="url(#p1)">
+      <rect x="16" y="16" width="328" height="284" fill="url(#sky)"/>
+      <g fill="#fff" opacity=".75"><ellipse cx="300" cy="230" rx="60" ry="18"/><ellipse cx="262" cy="244" rx="44" ry="14"/><ellipse cx="60" cy="58" rx="40" ry="12"/></g>
+      <path d="M22 300 C34 236 88 218 112 218 C136 218 188 236 202 300 Z" fill="#4E5D82" stroke="#1C1424" stroke-width="3"/>
+      <path d="M96 216 L112 240 L128 216" fill="none" stroke="#1C1424" stroke-width="3" stroke-linejoin="round"/>
+      <path d="M98 200 h28 v22 h-28 z" fill="#F2C7A7"/>
+      <ellipse cx="112" cy="168" rx="46" ry="52" fill="#F7D5BC" stroke="#1C1424" stroke-width="3"/>
+      <path d="M60 170 C54 118 90 98 118 102 C152 104 170 128 166 168 C158 148 150 144 141 154 C137 138 125 134 117 148 C111 134 99 134 92 150 C86 138 72 144 60 170 Z" fill="#2A2340" stroke="#1C1424" stroke-width="3" stroke-linejoin="round"/>
+      <g fill="#1C1424"><ellipse cx="95" cy="176" rx="4.5" ry="6.5"/><ellipse cx="129" cy="176" rx="4.5" ry="6.5"/></g>
+      <g fill="none" stroke="#1C1424" stroke-width="3" stroke-linecap="round"><path d="M86 163 l15 -3"/><path d="M138 163 l-15 -3"/><path d="M104 200 q8 5 16 0"/></g>
+      <g fill="#FF8FA3" opacity=".55"><ellipse cx="84" cy="192" rx="9" ry="4.5"/><ellipse cx="140" cy="192" rx="9" ry="4.5"/></g>
+    </g>
+    <rect x="16" y="16" width="328" height="284" fill="none" stroke="#1C1424" stroke-width="4"/>
+    <!-- balloon 1, stroked under, filled over: one clean outline -->
+    <g stroke="#1C1424" stroke-width="7" stroke-linejoin="round" fill="#fff"><path d="M178 132 L146 168 L206 144 Z"/><ellipse cx="240" cy="94" rx="102" ry="58"/></g>
+    <g fill="#fff"><path d="M178 132 L146 168 L206 144 Z"/><ellipse cx="240" cy="94" rx="102" ry="58"/></g>
+    <!-- panel 2: night, a blast -->
+    <g clip-path="url(#p2)">
+      <rect x="16" y="372" width="328" height="252" fill="url(#night)"/>
+      <g fill="#FFF4DC"><circle cx="60" cy="440" r="1.6"/><circle cx="96" cy="410" r="1.2"/><circle cx="140" cy="452" r="1.8"/><circle cx="318" cy="420" r="1.4"/><circle cx="182" cy="404" r="1.1"/></g>
+      <polygon points="250,452 266,500 314,478 284,520 336,540 284,556 304,604 258,574 236,624 220,572 172,596 196,552 150,534 198,516 172,474 222,496" fill="url(#blast)" stroke="#1C1424" stroke-width="3" stroke-linejoin="round"/>
+      <path d="M16 624 V560 h30 v-24 h26 v40 h22 v-58 h34 v34 h20 v-20 h28 v88 Z" fill="#0F1226"/>
+      <g fill="#FFD233" opacity=".85"><rect x="56" y="548" width="6" height="8"/><rect x="104" y="530" width="6" height="8"/><rect x="104" y="548" width="6" height="8"/><rect x="164" y="586" width="6" height="8"/></g>
+    </g>
+    <rect x="16" y="372" width="328" height="252" fill="none" stroke="#1C1424" stroke-width="4"/>
+    <!-- balloon 2, spilling across the gutter -->
+    <g stroke="#1C1424" stroke-width="7" stroke-linejoin="round" fill="#fff"><path d="M86 314 L72 280 L116 308 Z"/><ellipse cx="128" cy="338" rx="86" ry="34"/></g>
+    <g fill="#fff"><path d="M86 314 L72 280 L116 308 Z"/><ellipse cx="128" cy="338" rx="86" ry="34"/></g>
+    <!-- narration box -->
+    <rect x="28" y="384" width="134" height="40" fill="#1C1424" stroke="#fff" stroke-width="2"/>
+  </symbol>
+
+  <!-- the webtoon strip of the dark-gaps demo -->
+  <symbol id="strip" viewBox="0 0 360 640">
+    <rect width="360" height="640" fill="#fff"/>
+    <rect y="0" width="360" height="196" fill="url(#dusk)"/>
+    <circle cx="276" cy="78" r="30" fill="#FFE7A8" opacity=".9"/>
+    <path d="M0 196 V132 h34 v-30 h28 v54 h20 v-82 h40 v60 h24 v-26 h34 v74 h22 v-44 h30 v-24 h28 v68 h20 v-38 h40 v52 h40 V196 Z" fill="#2A1840"/>
+    <g fill="#FFD233" opacity=".8"><rect x="96" y="96" width="6" height="8"/><rect x="108" y="112" width="6" height="8"/><rect x="230" y="150" width="6" height="8"/><rect x="306" y="168" width="6" height="8"/></g>
+    <g stroke="#1C1424" stroke-width="7" stroke-linejoin="round" fill="#fff"><path d="M206 276 L180 300 L230 286 Z"/><ellipse cx="248" cy="252" rx="86" ry="32"/></g>
+    <g fill="#fff"><path d="M206 276 L180 300 L230 286 Z"/><ellipse cx="248" cy="252" rx="86" ry="32"/></g>
+    <text x="248" y="258" text-anchor="middle" font-family="Comic Neue, Comic Sans MS, sans-serif" font-weight="700" font-size="17" fill="#1C1424">WAIT FOR ME!</text>
+    <text x="22" y="232" font-family="Comic Neue, Comic Sans MS, sans-serif" font-weight="700" font-size="14" fill="#1C1424">Three years</text>
+    <text x="22" y="249" font-family="Comic Neue, Comic Sans MS, sans-serif" font-weight="700" font-size="14" fill="#1C1424">later…</text>
+    <rect y="312" width="360" height="172" fill="url(#teal)"/>
+    <g clip-path="url(#teal-panel)"><g transform="translate(70 200)">
+      <path d="M22 318 C34 254 88 236 112 236 C136 236 188 254 202 318 Z" fill="#F2F2F2" stroke="#1C1424" stroke-width="3"/>
+      <ellipse cx="112" cy="190" rx="44" ry="50" fill="#F7D5BC" stroke="#1C1424" stroke-width="3"/>
+      <path d="M62 196 C52 132 92 120 120 124 C156 128 172 152 162 196 C160 172 150 160 136 162 C112 166 86 156 76 150 C72 168 68 182 62 196 Z" fill="#7A3B2E" stroke="#1C1424" stroke-width="3" stroke-linejoin="round"/>
+      <g fill="none" stroke="#1C1424" stroke-width="3" stroke-linecap="round"><path d="M88 196 q8 -6 16 0"/><path d="M122 196 q8 -6 16 0"/><path d="M104 220 q8 4 16 0"/></g>
+    </g></g>
+    <rect y="548" width="360" height="92" fill="#1A1E3A"/>
+    <circle cx="70" cy="584" r="18" fill="#FFF4DC"/>
+    <path d="M0 640 V612 h80 l20 -18 h60 v46 Z M200 640 v-38 h70 v-16 h46 v54 Z" fill="#0B0D1C"/>
+    <!-- the shade: only the gutters, never the balloon, a margin kept round the narration -->
+    <mask id="gutters" maskUnits="userSpaceOnUse" x="0" y="0" width="360" height="640">
+      <rect y="196" width="360" height="116" fill="#fff"/>
+      <rect y="484" width="360" height="64" fill="#fff"/>
+      <ellipse cx="248" cy="252" rx="90" ry="36" fill="#000"/>
+      <path d="M204 274 L176 304 L234 284 Z" fill="#000" stroke="#000" stroke-width="6"/>
+      <rect x="14" y="216" width="98" height="40" rx="6" fill="#000"/>
+    </mask>
+    <rect class="shade" width="360" height="640" fill="#000" mask="url(#gutters)" style="opacity:var(--gap,0);transition:opacity .45s ease"/>
+  </symbol>
+</svg>
+
+<header class="top">
+  <div class="wrap">
+    <a class="brand" href="/" aria-label="MangaLens home"><img src="/favicon.svg" alt="" width="42" height="42"><span>MangaLens</span></a>
+    <nav class="nav" id="nav" aria-label="Main">
       <a href="#how">How it works</a>
+      <a href="#features">Features</a>
+      <a href="#dark-gaps">Dark gaps</a>
       <a href="#install">Install</a>
       <a href="#faq">FAQ</a>
-      <a href="https://github.com/mkisontop/mangalens">GitHub</a>
+      <a href="https://github.com/mkisontop/MangaLens">GitHub</a>
     </nav>
-  </header>
+    <button class="icon-btn" type="button" data-theme-toggle aria-label="Switch theme">
+      <svg class="theme-moon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 14.5A8.5 8.5 0 0 1 9.5 4a8.5 8.5 0 1 0 10.5 10.5Z"/></svg>
+      <svg class="theme-sun" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" aria-hidden="true"><circle cx="12" cy="12" r="4.5"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M4.9 19.1l1.8-1.8M17.3 6.7l1.8-1.8"/></svg>
+    </button>
+    <button class="icon-btn menu-btn" type="button" aria-controls="nav" aria-expanded="false" aria-label="Menu" data-menu>
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M4 7h16M4 12h16M4 17h16"/></svg>
+    </button>
+    <a class="btn btn-zap" href="https://github.com/mkisontop/MangaLens/releases/latest/download/MangaLens.apk" aria-label="Download the MangaLens APK">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>
+      <span>Download APK</span>
+    </a>
+  </div>
+</header>
 
-  <div class="hero">
-    <h1>Read raws like they were<br><em>translated all along.</em></h1>
-    <p class="sub">
-      MangaLens watches your screen while you read manhwa, manga or manhua in any
-      app, finds the speech bubbles, wipes them clean and re-letters them in
-      English — live, hands-free, like a human scanlation.
-    </p>
-    <div class="cta">
-      <a class="btn primary" href="https://github.com/mkisontop/mangalens/releases/latest/download/MangaLens.apk">⤓ Download for Android</a>
-      <a class="btn ghost" href="https://github.com/mkisontop/mangalens/releases/latest">All releases &amp; checksums</a>
+<main id="main">
+
+  <!-- ===================== hero ===================== -->
+  <section class="hero">
+    <div class="dots tr"></div>
+    <div class="dots bl"></div>
+    <div class="wrap">
+      <div class="hero-copy">
+        <a class="kicker" href="#dark-gaps"><span class="tag">New</span> Dark gaps: manhwa night mode →</a>
+        <h1>Read raws like they were <span class="hl">translated</span> all&nbsp;along.</h1>
+        <p class="lede">MangaLens watches your screen while you read <strong>manhwa, manga and manhua</strong> in any app, wipes the speech balloons clean and letters them back in <strong>English</strong>, live and hands-free, the way a scanlation team would.</p>
+        <div class="cta">
+          <a class="btn btn-zap btn-lg" href="https://github.com/mkisontop/MangaLens/releases/latest/download/MangaLens.apk">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>
+            <span class="two">Download for Android<small data-version>Latest release · free</small></span>
+          </a>
+          <a class="btn btn-lg" href="#how">How it works</a>
+        </div>
+        <ul class="facts">
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5 9-10"/></svg>Free &amp; open source</li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5 9-10"/></svg>Android 8.0+</li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5 9-10"/></svg>No account, ads or tracking</li>
+        </ul>
+      </div>
+
+      <div class="hero-art">
+        <svg class="fuki fuki-bob" viewBox="0 0 330 330" aria-hidden="true"><use href="#fuki-go" width="330" height="330"/></svg>
+        <div class="phone">
+          <div class="screen compare" data-compare>
+            <svg viewBox="0 0 360 640" role="img" aria-label="A raw manhwa page with Korean lettering">
+              <use href="#page"/>
+              <g font-weight="700" fill="#1C1424" text-anchor="middle" style="font-family:var(--ko)">
+                <text x="240" y="88" font-size="25">괜찮아.</text>
+                <text x="240" y="118" font-size="25">내가 지켜줄게.</text>
+                <text x="128" y="334" font-size="21">…형.</text>
+                <text x="128" y="358" font-size="21">고마워.</text>
+              </g>
+              <text x="95" y="410" text-anchor="middle" font-size="17" font-weight="700" fill="#fff" style="font-family:var(--ko)">그날 밤…</text>
+              <text x="248" y="548" text-anchor="middle" font-size="76" font-weight="900" fill="#FFD233" stroke="#1C1424" stroke-width="7" paint-order="stroke" stroke-linejoin="round" transform="rotate(-9 248 548)" style="font-family:var(--ko)">쾅!</text>
+            </svg>
+            <svg class="after" viewBox="0 0 360 640" role="img" aria-label="The same page, lettered in English by MangaLens">
+              <use href="#page"/>
+              <g font-family="Comic Neue, Comic Sans MS, sans-serif" font-weight="700" fill="#1C1424" text-anchor="middle">
+                <text x="240" y="86" font-size="23">IT'S OKAY.</text>
+                <text x="240" y="114" font-size="23">I'LL PROTECT YOU.</text>
+                <text x="128" y="333" font-size="19">…THANKS,</text>
+                <text x="128" y="356" font-size="19">HYUNG.</text>
+                <text x="95" y="410" font-size="16" fill="#fff">THAT NIGHT…</text>
+                <text x="248" y="548" font-size="64" fill="#FFD233" stroke="#1C1424" stroke-width="7" paint-order="stroke" stroke-linejoin="round" transform="rotate(-9 248 548)">BOOM!</text>
+              </g>
+            </svg>
+            <span class="lbl en" aria-hidden="true">MangaLens</span>
+            <span class="lbl raw" aria-hidden="true">Raw</span>
+            <div class="handle" aria-hidden="true"><div class="knob">文A</div></div>
+            <label class="sr-only" for="split">Compare the raw page and the English page</label>
+            <input id="split" type="range" min="0" max="100" value="50" aria-valuetext="Half and half">
+          </div>
+        </div>
+        <p class="note"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 7l-5 5 5 5M16 7l5 5-5 5"/></svg>Drag the 文A to compare</p>
+      </div>
     </div>
-    <div class="cta-note">Free &amp; open source · Android 8.0+ · no account, no ads, no tracking</div>
+  </section>
 
-    <div class="demo">
-      <figure>
-        <svg viewBox="0 0 420 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="A manhwa panel with Korean speech bubbles">
-          <rect width="420" height="300" fill="#f5f2ec"/>
-          <rect x="8" y="8" width="404" height="284" fill="none" stroke="#17181c" stroke-width="4"/>
-          <circle cx="140" cy="210" r="46" fill="#e8dccb"/>
-          <path d="M96 300 q44 -70 88 0 z" fill="#3b4252"/>
-          <path d="M104 190 q36 -52 72 0 q-10 -14 -36 -14 q-26 0 -36 14 z" fill="#17181c"/>
-          <ellipse cx="255" cy="82" rx="118" ry="52" fill="#fff" stroke="#17181c" stroke-width="4"/>
-          <path d="M195 124 l-26 30 l44 -16 z" fill="#fff" stroke="#17181c" stroke-width="4" stroke-linejoin="round"/>
-          <rect x="193" y="118" width="52" height="12" fill="#fff"/>
-          <text x="255" y="76" text-anchor="middle" font-family="'Noto Sans KR','Malgun Gothic',sans-serif" font-size="26" font-weight="700" fill="#17181c">괜찮아.</text>
-          <text x="255" y="106" text-anchor="middle" font-family="'Noto Sans KR','Malgun Gothic',sans-serif" font-size="26" font-weight="700" fill="#17181c">내가 지켜줄게.</text>
-          <ellipse cx="320" cy="222" rx="74" ry="38" fill="#fff" stroke="#17181c" stroke-width="4"/>
-          <text x="320" y="218" text-anchor="middle" font-family="'Noto Sans KR','Malgun Gothic',sans-serif" font-size="22" font-weight="700" fill="#17181c">…형.</text>
-          <text x="320" y="242" text-anchor="middle" font-family="'Noto Sans KR','Malgun Gothic',sans-serif" font-size="22" font-weight="700" fill="#17181c">고마워.</text>
-        </svg>
-        <figcaption>What's on screen</figcaption>
-      </figure>
-      <figure>
-        <svg viewBox="0 0 420 300" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="The same panel with the bubbles re-lettered in English">
-          <rect width="420" height="300" fill="#f5f2ec"/>
-          <rect x="8" y="8" width="404" height="284" fill="none" stroke="#17181c" stroke-width="4"/>
-          <circle cx="140" cy="210" r="46" fill="#e8dccb"/>
-          <path d="M96 300 q44 -70 88 0 z" fill="#3b4252"/>
-          <path d="M104 190 q36 -52 72 0 q-10 -14 -36 -14 q-26 0 -36 14 z" fill="#17181c"/>
-          <ellipse cx="255" cy="82" rx="118" ry="52" fill="#fff" stroke="#17181c" stroke-width="4"/>
-          <path d="M195 124 l-26 30 l44 -16 z" fill="#fff" stroke="#17181c" stroke-width="4" stroke-linejoin="round"/>
-          <rect x="193" y="118" width="52" height="12" fill="#fff"/>
-          <text x="255" y="72" text-anchor="middle" font-family="'Comic Sans MS','Comic Neue',cursive" font-size="19" font-weight="700" fill="#17181c">IT'S OKAY.</text>
-          <text x="255" y="100" text-anchor="middle" font-family="'Comic Sans MS','Comic Neue',cursive" font-size="19" font-weight="700" fill="#17181c">I'LL PROTECT YOU.</text>
-          <ellipse cx="320" cy="222" rx="74" ry="38" fill="#fff" stroke="#17181c" stroke-width="4"/>
-          <text x="320" y="216" text-anchor="middle" font-family="'Comic Sans MS','Comic Neue',cursive" font-size="15" font-weight="700" fill="#17181c">…THANKS,</text>
-          <text x="320" y="238" text-anchor="middle" font-family="'Comic Sans MS','Comic Neue',cursive" font-size="15" font-weight="700" fill="#17181c">HYUNG.</text>
-        </svg>
-        <figcaption>What you read — cleaned and re-lettered, live</figcaption>
-      </figure>
+  <!-- ===================== how it works ===================== -->
+  <section class="band" id="how" aria-labelledby="how-h">
+    <div class="wrap">
+      <header class="sec-head reveal">
+        <p class="caption">How it works</p>
+        <h2 id="how-h">Stop scrolling. It's English.</h2>
+        <p>No screenshots, no share menu, no cropping. You read the way you always do, and the page translates itself whenever you pause.</p>
+      </header>
+      <ol class="strip" role="list">
+        <li class="panel pop reveal">
+          <div class="num"><svg viewBox="-165 -165 330 330" aria-hidden="true"><use href="#pow" style="fill:var(--punch);stroke:var(--stroke);stroke-width:12;stroke-linejoin:round"/></svg><b>1</b></div>
+          <h3>Wake Fuki</h3>
+          <p>Open MangaLens and follow Fuki's two steps: let it float over other apps, then paste a <strong>free Gemini key</strong> from Google AI Studio (no card needed). Fuki letters a test line to prove it works.</p>
+        </li>
+        <li class="panel pop reveal">
+          <div class="num"><svg viewBox="-165 -165 330 330" aria-hidden="true"><use href="#pow" style="fill:var(--punch);stroke:var(--stroke);stroke-width:12;stroke-linejoin:round"/></svg><b>2</b></div>
+          <h3>Tap GO!</h3>
+          <p>Allow screen capture and a small floating <strong>文A</strong> button appears. Tap it to pause or wake MangaLens; long-press it for the quick menu.</p>
+        </li>
+        <li class="panel pop reveal">
+          <div class="num"><svg viewBox="-165 -165 330 330" aria-hidden="true"><use href="#pow" style="fill:var(--punch);stroke:var(--stroke);stroke-width:12;stroke-linejoin:round"/></svg><b>3</b></div>
+          <h3>Read like normal</h3>
+          <p>Brave, Chrome or any reader app. When you stop scrolling, the page goes to the AI in about <strong>150 ms</strong>.</p>
+        </li>
+        <li class="panel pop reveal">
+          <div class="num"><svg viewBox="-165 -165 330 330" aria-hidden="true"><use href="#pow" style="fill:var(--punch);stroke:var(--stroke);stroke-width:12;stroke-linejoin:round"/></svg><b>4</b></div>
+          <h3>English, in place</h3>
+          <p>The first line lands about <strong>1.5–2 s</strong> later, then the rest stream in one by one. Scroll on and it clears; pages you've read repaint instantly, at no cost.</p>
+        </li>
+      </ol>
+    </div>
+  </section>
+
+  <!-- ===================== features ===================== -->
+  <section class="band" id="features" aria-labelledby="feat-h" style="padding-top:24px">
+    <div class="wrap">
+      <header class="sec-head reveal">
+        <p class="caption">Features</p>
+        <h2 id="feat-h">Lettered like a scanlation, not stuck on like a sticker.</h2>
+        <p>No translucent boxes floating over the art. The original lettering is gone, and English is typeset where it was.</p>
+      </header>
+      <div class="features">
+        <article class="feature pop reveal">
+          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 11.5C4 7.4 7.6 4 12 4s8 3.4 8 7.5S16.4 19 12 19c-1.1 0-2.2-.2-3.1-.6L4 20l1.4-3.6C4.5 15 4 13.3 4 11.5Z"/><path d="M9 11.5h6"/></svg></div>
+          <h3>Balloons, wiped clean</h3>
+          <p>Each balloon is cleaned through its own detected shape, then re-lettered in comic type with a letterer's line taper. Joined balloons keep a line each.</p>
+        </article>
+        <article class="feature pop reveal">
+          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 3 4 14h7l-1 7 9-11h-7l1-7Z"/></svg></div>
+          <h3>Text on the art, too</h3>
+          <p>Narration, signs and sound effects are erased stroke by stroke and re-lettered in their own colours and outline. Big drawn-in sounds keep a small note instead.</p>
+        </article>
+        <article class="feature pop reveal">
+          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 13V5a2 2 0 0 1 4 0v6"/><path d="M12 10a2 2 0 0 1 4 0v2"/><path d="M16 11a2 2 0 0 1 4 0v4a6 6 0 0 1-6 6h-1.5a6 6 0 0 1-4.9-2.6L4.4 15a2 2 0 0 1 3.2-2.4L8 13"/></svg></div>
+          <h3>Hands-free</h3>
+          <p>Stop and the page translates itself; scroll and the English gets out of your way. Or switch to tap-to-translate and it only works when you ask.</p>
+        </article>
+        <article class="feature pop reveal">
+          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 4h11a3 3 0 0 1 3 3v13H8a3 3 0 0 1-3-3V4Z"/><path d="M5 17a3 3 0 0 1 3-3h11"/><path d="M9 8h6"/></svg></div>
+          <h3>Remembers the story</h3>
+          <p>A glossary, a cast list and the story so far keep names, honorifics and running jokes consistent across pages, chapters and restarts, per series.</p>
+        </article>
+        <article class="feature pop reveal">
+          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3c2.6 2.6 3.8 5.6 3.8 9s-1.2 6.4-3.8 9c-2.6-2.6-3.8-5.6-3.8-9S9.4 5.6 12 3Z"/></svg></div>
+          <h3>Korean · Japanese · Chinese</h3>
+          <p>Webtoons, vertical Japanese, simplified and traditional Chinese, and raws that turn out to be Spanish or English uploads. It reads what's actually on the page.</p>
+        </article>
+        <article class="feature pop reveal">
+          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v14M6 12l6 6 6-6"/></svg></div>
+          <h3>Auto-scroll</h3>
+          <p>Tap ▼ and the page glides, slowing down while a big balloon passes and hurrying through empty gutters. Awake, it holds at each stop while it translates.</p>
+        </article>
+        <article class="feature pop reveal">
+          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 20v-9a6 6 0 0 1 12 0v9l-2-1.5-2 1.5-2-1.5-2 1.5-2-1.5L6 20Z"/><path d="M10 10h.01M14 10h.01"/></svg></div>
+          <h3>No ghosts</h3>
+          <p>On Android 12 and later, a light veil keeps the original lettering from showing through the English. It lifts the moment MangaLens naps.</p>
+        </article>
+        <article class="feature pop reveal">
+          <div class="ico"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/></svg></div>
+          <h3>Private by design</h3>
+          <p>Screen capture and OCR run on your phone. Pages go only to the AI you chose, with your own key. No account, no ads, no analytics.</p>
+        </article>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== dark gaps ===================== -->
+  <section class="band night" id="dark-gaps" aria-labelledby="dg-h">
+    <div class="dots tr"></div>
+    <div class="wrap">
+      <div>
+        <header class="sec-head reveal">
+          <p class="caption">New · Manhwa night mode</p>
+          <h2 id="dg-h">Dark gaps. The gutters go dark; the art stays exactly as drawn.</h2>
+          <p>A webtoon is art cut by white gutters, and at night the gutters are what hurts. Dark gaps paints them dark and touches nothing else, on any site or app, with or without translation.</p>
+        </header>
+        <div class="levels reveal" role="radiogroup" aria-label="How dark the gaps are">
+          <label><input type="radio" name="gaps" value="0"><span><i></i>Off</span></label>
+          <label><input type="radio" name="gaps" value="0.8"><span><i style="background:#333"></i>Dim</span></label>
+          <label><input type="radio" name="gaps" value="0.9" checked><span><i style="background:#1A1A1A"></i>Dark</span></label>
+          <label><input type="radio" name="gaps" value="0.95"><span><i style="background:#000"></i>Black</span></label>
+        </div>
+        <ul class="ticks reveal">
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5 9-10"/></svg><span><strong>Only paper is painted.</strong> Pale art, a white sky, a balloon: all left as drawn. A gutter has to run out to the edges of the strip.</span></li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5 9-10"/></svg><span><strong>Lettering stays readable.</strong> Narration set on the white keeps a margin of white, so black ink is never left on a dark ground.</span></li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5 9-10"/></svg><span><strong>Rides the page as you scroll,</strong> and stays off your browser's bars and the site's own header and footer.</span></li>
+          <li><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5 12l5 5 9-10"/></svg><span><strong>Never in your finger's way.</strong> Long-press 文A → 🌙 Dark gaps to turn it on.</span></li>
+        </ul>
+      </div>
+      <div class="phone reveal">
+        <div class="screen gaps on" data-gaps style="--gap:.9">
+          <svg viewBox="0 0 360 640" role="img" aria-label="A webtoon strip whose white gutters are painted dark, with the art and the speech balloon untouched">
+            <use href="#strip"/>
+            <g class="pill">
+              <rect x="74" y="20" width="148" height="30" rx="15" fill="#1C1424" stroke="#F2E6CC" stroke-width="1.5"/>
+              <text x="148" y="40" text-anchor="middle" font-family="Comic Neue, Comic Sans MS, sans-serif" font-weight="700" font-size="14" fill="#FFF4DC">☾ dark gaps on</text>
+            </g>
+            <g>
+              <circle cx="40" cy="35" r="20" fill="#FFCC1A" stroke="#1C1424" stroke-width="3"/>
+              <text x="40" y="41" text-anchor="middle" font-size="15" font-weight="700" fill="#1C1424" style="font-family:var(--ko)">文A</text>
+            </g>
+          </svg>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== AI ===================== -->
+  <section class="band" id="ai" aria-labelledby="ai-h">
+    <div class="wrap">
+      <header class="sec-head reveal">
+        <p class="caption">Translation</p>
+        <h2 id="ai-h">Pure AI, with your own key.</h2>
+        <p>No machine draft painted first, no offline engine guessing. Each line appears once, in the AI's words, faithful by instruction: every line in full, nothing softened or skipped.</p>
+      </header>
+      <div class="ai">
+        <div class="main pop reveal">
+          <span class="badge">Recommended · free tier</span>
+          <h3>Gemini</h3>
+          <p>Gemini reads the page image itself the moment you stop, finds every piece of lettering (balloons, captions, text on the art, sound effects) and streams each line as it's translated. Getting a key takes two taps in the app, and Google AI Studio's free tier is plenty for reading.</p>
+          <div class="stats">
+            <div class="stat"><b>~1.5–2 s</b><span>to the first line</span></div>
+            <div class="stat"><b>~0.3 s</b><span>to repaint a page you've read</span></div>
+            <div class="stat"><b>Live</b><span>model picker, newest Flash</span></div>
+          </div>
+        </div>
+        <div class="others pop reveal">
+          <h3>Or bring another</h3>
+          <p>Use the AI you already pay for. On-device OCR finds the lettering and the AI translates it, streamed balloon by balloon.</p>
+          <ul class="chips">
+            <li>Claude</li><li>OpenAI</li><li>OpenRouter</li><li>Any OpenAI-compatible endpoint</li>
+          </ul>
+          <p>Each provider has its own key, kept in Android's no-backup storage. A key is never sent to any other provider.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== install ===================== -->
+  <section class="band" id="install" aria-labelledby="inst-h" style="padding-top:24px">
+    <div class="wrap">
+      <header class="sec-head reveal">
+        <p class="caption">Install</p>
+        <h2 id="inst-h">Reading in two minutes.</h2>
+        <p>MangaLens comes as an APK straight from its GitHub releases, signed with the same key every time, so updates install over the top and keep your settings.</p>
+      </header>
+      <ol class="install" role="list">
+        <li class="panel pop reveal">
+          <div class="num"><svg viewBox="-165 -165 330 330" aria-hidden="true"><use href="#pow" style="fill:var(--zap);stroke:var(--stroke);stroke-width:12;stroke-linejoin:round"/></svg><b style="color:#1C1424">1</b></div>
+          <h3>Download</h3>
+          <p>Get <a href="https://github.com/mkisontop/MangaLens/releases/latest/download/MangaLens.apk">MangaLens.apk</a> on your Android phone or tablet. That link always serves the newest release.</p>
+          <p>Every release ships a <a href="https://github.com/mkisontop/MangaLens/releases/latest">checksums.txt</a> if you'd like to verify it.</p>
+        </li>
+        <li class="panel pop reveal">
+          <div class="num"><svg viewBox="-165 -165 330 330" aria-hidden="true"><use href="#pow" style="fill:var(--zap);stroke:var(--stroke);stroke-width:12;stroke-linejoin:round"/></svg><b style="color:#1C1424">2</b></div>
+          <h3>Open it</h3>
+          <p>Android asks you to allow installs from your browser: the standard prompt for any app from outside the Play Store.</p>
+          <p>Every line of MangaLens is <a href="https://github.com/mkisontop/MangaLens">open source</a>.</p>
+        </li>
+        <li class="panel pop reveal">
+          <div class="num"><svg viewBox="-165 -165 330 330" aria-hidden="true"><use href="#pow" style="fill:var(--zap);stroke:var(--stroke);stroke-width:12;stroke-linejoin:round"/></svg><b style="color:#1C1424">3</b></div>
+          <h3>Follow Fuki</h3>
+          <p>Allow "Display over other apps", paste a free Gemini key, and tap <strong>GO!</strong>. From then on, MangaLens checks for new versions itself and offers them in the app.</p>
+        </li>
+      </ol>
+      <div class="callout pop reveal">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 3.5 7v5c0 4.7 3.6 8.4 8.5 9 4.9-.6 8.5-4.3 8.5-9V7L12 3Z"/><path d="M12 8v5M12 16.5h.01"/></svg>
+        <div>
+          <h3>"App blocked to protect your device"?</h3>
+          <p>Where Play Protect's enhanced fraud protection is on, Android refuses any downloaded app that declares an accessibility service, which auto-scroll needs. MangaLens's service asks for gestures only: it can't read your screen or anything you type.</p>
+          <p>The way round: Play Store → your profile picture → <strong>Play Protect</strong> → ⚙ → turn off <strong>Scan apps with Play Protect</strong> (and enhanced fraud protection, where shown), install, then turn scanning back on.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== download ===================== -->
+  <section class="band" style="padding-top:24px" aria-labelledby="go-h">
+    <div class="wrap">
+      <div class="go pop reveal">
+        <div>
+          <h2 id="go-h">Your raws are waiting.</h2>
+          <p>Free, open source, no account. Bring a free Gemini key and the next page you stop on comes back in English.</p>
+          <div class="cta">
+            <a class="btn btn-punch btn-lg" href="https://github.com/mkisontop/MangaLens/releases/latest/download/MangaLens.apk">
+              <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v11M7 10l5 5 5-5M5 20h14"/></svg>
+              Download MangaLens
+            </a>
+            <a class="btn btn-ghost-dark btn-lg" href="https://github.com/mkisontop/MangaLens/releases/latest">Release notes</a>
+          </div>
+          <p class="meta"><span data-version-line>Android 8.0 or later</span> · <a href="https://github.com/mkisontop/MangaLens/releases">Changelog</a></p>
+        </div>
+        <svg class="fuki" viewBox="0 0 330 330" aria-hidden="true"><use href="#fuki-happy" width="330" height="330"/></svg>
+      </div>
+    </div>
+  </section>
+
+  <!-- ===================== faq ===================== -->
+  <section class="band" id="faq" aria-labelledby="faq-h" style="padding-top:24px">
+    <div class="wrap">
+      <header class="sec-head reveal">
+        <p class="caption">FAQ</p>
+        <h2 id="faq-h">Questions, answered.</h2>
+      </header>
+      <div class="faq">
+        <div class="col">
+          <details class="pop">
+            <summary>Is it really free?<span class="pm"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M8 2v12M2 8h12"/></svg></span></summary>
+            <div><p>The app is free and open source (MIT), with no account. Translation runs on your own AI key; Google AI Studio's free Gemini tier is plenty for reading.</p></div>
+          </details>
+          <details class="pop" style="margin-top:16px">
+            <summary>Does my reading leave my phone?<span class="pm"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M8 2v12M2 8h12"/></svg></span></summary>
+            <div><p>Screen capture and OCR always run on your device. With Gemini, each page you stop on goes to Google as a 1280 px image (1024 px with Data saver); in text-only mode just the balloon text goes. Either way it goes only to the provider you chose. There's no analytics, no tracking and no account.</p></div>
+          </details>
+          <details class="pop" style="margin-top:16px">
+            <summary>Which apps does it work with?<span class="pm"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M8 2v12M2 8h12"/></svg></span></summary>
+            <div><p>Anything that shows a page: browsers, reader apps, galleries. Private and incognito tabs block screen capture by design (the capture comes out black), so read in a normal tab.</p></div>
+          </details>
+          <details class="pop" style="margin-top:16px">
+            <summary>Which languages?<span class="pm"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M8 2v12M2 8h12"/></svg></span></summary>
+            <div><p>Korean, Japanese (including vertical text) and Chinese (simplified and traditional) into English. Raws that were already translated once, often Spanish or English uploads on aggregator sites, work too.</p></div>
+          </details>
+          <details class="pop" style="margin-top:16px">
+            <summary>Overlays don't appear?<span class="pm"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M8 2v12M2 8h12"/></svg></span></summary>
+            <div><p>Check that "Display over other apps" is allowed and that you're not in a private tab. Without a key nothing is translated, and the status pill says what to add.</p></div>
+          </details>
+        </div>
+        <div class="col">
+          <details class="pop">
+            <summary>Why does the page look darker while it runs?<span class="pm"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M8 2v12M2 8h12"/></svg></span></summary>
+            <div><p>Since Android 12, an overlay that lets your touches through is drawn at no more than 80% strength, so the original would ghost through the English. A light veil over the page closes that gap. It lifts while MangaLens naps, and <strong>Tweaks → No ghosts</strong> turns it off.</p></div>
+          </details>
+          <details class="pop" style="margin-top:16px">
+            <summary>Does Dark gaps need translation on?<span class="pm"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M8 2v12M2 8h12"/></svg></span></summary>
+            <div><p>No. Pause translating and the gaps stay dark. It works from the screen capture alone, which is why it works on any site or app. A thin white line next to the art while you scroll is the margin that keeps the shade off the art; it closes when you stop.</p></div>
+          </details>
+          <details class="pop" style="margin-top:16px">
+            <summary>What about battery?<span class="pm"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M8 2v12M2 8h12"/></svg></span></summary>
+            <div><p>Switch to tap-to-translate and capture idles until you tap 文A. Dark gaps only works while the page moves or settles; a still page costs nothing.</p></div>
+          </details>
+          <details class="pop" style="margin-top:16px">
+            <summary>Slow or no internet?<span class="pm"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M8 2v12M2 8h12"/></svg></span></summary>
+            <div><p>Lettering you've already seen repaints from memory at once, and new lines appear one by one as the AI writes them. <strong>Data saver</strong> shrinks uploads. Offline, nothing new is translated, and the pill tells you why.</p></div>
+          </details>
+          <details class="pop" style="margin-top:16px">
+            <summary>How do I update?<span class="pm"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2.6" stroke-linecap="round" aria-hidden="true"><path d="M8 2v12M2 8h12"/></svg></span></summary>
+            <div><p>MangaLens checks for new versions itself and offers them in the app. You can also install the newest APK over the top at any time; your settings stay. Still on 0.9.1? Follow the <a href="https://github.com/mkisontop/MangaLens#one-time-update-from-091" data-at-release="README.md#one-time-update-from-091">one-time update steps</a>.</p></div>
+          </details>
+        </div>
+      </div>
+    </div>
+  </section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <div class="respect">
+      <svg viewBox="0 0 330 330" aria-hidden="true"><use href="#fuki-happy" width="330" height="330"/></svg>
+      <div>
+        <h3>Respect the creators</h3>
+        <p>MangaLens is a reading-accessibility tool for content you already have access to. When an official English release exists, buy it: translators and artists eat too. ♥</p>
+      </div>
+    </div>
+    <nav class="links" aria-label="Footer">
+      <h4>MangaLens</h4>
+      <a href="https://github.com/mkisontop/MangaLens/releases/latest/download/MangaLens.apk">Download APK</a>
+      <a href="https://github.com/mkisontop/MangaLens/releases/latest">Latest release notes</a>
+      <a href="https://github.com/mkisontop/MangaLens/releases">Changelog</a>
+      <a href="https://github.com/mkisontop/MangaLens">Source code</a>
+      <a href="https://github.com/mkisontop/MangaLens/issues">Report a problem</a>
+      <a href="https://github.com/mkisontop/MangaLens#readme" data-at-release="README.md#readme">Documentation</a>
+    </nav>
+    <div class="legal">
+      <span>© <span data-year>2026</span> MangaLens · <a href="https://github.com/mkisontop/MangaLens/blob/main/LICENSE">MIT licence</a> · Comic Neue under the <a href="/fonts/OFL.txt">SIL Open Font License</a></span>
+      <span>mangalenz.net</span>
     </div>
   </div>
+</footer>
 
-  <section id="how">
-    <h2>How it works</h2>
-    <ol class="steps">
-      <li><strong>Give MangaLens a brain.</strong> The app walks you through getting a free Gemini key from Google AI Studio (no card needed) and pasting it — two taps — then letters a test line to show it works.</li>
-      <li><strong>Tap GO</strong> and allow screen capture. A small floating 文A button appears — tap it any time to pause or resume.</li>
-      <li><strong>Read normally</strong> in Brave, Chrome, or any reader app. When you stop scrolling for a third of a second, MangaLens finds the speech bubbles <em>in the pixels</em> — round ones, spiky shout bubbles, black narration boxes, tinted pastel ones.</li>
-      <li><strong>The bubbles become English.</strong> Each balloon is wiped to its own paper color through its exact detected shape and re-lettered in comic type with a letterer's line taper. Scroll on and overlays clear instantly; pages you've read re-paint from cache at no cost.</li>
-    </ol>
-  </section>
-
-  <section>
-    <h2>Why it feels different</h2>
-    <div class="grid">
-      <div class="card"><h3><span class="k">◐</span>Cleaned, not covered</h3><p>No translucent boxes floating over text. The original lettering is gone — wiped through the balloon's own detected mask — and the English is typeset in its place.</p></div>
-      <div class="card"><h3><span class="k">⚡</span>Live &amp; hands-free</h3><p>No screenshotting, no share-menu, no cropping. Stop scrolling and the page translates itself; scroll and it gets out of your way.</p></div>
-      <div class="card"><h3><span class="k">🔒</span>Private by design</h3><p>Capture and OCR run entirely on your device. Pages go only to the AI provider you chose — the page image with AI Vision, just the bubble text in text-only mode.</p></div>
-      <div class="card"><h3><span class="k">✨</span>Pure AI, your key</h3><p>Bring a free Google AI Studio key and the AI reads whole pages with story memory, a persistent name glossary, honorifics and natural tone. No machine draft first: each line appears once, in the AI's words. A live model picker always offers Google's newest Flash models.</p></div>
-      <div class="card"><h3><span class="k">🧠</span>Remembers the story</h3><p>Character names, pronouns and running jokes stay consistent across pages, chapters and restarts — scoped per series, so stories never contaminate each other.</p></div>
-      <div class="card"><h3><span class="k">🌏</span>KO · JA · ZH → EN</h3><p>Korean webtoons, vertical Japanese, simplified and traditional Chinese — plus raws that are secretly Spanish or English uploads. It reads what's actually on the page.</p></div>
-    </div>
-  </section>
-
-  <section id="install">
-    <h2>Install in two minutes</h2>
-    <ol class="steps">
-      <li><strong>Download <a href="https://github.com/mkisontop/mangalens/releases/latest/download/MangaLens.apk">MangaLens.apk</a></strong> on your Android phone or tablet.</li>
-      <li><strong>Open the file.</strong> Android will ask you to allow installs from your browser — that's the standard prompt for any app outside the Play Store. MangaLens is open source; you can read every line <a href="https://github.com/mkisontop/mangalens">on GitHub</a> or verify the download against the release checksums.</li>
-      <li><strong>Open MangaLens</strong> → let it float over other apps → paste a free Gemini key → tap GO. The app checks for new versions by itself and offers them in-app.</li>
-    </ol>
-  </section>
-
-  <section id="faq">
-    <h2>FAQ</h2>
-    <details><summary>Is it really free?</summary><p>The app is free and open source, with no account. Translation is done by AI with your own API key — Google AI Studio keys for Gemini, the default, have a free tier that's plenty for reading.</p></details>
-    <details><summary>Does my reading leave my device?</summary><p>Screen capture and OCR are 100% on-device. AI Vision mode (the default) sends the page image to the AI provider you picked; text-only mode sends bubble text only — either way to that provider and nowhere else. No analytics, no tracking, no account.</p></details>
-    <details><summary>Which apps does it work with?</summary><p>Any app that shows a page — browsers, reader apps, galleries. Private/incognito tabs block screen capture by design (the capture shows black), so use a normal tab.</p></details>
-    <details><summary>Overlays don't appear?</summary><p>Check that "Display over other apps" is granted, and that you're not in a private tab. The in-app Diagnostics toggle shows exactly what was detected if something looks off.</p></details>
-    <details><summary>Battery?</summary><p>Use "Tap to translate" mode — capture idles until you tap the floating button.</p></details>
-  </section>
-
-  <footer>
-    <p>MangaLens is a reading-accessibility tool for content you already have access to.
-    When an official English release exists, buy it — translators and artists deserve it. <span class="heart">♥</span></p>
-    <p style="margin-top:10px">
-      <a href="https://github.com/mkisontop/mangalens">Source (MIT)</a> ·
-      <a href="https://github.com/mkisontop/mangalens/releases">Releases</a> ·
-      <a href="https://github.com/mkisontop/mangalens/issues">Report a problem</a>
-    </p>
-  </footer>
-
-</div>
+<script src="/main.js" defer></script>
 </body>
 </html>

@@ -15,7 +15,7 @@ and the next page translates itself. With Gemini the first line appears
 about 1.5–2 s after you stop.
 
 **[⤓ Download the latest APK](https://github.com/mkisontop/mangalens/releases/latest/download/MangaLens.apk)**
-· [website](https://mkisontop.github.io/MangaLens/)
+· [website](https://mangalenz.net)
 · [all releases](https://github.com/mkisontop/mangalens/releases)
 · [changelog](CHANGELOG.md)
 
