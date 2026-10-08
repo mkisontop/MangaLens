@@ -51,6 +51,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.layout.onSizeChanged
 import androidx.compose.ui.platform.LocalClipboardManager
 import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.platform.LocalUriHandler
@@ -805,7 +806,7 @@ private fun ModelChoice(drafts: AiDrafts) {
         val pinned = drafts.model.isNotBlank()
         Helper(if (pinned) drafts.model else "Automatic: the newest Gemini Flash. Best for almost everyone.")
         Spacer(Modifier.height(8.dp))
-        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp), verticalAlignment = Alignment.Bottom) {
             GeminiModelPicker(apiKey = drafts.key.trim(), onPick = drafts::editModel, modifier = Modifier.weight(1f))
             if (pinned) {
                 StickerButton(
@@ -845,63 +846,69 @@ private fun GeminiModelPicker(apiKey: String, onPick: (String) -> Unit, modifier
     var loading by remember { mutableStateOf(false) }
     var error by remember { mutableStateOf<String?>(null) }
     var models by remember { mutableStateOf<List<ModelCatalog.LiveModel>>(emptyList()) }
-    Box(modifier) {
-        StickerButton(
-            if (loading) "Asking Gemini…" else "Choose a model ▾",
-            {
-                if (loading) return@StickerButton
-                if (apiKey.isBlank()) {
-                    error = "Add your key first. The list comes from your account."
-                    return@StickerButton
-                }
-                error = null
-                if (models.isNotEmpty()) {
-                    open = true
-                    return@StickerButton
-                }
-                loading = true
-                scope.launch {
-                    try {
-                        models = ModelCatalog.gemini(apiKey)
-                        open = models.isNotEmpty()
-                        if (models.isEmpty()) error = "Gemini returned no usable models."
-                    } catch (e: Exception) {
-                        error = "Couldn't fetch models: " + (e.message ?: "network error")
-                    } finally {
-                        loading = false
+    var width by remember { mutableStateOf(0.dp) }
+    val density = LocalDensity.current
+    // The error sits above the button, not beside it, so the button keeps its size.
+    Column(modifier) {
+        error?.let {
+            Text(it, style = MaterialTheme.typography.bodyMedium, color = pop.punchText)
+            Spacer(Modifier.height(6.dp))
+        }
+        Box(Modifier.fillMaxWidth().onSizeChanged { width = with(density) { it.width.toDp() } }) {
+            StickerButton(
+                if (loading) "Asking Gemini…" else "Choose a model ▾",
+                {
+                    if (loading) return@StickerButton
+                    if (apiKey.isBlank()) {
+                        error = "Add your key first. The list comes from your account."
+                        return@StickerButton
                     }
-                }
-            },
-            style = StickerStyle.Surface,
-            height = 48.dp,
-        )
-        DropdownMenu(
-            expanded = open,
-            onDismissRequest = { open = false },
-            shape = RoundedCornerShape(16.dp),
-            containerColor = pop.surface,
-            tonalElevation = 0.dp,
-            shadowElevation = 0.dp,
-            border = BorderStroke(2.dp, pop.stroke),
-        ) {
-            models.forEach { m ->
-                DropdownMenuItem(
-                    text = {
-                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                            Text(m.label, style = MaterialTheme.typography.titleMedium, color = pop.ink)
-                            Text(m.id, style = MonoStyle.copy(fontSize = 14.sp), color = pop.inkSoft)
+                    error = null
+                    if (models.isNotEmpty()) {
+                        open = true
+                        return@StickerButton
+                    }
+                    loading = true
+                    scope.launch {
+                        try {
+                            models = ModelCatalog.gemini(apiKey)
+                            open = models.isNotEmpty()
+                            if (models.isEmpty()) error = "Gemini returned no usable models."
+                        } catch (e: Exception) {
+                            error = "Couldn't fetch models: " + (e.message ?: "network error")
+                        } finally {
+                            loading = false
                         }
-                    },
-                    onClick = {
-                        open = false
-                        onPick(m.id)
-                    },
-                )
+                    }
+                },
+                style = StickerStyle.Surface,
+                height = 48.dp,
+            )
+            DropdownMenu(
+                expanded = open,
+                onDismissRequest = { open = false },
+                shape = RoundedCornerShape(16.dp),
+                containerColor = pop.surface,
+                tonalElevation = 0.dp,
+                shadowElevation = 0.dp,
+                border = BorderStroke(2.dp, pop.stroke),
+                modifier = Modifier.width(width),
+            ) {
+                models.forEach { m ->
+                    DropdownMenuItem(
+                        text = {
+                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                Text(m.label, style = MaterialTheme.typography.titleMedium, color = pop.ink)
+                                Text(m.id, style = MonoStyle.copy(fontSize = 14.sp), color = pop.inkSoft)
+                            }
+                        },
+                        onClick = {
+                            open = false
+                            onPick(m.id)
+                        },
+                    )
+                }
             }
         }
-    }
-    error?.let {
-        Spacer(Modifier.height(6.dp))
-        Text(it, style = MaterialTheme.typography.bodyMedium, color = pop.punchText)
     }
 }
