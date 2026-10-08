@@ -147,6 +147,61 @@ class ShadeEngineTest {
     }
 
     @Test
+    fun `a detection landing or the clock ticking does not restart the prediction from a stale page`() {
+        // Each publish used to stamp the page's offset with the moment of publishing. The offset
+        // is the one read from the last frame; stamped later, the prediction started over from a
+        // page that had in truth moved on, and the shade fell back by the speed times the delay.
+        val eng = ShadeEngine(w, h, style)
+        var top = 2000
+        var t = 0.0
+        var job: DetectJob? = eng.kick(ArrayPixels(w, h, strip.frame(top, h)), t)
+        eng.onDetected(job!!, job.run(), t + 20)
+        for (i in 0 until 30) {
+            t += 16.7
+            top += 8
+            job = eng.onFrame(ArrayPixels(w, h, strip.frame(top, h)), t) ?: job
+            assertEquals("frame $i: stamped with the frame's time", t, eng.snapshot.offsetAtMs, 1e-9)
+            // where the page is predicted to be at a draw a little later, whatever rectangles ride it
+            val before = eng.snapshot.shiftAt(t + 14) + eng.snapshot.baseOffset
+            eng.tick(t + 6)
+            if (i % 3 == 0) eng.onDetected(job!!, job.run(), t + 9)
+            assertEquals("frame $i: still the frame's time", t, eng.snapshot.offsetAtMs, 1e-9)
+            assertEquals("frame $i: the same page, predicted to the same place", before, eng.snapshot.shiftAt(t + 14) + eng.snapshot.baseOffset)
+        }
+    }
+
+    @Test
+    fun `a steady scroll at 120 Hz is followed smoothly`() {
+        // The drawn shade, laid on the page, should not step back and forth from one vsync to the
+        // next: every step it takes against the page is the shade shivering.
+        val vs = 1000.0 / 120
+        val disp = 3
+        val lead = 80.0
+        val sc0 = Scrolls.ramp(1500.0, 800.0, 150.0, 1900.0)
+        val sc: (Double) -> Double = { t -> sc0((t - lead).coerceAtLeast(0.0)) }
+        val firstTop = Math.round(sc(0.0)).toInt()
+        val drawn = HashMap<Int, IntArray>()
+        var sim: ShadeSimulation? = null
+        val jumps = ArrayList<Int>()
+        var prev: Int? = null
+        sim = ShadeSimulation(strip, w, h, style, vs, 6.0, disp, 15.0, onGlass = { k, _ ->
+            val t = k * vs
+            val sn = sim!!.engine.snapshot
+            drawn[k] = intArrayOf(sn.baseOffset, sn.shiftAt(t), sn.rectCount)
+            val d = drawn[k - disp]
+            val top = Math.round(sc(minOf(t, 2000.0))).toInt()
+            if (d != null && d[2] > 0 && t in 400.0..1900.0) {
+                val e = d[1] - ((firstTop - top) - d[0])
+                prev?.let { jumps.add(kotlin.math.abs(e - it)) }
+                prev = e
+            }
+        })
+        sim.run(sc0, 2000.0, touchLeadMs = lead)
+        val big = jumps.count { it > 2 }
+        assertTrue("steps of more than two rows in ${big} of ${jumps.size} vsyncs", big * 10 <= jumps.size)
+    }
+
+    @Test
     fun `a page turn drops the shade within a few frames and restores it exactly`() {
         // the page is replaced by a different part of the strip in one frame, as a tap-to-turn reader does
         val jump: (Double) -> Double = { t -> if (t < 600) 2000.0 else 7300.0 }

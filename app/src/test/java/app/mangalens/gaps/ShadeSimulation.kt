@@ -3,6 +3,7 @@ package app.mangalens.gaps
 import java.util.PriorityQueue
 import kotlin.math.abs
 import kotlin.math.max
+import kotlin.random.Random
 
 /**
  * The whole loop, on a virtual clock: the page scrolls at the display's refresh rate, the
@@ -11,7 +12,14 @@ import kotlin.math.max
  * it was shown — with the overlay on it — and detections take time to come back.
  *
  * At every vsync it counts the pixels of *art* the visible overlay covers: the one number
- * that decides whether the feature does what it promises.
+ * that decides whether the feature does what it promises. Alongside, it measures what the
+ * reader sees of the shade in motion — how steadily it rides the page ([Report.motion], see
+ * [MotionMeter]), how much of the gutter stays dark ([Report.moving]), and whether white that
+ * belongs to the art was darkened ([Report.whiteMax]).
+ *
+ * The timing is exact by default: every frame takes [captureLagMs] to arrive, every draw is
+ * made on its vsync, every detection takes [jobMs]. The jitter knobs make it as ragged as a
+ * phone is; all of them are seeded, so a run is repeatable.
  */
 internal class ShadeSimulation(
     private val strip: Strip,
@@ -42,11 +50,73 @@ internal class ShadeSimulation(
     private val keepClear: BooleanArray? = null,
     /** Shown each vsync's glass, for a look at it. */
     private val onGlass: ((Int, IntArray) -> Unit)? = null,
+    /**
+     * Each frame the capture delivers arrives up to this many milliseconds later than
+     * [captureLagMs], uniformly at random. Frames still arrive in the order they were shown, as
+     * a capture queue hands them over.
+     */
+    private val captureJitterMs: Double = 0.0,
+    /**
+     * Share of the changed frames the capture never delivers, chosen at random. A frame is only
+     * lost to a newer one: when it turns out to be the last change, it is delivered a vsync late
+     * instead, as a reader that always takes the newest image would still find it.
+     */
+    private val captureDropShare: Double = 0.0,
+    /**
+     * The view does not draw exactly on the vsync: the time it reads the snapshot's shift for,
+     * and tells the engine it drew at, is the vsync plus up to this many milliseconds, uniformly
+     * at random. The draw still reaches the glass [displayFrames] vsyncs on, at the vsync.
+     */
+    private val drawJitterMs: Double = 0.0,
+    /** A detection takes up to this many milliseconds longer than [jobMs], uniformly at random. */
+    private val jobJitterMs: Double = 0.0,
+    /** Which time the engine is told a frame was taken at. */
+    private val timeSource: TimeSource = TimeSource.ARRIVAL,
+    /** Seeds the random timing: the same seed plays the same run. */
+    seed: Long = 1L,
+    /**
+     * White pixels of the strip the shade must never cover — the white inside panels, the
+     * inside of balloons — as a mask `strip.w * strip.h`, in strip coordinates. Measured as
+     * [Report.whiteMax], apart from the art damage, which only counts pixels that are not paper.
+     */
+    private val protectedWhite: BooleanArray? = null,
+    /**
+     * The screen rows the page is truly seen in: above and below are the bars that stay put.
+     * The motion and the white are measured on these rows only.
+     */
+    private val pageRows: IntRange = 0 until h,
+    /**
+     * Coverage while moving is measured on every this-many-th moving vsync; 0 turns it off. Each
+     * new position of the page costs an exact pass, so by default every other vsync is enough.
+     */
+    private val coverageEvery: Int = 2,
+    /** Keeps one line of the motion measures per vsync in [Report.timeline]. */
+    private val keepTimeline: Boolean = false,
 ) {
+    /** Which clock the timestamps handed to the engine with each frame come from. */
+    enum class TimeSource {
+        /**
+         * When the frame reached the engine: what the capture thread reads off the clock as the
+         * image comes in. Capture jitter lands in the measurements.
+         */
+        ARRIVAL,
+
+        /**
+         * When the frame was on the glass, plus the constant [captureLagMs]: what the image's own
+         * timestamp would give. Capture jitter does not.
+         */
+        GLASS,
+    }
+
     val engine = ShadeEngine(w, h, style, GapParams(), tuning).also { e ->
         e.ignoreTopRows = ignoreTopRows
         e.ignoreBottomRows = ignoreBottomRows
         e.setExclusions(exclusions)
+    }
+
+    init {
+        require(protectedWhite == null || (strip.w == w && protectedWhite.size == strip.w * strip.h)) { "the white mask is the strip's" }
+        require(pageRows.first >= 0 && pageRows.last < h) { "page rows are screen rows" }
     }
 
     /** The screen with the page scrolled to [top], before the shade: the page and whatever is fixed over it. */
@@ -59,6 +129,12 @@ internal class ShadeSimulation(
     private companion object {
         const val ONSET_MS = 300.0
         const val STOP_MS = 260.0
+
+        /** How long after the page stops its vsyncs count as settling rather than still. */
+        const val SETTLE_MS = 600.0
+
+        /** Exact passes kept, by the page's top row, for the coverage reference. */
+        const val REFERENCE_CACHE = 512
     }
 
     /** A draw as the view makes it: the rectangles, how far down, and the rows of the page they are cut to. */
@@ -76,6 +152,18 @@ internal class ShadeSimulation(
     private var lastDelivered = -1.0
     private var quietGen = 0
     private var shownRects = 0
+
+    private val captureRandom = Random(seed)
+    private val dropRandom = Random(seed + 1)
+    private val drawRandom = Random(seed + 2)
+    private val jobRandom = Random(seed + 3)
+
+    /** Changed frames shown so far: a dropped frame is lost only once a newer one exists. */
+    private var glassSeq = 0
+    private var lastArrivalMs = Double.NEGATIVE_INFINITY
+
+    /** The exact pass on the clean page, by the page's top row: the page repeats a row when it moves slowly. */
+    private val references = HashMap<Int, GapResult>()
 
     class Report {
         var frames = 0
@@ -100,10 +188,53 @@ internal class ShadeSimulation(
         var onsetMax = 0
         var steadyMax = 0
         var stopMax = 0
+
+        /**
+         * How steadily the shade rode the page, in the page's own coordinates: flicker, edge wobble
+         * and pops over the vsyncs in which the page moved, and apart from them the moments after
+         * it stopped. A perfect shade scores zero while it rides a steady scroll. See [MotionMeter].
+         */
+        val motion = MotionMeter.Summary()
+
+        /**
+         * [motion], split by what changed on the glass: vsyncs that show the same rectangles as the
+         * one before, carried to a new place — where any wobble is the prediction's — and vsyncs
+         * that show new ones: a fresh detection, or the margin cut again.
+         */
+        val motionCarried = MotionMeter.Summary()
+        val motionReplaced = MotionMeter.Summary()
+
+        /**
+         * How much of the gutter the shade covered while the page moved, on every `coverageEvery`-th
+         * moving vsync, against the exact pass on the clean page. See [MovingCoverage].
+         */
+        val moving = MovingCoverage()
+
+        /**
+         * Most pixels of the protected white the shade on the glass covered in any one frame, the
+         * most in any frame at rest, and the frames with any.
+         */
+        var whiteMax = 0
+        var whiteRest = 0
+        var whiteFrames = 0
+
+        /** Frames the screen changed in, the ones the capture delivered, and the ones it lost to a newer one. */
+        var framesChanged = 0
+        var framesDelivered = 0
+        var framesDropped = 0
+
+        /** One line per vsync of the motion measures, when the simulation was asked to keep them. */
+        val timeline = ArrayList<String>()
+
         fun log() = damageLog.joinToString(" ")
         override fun toString() = "onset=${onsetMax}px steady=${steadyMax}px stop=${stopMax}px | frames=$frames maxDamage=${maxDamage}px damagedFrames=$damagedFrames " +
             "meanCoverageMoving=${"%.3f".format(if (coverageMovingN == 0) 1.0 else coverageMovingSum / coverageMovingN)} " +
             "restDamage=$restDamage restCoverage=${"%.4f".format(restCoverage)} drops=$drops clearHits=$clearHits"
+
+        /** The motion measures, on one line. */
+        fun motionLine() = "$motion | carried ${motionCarried.brief()} | replaced ${motionReplaced.brief()} | $moving | " +
+            "white max=${whiteMax}px rest=${whiteRest}px frames=$whiteFrames | " +
+            "capture changed=$framesChanged delivered=$framesDelivered dropped=$framesDropped"
     }
 
     private fun at(t: Double, run: () -> Unit) {
@@ -119,9 +250,23 @@ internal class ShadeSimulation(
 
     private fun runJob(job: DetectJob?, t: Double) {
         if (job == null) return
-        at(t + jobMs) {
+        val done = t + jobMs + (if (jobJitterMs > 0) jobRandom.nextDouble() * jobJitterMs else 0.0)
+        at(done) {
             val r = job.run()
-            engine.onDetected(job, r, t + jobMs)
+            engine.onDetected(job, r, done)
+        }
+    }
+
+    /** The capture hands over [frame], on the glass at [glassMs], at [arrivedMs]. */
+    private fun deliver(report: Report, frame: IntArray, glassMs: Double, arrivedMs: Double) {
+        report.framesDelivered++
+        lastGlass = frame
+        lastDelivered = arrivedMs
+        val stamp = if (timeSource == TimeSource.GLASS) glassMs + captureLagMs else arrivedMs
+        runJob(engine.onFrame(ArrayPixels(w, h, frame), stamp), arrivedMs)
+        val gen = ++quietGen
+        at(arrivedMs + quietMs) {
+            if (gen == quietGen) runJob(engine.onQuiet(ArrayPixels(w, h, lastGlass!!), arrivedMs + quietMs), arrivedMs + quietMs)
         }
     }
 
@@ -135,10 +280,16 @@ internal class ShadeSimulation(
         tailMs: Double = 700.0,
         /** When set, a touch-down is reported this long before the page first moves. */
         touchLeadMs: Double? = null,
+        /**
+         * Further touch-downs, in the scroll's own milliseconds: a finger going down again for
+         * each drag of a stop-and-go scroll.
+         */
+        touchesMs: List<Double> = emptyList(),
     ): Report {
         val lead = touchLeadMs ?: 0.0
         val scroll: (Double) -> Double = { t -> scroll0((t - lead).coerceAtLeast(0.0)) }
         if (touchLeadMs != null) at(0.0) { engine.arm(0.0) }
+        for (touch in touchesMs) at(touch + lead) { engine.arm(touch + lead) }
         val report = Report()
         val draws = ArrayList<Draw>()
         run {
@@ -163,6 +314,17 @@ internal class ShadeSimulation(
         val vsyncs = (total / vsyncMs).toInt()
         var prevGlass: IntArray? = null
 
+        // Where the page truly is at every vsync, and so whether it is moving there.
+        val tops = IntArray(vsyncs + 4) { k -> scroll(minOf(k * vsyncMs, durationMs)).let { Math.round(it).toInt() } }
+        fun changed(k: Int) = k in 1 until tops.size && tops[k] != tops[k - 1]
+        val meter = MotionMeter(w, h, pageRows.first, pageRows.last + 1, summary = report.motion)
+        val mask = BooleanArray(w * h)
+        var lastMovingK = -1
+        var movingSeen = 0
+        var prevShown: Draw? = null
+        var prevShownTop = 0
+        var shadeSeen = false
+
         // The shade is switched on with the page at rest.
         firstTop = Math.round(scroll(0.0)).toInt()
         val first = screen(scroll(0.0).toInt()).also { onTop?.invoke(it) }
@@ -176,15 +338,16 @@ internal class ShadeSimulation(
             val top = scroll(minOf(t, durationMs)).let { Math.round(it).toInt() }
             val page = screen(top)
 
-            // The view draws, now, from the newest snapshot.
+            // The view draws, now — or a moment late — from the newest snapshot.
             val snap = engine.snapshot
             if (snap.rectCount == 0 && shownRects > 0) report.drops++
             shownRects = snap.rectCount
-            val shift = snap.shiftAt(t)
+            val drawAt = t + (if (drawJitterMs > 0) drawRandom.nextDouble() * drawJitterMs else 0.0)
+            val shift = snap.shiftAt(drawAt)
             if (Math.abs(snap.velocity) > report.maxSpeed) report.maxSpeed = Math.abs(snap.velocity)
             if (trace && t in traceFrom..traceTo) println("TRACE t=${"%.0f".format(t)} top=$top truthShift=${firstTop - top} drawnShift=$shift base=${snap.baseOffset} off=${snap.offset} v=${"%.3f".format(snap.velocity)} a=${"%.4f".format(snap.accel)} lead=${"%.0f".format(snap.leadMs)} rects=${snap.rectCount} moving=${snap.moving}")
             draws.add(Draw(snap.rects, snap.rectCount, shift, snap.pageTop, snap.pageBottom))
-            engine.noteDraw(snap, shift, t)
+            engine.noteDraw(snap, shift, drawAt)
 
             // What is on the glass at this vsync: the page, with the overlay drawn `displayFrames` ago.
             val shown = draws.getOrNull(k - displayFrames)
@@ -192,19 +355,68 @@ internal class ShadeSimulation(
             onTop?.invoke(glass)
             onGlass?.invoke(k, glass)
 
-            if (shown != null) score(report, page, shown, k, t > durationMs + 300, t <= durationMs)
+            if (shown != null) score(report, page, top, shown, k, t > durationMs + 300, t <= durationMs)
+
+            // What the reader sees of the shade: a vsync is moving if the page moved into it or
+            // moves out of it, or holds for a vsync or two in the middle of a slow scroll.
+            val moving = changed(k) || changed(k + 1) || ((changed(k - 1) || changed(k - 2)) && (changed(k + 2) || changed(k + 3)))
+            if (moving) lastMovingK = k
+            val phase = when {
+                moving -> MotionMeter.Phase.MOVING
+                lastMovingK >= 0 && (k - lastMovingK) * vsyncMs <= SETTLE_MS -> MotionMeter.Phase.SETTLING
+                else -> MotionMeter.Phase.STILL
+            }
+            if (shown != null && shown.count > 0) shadeSeen = true
+            if (shown == null || !shadeSeen) {
+                // Nothing on the glass yet: the shade coming up when it is switched on is not motion.
+                meter.forget()
+                prevShown = null
+            } else {
+                paint(mask, shown)
+                val f = meter.observe(mask, top, phase)
+                val before = prevShown
+                val carried = before != null && before.rects === shown.rects
+                // the same rectangles, moved: how far off the page's own motion they were moved
+                val slip = if (before != null && carried) (shown.shift - before.shift) + (top - prevShownTop) else 0
+                (if (carried) report.motionCarried else report.motionReplaced).take(f, phase)
+                prevShown = shown
+                prevShownTop = top
+                val white = whiteUnder(mask, top)
+                if (white > 0) report.whiteFrames++
+                report.whiteMax = max(report.whiteMax, white)
+                if (t > durationMs + 300) report.whiteRest = max(report.whiteRest, white)
+                var cover = Double.NaN
+                if (moving && coverageEvery > 0 && movingSeen++ % coverageEvery == 0) {
+                    val ref = reference(top, page)
+                    val hit = covered(mask, ref)
+                    report.moving.add(hit, ref.shadedPixels, w.toLong() * h, t)
+                    if (ref.shadedPixels > 0) cover = hit.toDouble() / ref.shadedPixels
+                }
+                if (keepTimeline) {
+                    report.timeline.add(
+                        "k=$k t=${"%.0f".format(t)} top=$top ${phase.name.lowercase()} rects=${shown.count} shift=${shown.shift} " +
+                            "${if (carried) "slip=$slip" else "new"} " +
+                            "flicker=${f.flicker} edges=${f.matched} maxMove=${f.maxMove} pops=${f.pops} white=$white " +
+                            "cover=${if (cover.isNaN()) "-" else "%.2f".format(cover)}",
+                    )
+                }
+            }
 
             // The capture sees a frame only when the screen changed.
             if (prevGlass == null || !glass.contentEquals(prevGlass)) {
-                val deliveredAt = t + captureLagMs
+                report.framesChanged++
+                val mine = ++glassSeq
                 val frame = glass
-                at(deliveredAt) {
-                    lastGlass = frame
-                    lastDelivered = deliveredAt
-                    runJob(engine.onFrame(ArrayPixels(w, h, frame), deliveredAt), deliveredAt)
-                    val gen = ++quietGen
-                    at(deliveredAt + quietMs) {
-                        if (gen == quietGen) runJob(engine.onQuiet(ArrayPixels(w, h, lastGlass!!), deliveredAt + quietMs), deliveredAt + quietMs)
+                val jitter = if (captureJitterMs > 0) captureRandom.nextDouble() * captureJitterMs else 0.0
+                val arrive = max(t + captureLagMs + jitter, lastArrivalMs)
+                lastArrivalMs = arrive
+                val drop = captureDropShare > 0 && dropRandom.nextDouble() < captureDropShare
+                if (!drop) {
+                    at(arrive) { deliver(report, frame, t, arrive) }
+                } else {
+                    // Lost to the next changed frame — unless there is none, and the capture still hands this one over.
+                    at(arrive + vsyncMs) {
+                        if (glassSeq != mine) report.framesDropped++ else deliver(report, frame, t, arrive + vsyncMs)
                     }
                 }
             }
@@ -212,6 +424,52 @@ internal class ShadeSimulation(
             report.frames++
         }
         return report
+    }
+
+    /** Marks in [mask] the screen pixels [shown] shades, cut as it was drawn. */
+    private fun paint(mask: BooleanArray, shown: Draw) {
+        java.util.Arrays.fill(mask, false)
+        for (i in 0 until shown.count) {
+            val x0 = shown.rects[i * 4].coerceIn(0, w)
+            val x1 = shown.rects[i * 4 + 2].coerceIn(0, w)
+            val y0 = (shown.rects[i * 4 + 1] + shown.shift).coerceIn(max(0, shown.top), h)
+            val y1 = (shown.rects[i * 4 + 3] + shown.shift).coerceIn(0, minOf(h, shown.bottom))
+            if (x1 <= x0) continue
+            for (y in y0 until y1) java.util.Arrays.fill(mask, y * w + x0, y * w + x1, true)
+        }
+    }
+
+    /** Shaded pixels, on the page's rows, over white the art owns: the strip's protected white with its row [top] at the top. */
+    private fun whiteUnder(mask: BooleanArray, top: Int): Int {
+        val white = protectedWhite ?: return 0
+        var n = 0
+        for (y in pageRows) {
+            val sy = y + top
+            if (sy !in 0 until strip.h) continue
+            val m = y * w
+            val s = sy * strip.w
+            for (x in 0 until w) if (mask[m + x] && white[s + x]) n++
+        }
+        return n
+    }
+
+    /** The exact pass on the clean page with its row [top] at the top of the screen, kept for when the page comes back to it. */
+    private fun reference(top: Int, page: IntArray): GapResult = references.getOrPut(top) {
+        if (references.size >= REFERENCE_CACHE) references.clear()
+        GapFinder.find(PlaneBuilder.build(ArrayPixels(w, h, page), 1, style, ignoreTopRows, ignoreBottomRows, exclusions), 0, GapParams(), true)
+    }
+
+    /** Pixels of [ref]'s rectangles that [mask] shades. */
+    private fun covered(mask: BooleanArray, ref: GapResult): Long {
+        var hit = 0L
+        for (i in 0 until ref.rectCount) {
+            val x0 = ref.rects[i * 4].coerceIn(0, w)
+            val x1 = ref.rects[i * 4 + 2].coerceIn(0, w)
+            val y0 = ref.rects[i * 4 + 1].coerceIn(0, h)
+            val y1 = ref.rects[i * 4 + 3].coerceIn(0, h)
+            for (y in y0 until y1) for (x in x0 until x1) if (mask[y * w + x]) hit++
+        }
+        return hit
     }
 
     private fun nearPaper(page: IntArray, x: Int, y: Int, reach: Int): Boolean {
@@ -223,7 +481,7 @@ internal class ShadeSimulation(
         return false
     }
 
-    private fun score(report: Report, page: IntArray, shown: Draw, k: Int, atRest: Boolean, moving: Boolean) {
+    private fun score(report: Report, page: IntArray, top: Int, shown: Draw, k: Int, atRest: Boolean, moving: Boolean) {
         var damage = 0
         var clear = 0
         for (i in 0 until shown.count) {
@@ -259,7 +517,7 @@ internal class ShadeSimulation(
         }
         if (k % 8 == 0) {
             // coverage against what an exact pass on the clean page would shade
-            val ref = GapFinder.find(PlaneBuilder.build(ArrayPixels(w, h, page), 1, style, ignoreTopRows, ignoreBottomRows, exclusions), 0, GapParams(), true)
+            val ref = reference(top, page)
             if (ref.shadedPixels > 0) {
                 val refMask = coverage(ref.rects, ref.rectCount, w, h)
                 var hit = 0L
@@ -390,6 +648,42 @@ internal object Scrolls {
             down + s
         }
     }
+
+    /**
+     * Reading in short pushes: one drag after another, each to its own speed in [speeds], with
+     * the page still for [pauseMs] in between. Every other drag ends with the finger stopping
+     * dead; the others are let go into a short glide of [glideTauSec]. Each drag ramps up over
+     * [rampMs] and is held for [dragMs] in all.
+     */
+    fun stopAndGo(
+        startPx: Double,
+        speeds: List<Double> = listOf(520.0, 900.0, 420.0, 760.0),
+        dragMs: Double = 420.0,
+        pauseMs: Double = 520.0,
+        rampMs: Double = 110.0,
+        glideTauSec: Double = 0.07,
+    ): (Double) -> Double = { t ->
+        val period = dragMs + pauseMs
+        var y = startPx
+        for ((i, v) in speeds.withIndex()) {
+            val local = t - i * period
+            if (local <= 0) break
+            val drag = ramp(0.0, v, rampMs, 1e9)
+            val glide = i % 2 == 1
+            y += if (local < dragMs) {
+                drag(local)
+            } else if (!glide) {
+                drag(dragMs)
+            } else {
+                drag(dragMs) + v * glideTauSec * (1 - Math.exp(-(local - dragMs) / 1000.0 / glideTauSec))
+            }
+        }
+        y
+    }
+
+    /** When each drag of [stopAndGo] begins, in the scroll's milliseconds: the finger is down this long before. */
+    fun stopAndGoStarts(count: Int = 4, dragMs: Double = 420.0, pauseMs: Double = 520.0): List<Double> =
+        List(count) { it * (dragMs + pauseMs) }
 }
 
 internal fun absI(a: Int) = abs(a)

@@ -42,17 +42,17 @@ class ShadeTuning(
     /** Longest the overlay is extrapolated past the newest measurement. */
     val maxExtrapolateMs: Float = 100f,
 
-    /** Frames of unmeasurable motion tolerated, coasting on the last speed, before the shade is dropped. */
-    val maxCoastFrames: Int = 8,
+    /** How long unmeasurable motion is tolerated, coasting on the last speed, before the shade is dropped. */
+    val maxCoastMs: Double = 135.0,
 
-    /** Frames of featureless screen — a very long gutter — before the engine stops trusting its own dead reckoning. */
-    val maxFlatFrames: Int = 1200,
+    /** How long a featureless screen — a very long gutter — may scroll by before the engine stops trusting its own dead reckoning. */
+    val maxFlatMs: Double = 20_000.0,
 
     /** How long a page that once showed art stays a manhwa when a screen of pure gutter scrolls by. */
     val artMemoryMs: Double = 120_000.0,
 
     /** Frames closer together than this are not all looked at. */
-    val minTrackGapMs: Double = 11.0,
+    val minTrackGapMs: Double = 6.0,
 
     /** Slowest speed, rows per millisecond, at which the overlay's lead is calibrated. */
     val calibrateMinSpeed: Float = 0.12f,
@@ -87,6 +87,22 @@ class ShadeTuning(
     val marginHoldMs: Double = 100.0,
     val marginReleaseMs: Double = 220.0,
     val marginReleasePxPerSec: Double = 90.0,
+
+    /**
+     * How the speed and the acceleration are read from the frames. Each new frame's speed is
+     * measured over at least [speedBaseMs] — the page moves a whole number of rows from one frame
+     * to the next, and over a single frame at 120 Hz a row either way is a large part of the
+     * speed — and taken into the running speed with [speedTauMs] as the time constant; the
+     * acceleration likewise, over [accelBaseMs] and with [accelTauMs]. Time constants, not shares
+     * per frame, so that the shade rides a 120 Hz screen as steadily as a 60 Hz one.
+     */
+    val speedBaseMs: Double = 14.0,
+    val speedTauMs: Double = 21.0,
+    val accelBaseMs: Double = 30.0,
+    val accelTauMs: Double = 47.0,
+
+    /** How much of the measured acceleration the prediction believes: it is noisy. */
+    val accelTrust: Float = 0.65f,
 )
 
 /**
@@ -119,6 +135,8 @@ class ShadeSnapshot(
      */
     val pageTop: Int = 0,
     val pageBottom: Int = Int.MAX_VALUE,
+    /** How much of [accel] the prediction believes. */
+    val accelTrust: Float = 0.65f,
 ) {
     /**
      * Calls [f] with each rectangle as it is drawn [shift] rows down, cut to the page's rows and
@@ -142,7 +160,7 @@ class ShadeSnapshot(
             val cap = min(maxExtrapolateMs, leadMs + 1.0f * frameMs)
             var dt = ((nowMs - offsetAtMs).toFloat() + leadMs).coerceIn(0f, cap)
             // A page that is slowing down does not turn round: stop the prediction where it would stop.
-            val a = ACCEL_TRUST * accel
+            val a = accelTrust * accel
             if (a * velocity < 0f) dt = min(dt, -velocity / a)
             shift += velocity * dt + 0.5f * a * dt * dt
         }
@@ -151,9 +169,6 @@ class ShadeSnapshot(
 
     companion object {
         val EMPTY = ShadeSnapshot(IntArray(0), 0, 0, 0, 0.0, 0f, 0f, 16f, 30f, 100f, false)
-
-        /** How much of the measured acceleration the prediction believes: it is noisy. */
-        const val ACCEL_TRUST = 0.65f
     }
 }
 
@@ -237,8 +252,15 @@ class ShadeEngine(
     private var lastFrameAtMs = -1.0
     private var lastMoveAtMs = -1e9
     private var motionStartMs = -1e9
-    private var coasting = 0
-    private var flatFrames = 0
+    /** Since when the motion has not been measurable, coasting on the last speed, or on a featureless screen; -1 while it has been. */
+    private var coastingSinceMs = -1.0
+    private var flatSinceMs = -1.0
+
+    /** The page's offset, and the running speed, at the last frames measured — newest last — for speeds read over more than one frame. */
+    private val histAt = DoubleArray(HISTORY)
+    private val histOffset = IntArray(HISTORY)
+    private val histSpeed = FloatArray(HISTORY)
+    private var histCount = 0
 
     // ---- the shade ----
     /** What is published: the newest detection, pulled further back from the edges if speed or a touch asks for it. */
@@ -373,8 +395,9 @@ class ShadeEngine(
         velocity = 0f
         accel = 0f
         accelUnc = 0f
-        coasting = 0
-        flatFrames = 0
+        coastingSinceMs = -1.0
+        flatSinceMs = -1.0
+        histCount = 0
         pending = null
         dropShade()
         publish(nowMs, false)
@@ -422,37 +445,37 @@ class ShadeEngine(
                     flat = m.activity < ScrollTracker.MIN_ACTIVITY
                 }
             }
+            val frames = (dt / 16.7).toFloat()
             if (measured) {
-                val inst = dy / dt.toFloat()
-                val newV = if (dy == 0) 0f else (0.55f * inst + 0.45f * velocity)
-                val aInst = (newV - velocity) / dt.toFloat()
-                accel = if (dy == 0) 0f else (0.7f * accel + 0.3f * aInst).coerceIn(-MAX_ACCEL, MAX_ACCEL)
-                accelUnc = max(abs(accel), 0.93f * accelUnc)
-                velocity = newV
-                coasting = 0
-                flatFrames = 0
+                measureMotion(offset + dy, dy, nowMs, dt)
+                coastingSinceMs = -1.0
+                flatSinceMs = -1.0
             } else if (!jumped) {
                 if (flat) {
                     // Coast on the last speed, easing off: a gutter this long can end at any moment.
-                    flatFrames++
-                    velocity *= 0.985f
-                    accel *= 0.9f
+                    if (flatSinceMs < 0) flatSinceMs = nowMs
+                    velocity *= Math.pow(0.985, frames.toDouble()).toFloat()
+                    accel *= Math.pow(0.9, frames.toDouble()).toFloat()
                 } else {
-                    coasting++
-                    velocity *= 0.92f
-                    accel *= 0.8f
+                    if (coastingSinceMs < 0) coastingSinceMs = prevAtMs
+                    velocity *= Math.pow(0.92, frames.toDouble()).toFloat()
+                    accel *= Math.pow(0.8, frames.toDouble()).toFloat()
                 }
+                histCount = 0
             }
         }
         prevProfile = profile
         prevAtMs = nowMs
 
-        if (jumped || coasting > tuning.maxCoastFrames || flatFrames > tuning.maxFlatFrames) {
+        val lost = (coastingSinceMs >= 0 && nowMs - coastingSinceMs > tuning.maxCoastMs) ||
+            (flatSinceMs >= 0 && nowMs - flatSinceMs > tuning.maxFlatMs)
+        if (jumped || lost) {
             // Not the page we were following: a turn, a jump, or a screen with nothing to hold on to.
             velocity = 0f
             accel = 0f
-            coasting = 0
-            flatFrames = 0
+            coastingSinceMs = -1.0
+            flatSinceMs = -1.0
+            histCount = 0
             dropShade()
             publish(nowMs, false)
             return maybeSettle(src, nowMs)
@@ -640,8 +663,9 @@ class ShadeEngine(
     fun onQuiet(rest: PixelSource?, nowMs: Double): DetectJob? {
         velocity = 0f
         accel = 0f
-        coasting = 0
-        flatFrames = 0
+        coastingSinceMs = -1.0
+        flatSinceMs = -1.0
+        histCount = 0
         publish(nowMs, false)
         if (rest == null || rest.width != width || rest.height != height) return null
         // A still screen delivers no frames once the shade is up, so this is where the glass
@@ -684,6 +708,64 @@ class ShadeEngine(
         applyMargin()
         updateMargin(nowMs)
         publish(nowMs, isMoving(nowMs))
+    }
+
+    /**
+     * Takes in a frame at [nowMs] that shows the page at offset [pos], [dy] rows from the frame
+     * [dt] milliseconds before it.
+     *
+     * The speed is measured from the newest earlier frame at least [ShadeTuning.speedBaseMs] back:
+     * at 120 Hz that is two frames, and a row too many or too few between them is half the error
+     * it would be over one. A page that has not moved over that stretch has stopped, and the
+     * speed goes to nothing at once: the prediction must not carry the shade on past a page that
+     * a finger has stopped dead.
+     */
+    private fun measureMotion(pos: Int, dy: Int, nowMs: Double, dt: Double) {
+        // the previous frame, unless the frames are close enough together to look further back
+        var baseAt = prevAtMs
+        var baseOffset = offset
+        var accelAt = prevAtMs
+        var accelSpeed = velocity
+        var based = false
+        for (i in histCount - 1 downTo 0) {
+            val age = nowMs - histAt[i]
+            if (!based && age >= tuning.speedBaseMs) {
+                baseAt = histAt[i]
+                baseOffset = histOffset[i]
+                based = true
+            }
+            if (age >= tuning.accelBaseMs) {
+                accelAt = histAt[i]
+                accelSpeed = histSpeed[i]
+                break
+            }
+        }
+        val span = (nowMs - baseAt).coerceAtLeast(1.0)
+        if (dy == 0 && pos == baseOffset) {
+            velocity = 0f
+            accel = 0f
+        } else {
+            val inst = ((pos - baseOffset) / span).toFloat()
+            val kv = (1.0 - Math.exp(-dt / tuning.speedTauMs)).toFloat()
+            val newV = kv * inst + (1 - kv) * velocity
+            val aSpan = (nowMs - accelAt).coerceAtLeast(1.0)
+            val aInst = ((newV - accelSpeed) / aSpan).toFloat()
+            val ka = (1.0 - Math.exp(-dt / tuning.accelTauMs)).toFloat()
+            accel = ((1 - ka) * accel + ka * aInst).coerceIn(-MAX_ACCEL, MAX_ACCEL)
+            velocity = newV
+        }
+        accelUnc = max(abs(accel), Math.pow(0.93, dt / 16.7).toFloat() * accelUnc)
+        // remember this frame
+        if (histCount == HISTORY) {
+            System.arraycopy(histAt, 1, histAt, 0, HISTORY - 1)
+            System.arraycopy(histOffset, 1, histOffset, 0, HISTORY - 1)
+            System.arraycopy(histSpeed, 1, histSpeed, 0, HISTORY - 1)
+            histCount--
+        }
+        histAt[histCount] = nowMs
+        histOffset[histCount] = pos
+        histSpeed[histCount] = velocity
+        histCount++
     }
 
     private fun isMoving(nowMs: Double) = nowMs - lastMoveAtMs < tuning.settleMs
@@ -915,7 +997,7 @@ class ShadeEngine(
         val at = if (prevAtMs >= 0 && prevAtMs <= nowMs) prevAtMs else nowMs
         snapshot = ShadeSnapshot(
             rects, rectCount, baseOffset, offset, at, velocity, accel, frameMs, leadMs(),
-            tuning.maxExtrapolateMs, moving, pageTop, pageBottom,
+            tuning.maxExtrapolateMs, moving, pageTop, pageBottom, tuning.accelTrust,
         )
     }
 
@@ -938,6 +1020,9 @@ class ShadeEngine(
 
         /** Frame pixels to a plane pixel, each way, in the fast pass. */
         const val FAST_STEP = 2
+
+        /** Frames remembered for reading speed and acceleration over more than one. */
+        const val HISTORY = 12
         const val CAL_COLS = 10
         const val MAX_EDGES = 48
         const val MAX_ACCEL = 0.03f
