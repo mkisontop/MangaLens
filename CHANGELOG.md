@@ -18,7 +18,9 @@ the README.
   got round to reading it, and the shade is drawn for the exact display refresh
   it will appear in instead of whenever the draw happened to run. When the
   capture loses a frame or two, the shade rides on instead of stalling and then
-  lurching to catch up.
+  lurching to catch up. A frame the browser itself misses — the page shown
+  where it was for one refresh — is no longer taken for a stop that froze the
+  shade and sent it jumping after the page on the next.
 - **Steady at 120 Hz.** Every frame of a 120 Hz screen is followed, and the
   speed is read over time rather than frame by frame, so a row more or less
   between two frames no longer shakes the shade.
@@ -26,7 +28,10 @@ the README.
   you scroll was rebuilt with every detection, so its edges moved in and out
   with each one. It is now held steady, grows at once when needed and gives way
   gently. The fast detections used while scrolling look at every pixel and are
-  lined up with the page, so each finds the same edges as the last.
+  lined up with the page, so each finds the same edges as the last, and the
+  wide margin of a fast scroll is worked out in a fraction of the time. At the
+  darkest level, a gutter that runs into a site's footer is no longer cut back
+  and restored, over and over, as the page moves.
 - **Cleaner starts and stops.** The margin against the page stopping dead is
   kept on the edge the shade moves toward, the only one a stop can push it
   past, and a slightly wider margin goes up the moment a finger touches the
@@ -41,10 +46,12 @@ the README.
   reading, drags, flings, reversals, stop-and-go — at 60 and 120 Hz, with the
   timing as ragged as a phone's, and measures how far the shade wobbles against
   the page, how dark the gutters stay and any art it covers. With a phone's
-  timing, the shade's wobble against the page fell from 7.3 to 3.0 rows on
-  average, its frame-to-frame flicker by nearly two thirds, and the gutters
-  stay darker while you scroll; at 120 Hz the wobble is a third of what it was.
-  Which white is a gutter at rest is unchanged.
+  timing, the shade's wobble against the page fell from 7.3 to 3.1 rows on
+  average, its frame-to-frame flicker by nearly two thirds, and it covers less
+  art; at 120 Hz the wobble is about a quarter of what it was. 240 randomised
+  scrolls, from creeping to violent, were played against 1.1.3 as well: the
+  shade wobbled less in 204 of them. Which white is a gutter at rest is
+  unchanged.
 
 ## 1.1.3
 

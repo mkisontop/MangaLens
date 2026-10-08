@@ -14,6 +14,11 @@ package app.mangalens.gaps
  */
 class BitPlane(val w: Int, val h: Int) {
 
+    private companion object {
+        /** Reach past which a vertical erosion is done by doubling rather than a row at a time. */
+        const val LONG_ERODE = 6
+    }
+
     val wpr: Int = (w + 63) ushr 6
     val bits = LongArray(wpr * h)
 
@@ -181,7 +186,11 @@ class BitPlane(val w: Int, val h: Int) {
      * content which has not scrolled into view yet.
      */
     fun erodeV(r: Int, outside: Boolean = false): BitPlane {
-        if (h == 0) return this
+        if (h == 0 || r <= 0) return this
+        if (r > LONG_ERODE) {
+            erodeVLong(r, if (outside) -1L else 0L)
+            return this
+        }
         val fill = if (outside) -1L else 0L
         var src = bits
         var dst = LongArray(bits.size)
@@ -198,6 +207,54 @@ class BitPlane(val w: Int, val h: Int) {
         }
         if (src !== bits) System.arraycopy(src, 0, bits, 0, bits.size)
         return this
+    }
+
+    /**
+     * [erodeV] by a long reach, in a number of passes that grows with its logarithm: a pixel stays
+     * if every one of the 2r + 1 rows centred on it is set, and that run of rows is put together
+     * from runs of 1, 2, 4, 8… rows, each found from two of the one before. The margin a fast
+     * scroll asks for is a hundred rows and more, and one pass a row cost a phone a frame's time.
+     */
+    private fun erodeVLong(r: Int, fill: Long) {
+        // the plane with r rows of what lies beyond its edges above and below, so that the run of
+        // 2r + 1 rows starting at padded row y is the one centred on row y
+        val ph = h + 2 * r
+        val n = ph * wpr
+        var cur = LongArray(n)
+        java.util.Arrays.fill(cur, 0, r * wpr, fill)
+        System.arraycopy(bits, 0, cur, r * wpr, h * wpr)
+        java.util.Arrays.fill(cur, (r + h) * wpr, n, fill)
+        var next = LongArray(n)
+        val acc = LongArray(h * wpr) { -1L }
+        var accLen = 0
+        var m = 1
+        var rest = 2 * r + 1
+        while (true) {
+            if (rest and 1 != 0) {
+                // the run so far, then this one after it
+                for (y in 0 until h) {
+                    val a = y * wpr
+                    val c = (y + accLen) * wpr
+                    for (k in 0 until wpr) acc[a + k] = acc[a + k] and cur[c + k]
+                }
+                accLen += m
+            }
+            rest = rest shr 1
+            if (rest == 0) break
+            // runs of 2m rows from runs of m
+            for (y in 0 until ph - m) {
+                val a = y * wpr
+                val b = (y + m) * wpr
+                for (k in 0 until wpr) next[a + k] = cur[a + k] and cur[b + k]
+            }
+            for (y in ph - m until ph) {
+                val a = y * wpr
+                for (k in 0 until wpr) next[a + k] = cur[a + k] and fill
+            }
+            val t = cur; cur = next; next = t
+            m *= 2
+        }
+        System.arraycopy(acc, 0, bits, 0, h * wpr)
     }
 
     /** Grows every vertical run of set pixels by [r] at each end. */

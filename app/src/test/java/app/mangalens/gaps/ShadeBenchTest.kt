@@ -59,7 +59,7 @@ class ShadeBenchTest {
         val drawJitterMs: Double = 0.0,
         val dropShare: Double = 0.0,
         val jobJitterMs: Double = 0.0,
-        val source: ShadeSimulation.TimeSource = ShadeSimulation.TimeSource.ARRIVAL,
+        val source: ShadeSimulation.TimeSource = ShadeSimulation.TimeSource.STAMP,
     )
 
     private class Latency(val name: String, val captureLagMs: Double = 16.0, val displayFrames: Int = 2, val jobMs: Double = 25.0)
@@ -121,7 +121,7 @@ class ShadeBenchTest {
     private val ideal = Timing("ideal")
 
     /** As ragged as a phone: frames up to 6 ms late, draws up to 5 ms after the vsync, one changed frame in ten lost, detections up to 10 ms slower. */
-    private val real = Timing("real", captureJitterMs = 6.0, drawJitterMs = 5.0, dropShare = 0.10, jobJitterMs = 10.0)
+    private val real = Timing("real", captureJitterMs = 6.0, drawJitterMs = 5.0, dropShare = 0.10, jobJitterMs = 10.0, source = ShadeSimulation.TimeSource.ARRIVAL)
     private val realGlass = Timing("realGlass", 6.0, 5.0, 0.10, 10.0, ShadeSimulation.TimeSource.GLASS)
 
     /**

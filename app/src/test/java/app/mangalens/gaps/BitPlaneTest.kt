@@ -135,4 +135,32 @@ class BitPlaneTest {
             assertEquals(ra[y][x] && !rb[y][x], andNot.get(x, y))
         }
     }
+
+    @Test
+    fun `a long vertical erosion keeps exactly the pixels whose whole run of rows is set`() {
+        val rnd = kotlin.random.Random(9)
+        for (trial in 0 until 40) {
+            val w = 70 + rnd.nextInt(130)
+            val h = 50 + rnd.nextInt(250)
+            val p = BitPlane(w, h)
+            // bands of rows with holes, as gutters cut by balloons are
+            for (y in 0 until h) {
+                if (rnd.nextInt(10) < 8) p.setRun(y, rnd.nextInt(w / 3), w - rnd.nextInt(w / 3))
+                if (rnd.nextInt(10) < 2) p.clearRun(y, rnd.nextInt(w), rnd.nextInt(w))
+            }
+            val r = 7 + rnd.nextInt(60)
+            val outside = rnd.nextBoolean()
+            val got = p.copy().erodeV(r, outside)
+            for (y in 0 until h) for (x in 0 until w) {
+                var all = true
+                for (d in -r..r) {
+                    val yy = y + d
+                    val set = if (yy < 0 || yy >= h) outside else p.get(x, yy)
+                    if (!set) { all = false; break }
+                }
+                assertEquals("trial $trial r=$r outside=$outside at ($x, $y)", all && p.get(x, y), got.get(x, y))
+            }
+            assertEquals("no bits past the right edge", got.count(), (0 until h).sumOf { got.countRow(it, 0, w).toLong() })
+        }
+    }
 }

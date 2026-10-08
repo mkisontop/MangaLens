@@ -746,10 +746,16 @@ object GapFinder {
     /**
      * Whether plane row [y] is the padding of a browser's or site's bar: one flat colour from edge
      * to edge. A row of the page has the black bars beside it and something else between them.
+     *
+     * Not a row that reads as paper across most of it, though: at the darkest level a gutter under
+     * the shade is a grey of 13 beside bars of 0, as flat as any padding. Taken for padding, the
+     * shade on a gutter that touched the footer turned the gutter into the footer's own rows, and
+     * the shade was cut back from it, came back, and was cut back again as the page scrolled.
      */
     private fun paddingRow(planes: Planes, y: Int): Boolean {
         val flat = planes.flat ?: return false
-        return y in flat.indices && flat[y]
+        if (!(y in flat.indices && flat[y])) return false
+        return planes.paper.countRow(y, 0, planes.w) < planes.w / 2
     }
 
     /**

@@ -291,6 +291,10 @@ object PlaneBuilder {
             for (r in 0 until n) src.readRow(y + r, rows[r])
             flat[py] = flatRow(rows[0], fw, step, y, keepOut)
             val base = py * wpr
+            if (step == 2) {
+                pairs(rows[0], if (n > 1) rows[1] else rows[0], fw, pw, base, wpr, lo, hi, faintLight, paper, ink, faint)
+                continue
+            }
             for (k in 0 until wpr) {
                 var pv = 0L
                 var iv = 0L
@@ -342,6 +346,61 @@ object PlaneBuilder {
             }
         }
     }
+
+    /**
+     * [classifyBlocks] for blocks of two by two, written out: the four pixels of a block are read
+     * straight into one test, and only a block that is not all plain paper is looked at closer.
+     */
+    private fun pairs(
+        a: IntArray, b: IntArray, fw: Int, pw: Int, base: Int, wpr: Int,
+        lo: Int, hi: Int, faintLight: Int,
+        paper: BitPlane, ink: BitPlane, faint: BitPlane,
+    ) {
+        for (k in 0 until wpr) {
+            var pv = 0L
+            var iv = 0L
+            var fv = 0L
+            val px0 = k shl 6
+            val count = minOf(64, pw - px0)
+            for (i in 0 until count) {
+                val x = (px0 + i) shl 1
+                val x1 = if (x + 1 < fw) x + 1 else x
+                val p0 = a[x]
+                val p1 = a[x1]
+                val p2 = b[x]
+                val p3 = b[x1]
+                if ((p0 and p1 and p2 and p3 and 0xF0F0F0) == 0xF0F0F0) {
+                    pv = pv or (1L shl i)
+                    continue
+                }
+                val c = kind(p0, lo, hi, faintLight) or kind(p1, lo, hi, faintLight) or
+                    kind(p2, lo, hi, faintLight) or kind(p3, lo, hi, faintLight)
+                when {
+                    c and KIND_INK != 0 -> iv = iv or (1L shl i)
+                    c == 0 -> pv = pv or (1L shl i)
+                    c and KIND_FAINT != 0 -> fv = fv or (1L shl i)
+                }
+            }
+            paper.bits[base + k] = pv
+            ink.bits[base + k] = iv
+            faint.bits[base + k] = fv
+        }
+    }
+
+    /** What one pixel is, as bits to be or-ed over a block: 0 for paper (plain, or under our shade). */
+    private fun kind(p: Int, lo: Int, hi: Int, faintLight: Int): Int {
+        if ((p and 0xF0F0F0) == 0xF0F0F0) return 0
+        if ((p and 0xC0C0C0) != 0xC0C0C0) return if (inWindow(p, lo, hi)) 0 else KIND_INK
+        val r = (p ushr 16) and 0xFF
+        val g = (p ushr 8) and 0xFF
+        val bl = p and 0xFF
+        return if (r < faintLight || g < faintLight || bl < faintLight) KIND_FAINT or KIND_LIGHT else KIND_LIGHT
+    }
+
+    private const val KIND_INK = 4
+    private const val KIND_FAINT = 2
+    /** Light, but not paper: not paper, and no more. */
+    private const val KIND_LIGHT = 1
 
     /** Whether every [step]-th pixel of frame [row] [y], those under [keepOut] aside, is within [FLAT_RANGE] of one colour. */
     private fun flatRow(row: IntArray, fw: Int, step: Int, y: Int, keepOut: List<IntArray>): Boolean {

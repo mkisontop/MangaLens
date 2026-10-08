@@ -71,7 +71,7 @@ internal class ShadeSimulation(
     /** A detection takes up to this many milliseconds longer than [jobMs], uniformly at random. */
     private val jobJitterMs: Double = 0.0,
     /** Which time the engine is told a frame was taken at. */
-    private val timeSource: TimeSource = TimeSource.ARRIVAL,
+    private val timeSource: TimeSource = TimeSource.STAMP,
     /** Seeds the random timing: the same seed plays the same run. */
     seed: Long = 1L,
     /**

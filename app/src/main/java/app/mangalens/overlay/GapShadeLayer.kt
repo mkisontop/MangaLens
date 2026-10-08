@@ -83,16 +83,16 @@ class GapShadeLayer : BubbleOverlayView.Underlay {
 
     private var choreographer: Choreographer? = null
 
-    /** The vsync of the newest frame asked for, and when its callback ran, in [GapClock] milliseconds. */
+    /** The vsync of the newest frame asked for, in [GapClock] milliseconds, and whether a draw has used it yet. */
     @Volatile private var vsyncMs = 0.0
-    @Volatile private var vsyncSeenMs = -1e9
+    @Volatile private var vsyncFresh = false
 
     /** A frame has been asked for and its callback has not run yet. */
     private val asked = java.util.concurrent.atomic.AtomicBoolean(false)
 
     private val nextFrame = Choreographer.FrameCallback { frameTimeNanos ->
         vsyncMs = frameTimeNanos / 1_000_000.0
-        vsyncSeenMs = GapClock.nowMs()
+        vsyncFresh = true
         asked.set(false)
         // in this frame: the views are drawn right after the frame's callbacks
         host?.invalidate()
@@ -124,14 +124,17 @@ class GapShadeLayer : BubbleOverlayView.Underlay {
     }
 
     /**
-     * When the frame being drawn is to show the page: its vsync, if this draw is in the frame
-     * whose callback just ran — the views are drawn straight after it — and otherwise, for a
-     * draw that came about some other way, now.
+     * When the frame being drawn is to show the page: its vsync, if this is the first draw since
+     * the frame callback ran — the views are drawn straight after it, however long the main thread
+     * took over the rest of the frame — and otherwise, for a draw that came about some other way,
+     * now. A vsync more than a frame or two old is not this frame's, whatever happened.
      */
     private fun frameTimeMs(): Double {
         val now = GapClock.nowMs()
         val v = vsyncMs
-        return if (now - vsyncSeenMs <= SAME_FRAME_MS && v <= now) v else now
+        val fresh = vsyncFresh
+        vsyncFresh = false
+        return if (fresh && v <= now && now - v <= STALE_VSYNC_MS) v else now
     }
 
     override fun draw(canvas: Canvas, view: BubbleOverlayView): Boolean {
@@ -151,7 +154,7 @@ class GapShadeLayer : BubbleOverlayView.Underlay {
     }
 
     private companion object {
-        /** A draw this soon after the frame callback is in the same frame: callbacks, then the views. */
-        const val SAME_FRAME_MS = 6.0
+        /** A vsync older than this when the draw comes is not taken for the draw's own. */
+        const val STALE_VSYNC_MS = 40.0
     }
 }

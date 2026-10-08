@@ -8,8 +8,11 @@ import kotlin.math.roundToInt
 
 /** The numbers that govern how the shade rides a scroll. All times are milliseconds. */
 class ShadeTuning(
-    /** How far ahead of the newest measurement the overlay is drawn, in frame intervals: capture delay plus the time to reach the glass. */
-    val leadFrames: Float = 3.2f,
+    /**
+     * How far ahead of a frame's stamp — beyond the time since it — the overlay is drawn, in frame
+     * intervals: the time a draw takes to reach the glass. Only the first guess; calibration finds it.
+     */
+    val leadFrames: Float = 2.0f,
     val leadMinMs: Float = 14f,
     val leadMaxMs: Float = 80f,
 
@@ -76,7 +79,7 @@ class ShadeTuning(
      * touch is how almost every scroll begins, and the overlay cannot react to the first
      * rows of motion until a frame has been captured, measured and drawn.
      */
-    val armMarginPx: Int = 32,
+    val armMarginPx: Int = 24,
 
     /** How long that margin stays up if no scroll follows: a tap, not a drag. */
     val armMs: Double = 320.0,
@@ -102,6 +105,20 @@ class ShadeTuning(
      */
     val speedBaseMs: Double = 14.0,
     val speedTauMs: Double = 30.0,
+
+    /**
+     * A speed that falls — a fling slowing, a finger braking — is followed with this time
+     * constant instead: the prediction must not carry the shade on at yesterday's speed.
+     */
+    val speedTauFallMs: Double = 14.0,
+
+    /**
+     * How long, in frame intervals, the page must show no motion at all in the middle of a scroll
+     * before it is taken to have stopped. A browser that misses a frame shows the page where it
+     * was for one frame, and the next one shows it two frames on: one still frame is a hitch, not
+     * a stop; a second is a stop, and is believed at once.
+     */
+    val stillFrames: Float = 1.5f,
     val accelBaseMs: Double = 30.0,
     val accelTauMs: Double = 47.0,
 
@@ -286,6 +303,15 @@ class ShadeEngine(
     private var receivedAtMs = -1.0
     private var lastFrameAtMs = -1.0
     private var lastMoveAtMs = -1e9
+
+    /** The stamp of the newest frame that showed the page moving; -1 before any. */
+    private var lastMovedShownMs = -1.0
+
+    /**
+     * How long frames take, on average, from being on the screen to reaching the engine: the part
+     * of the prediction's reach that [leadMs] — which starts from the frame's stamp — leaves out.
+     */
+    private var delayMs = -1.0
     private var motionStartMs = -1e9
     /**
      * How long, since the motion was last measured, frames have been unmeasurable — coasting on
@@ -432,6 +458,7 @@ class ShadeEngine(
     /** The shade is switched off, or the screen changed shape. */
     fun reset(nowMs: Double) {
         haltAtMs = Double.MAX_VALUE
+        lastMovedShownMs = -1.0
         prevProfile = null
         prevAtMs = -1.0
         receivedAtMs = -1.0
@@ -465,6 +492,8 @@ class ShadeEngine(
         if (sinceLast in 2.0..60.0) frameMs = 0.85f * frameMs + 0.15f * sinceLast.toFloat()
         lastFrameAtMs = shownAtMs
         receivedAtMs = nowMs
+        val late = nowMs - shownAtMs
+        if (late in 0.0..200.0) delayMs = if (delayMs < 0) late else 0.9 * delayMs + 0.1 * late
 
         // The page's motion is read from the page: the bars that stay put above and below it
         // would only argue that nothing moved.
@@ -493,6 +522,13 @@ class ShadeEngine(
                     flat = m.activity < ScrollTracker.MIN_ACTIVITY
                 }
             }
+            // One still frame in the middle of a scroll is a frame the browser missed, not a stop: it
+            // is passed over as if the capture had lost it, and the next frame is measured against the
+            // one before. Taken for a stop, it froze the shade while the page went on, by a frame's
+            // length at the page's speed, and sent it lurching after the page on the next.
+            if (measured && dy == 0 && velocity != 0f && lastMovedShownMs >= 0 &&
+                shownAtMs - lastMovedShownMs < tuning.stillFrames * frameMs && isMoving(nowMs)
+            ) return null
             val frames = (dt / 16.7).toFloat()
             if (measured) {
                 measureMotion(offset + dy, dy, shownAtMs, dt)
@@ -531,6 +567,7 @@ class ShadeEngine(
         if (dy != 0 && shownAtMs > haltAtMs) haltAtMs = Double.MAX_VALUE
         if (dy != 0) {
             if (!isMoving(nowMs)) motionStartMs = nowMs
+            lastMovedShownMs = shownAtMs
             offset += dy
             lastMoveAtMs = nowMs
             moveEpoch++
@@ -795,14 +832,14 @@ class ShadeEngine(
             }
         }
         val span = (nowMs - baseAt).coerceAtLeast(1.0)
-        // Stopped: nothing moved over the stretch the speed is read on — or nothing at all since the
-        // last frame, when the speed said it would be rows: a page stopped dead, said so at once.
-        if (dy == 0 && (pos == baseOffset || abs(velocity) * dt >= STOP_ROWS)) {
+        if (dy == 0 && pos == baseOffset) {
             velocity = 0f
             accel = 0f
         } else {
             val inst = ((pos - baseOffset) / span).toFloat()
-            val kv = (1.0 - Math.exp(-dt / tuning.speedTauMs)).toFloat()
+            // a speed falling clearly is followed faster than one that wavers
+            val falling = inst * velocity >= 0f && abs(inst) < FALLING * abs(velocity)
+            val kv = (1.0 - Math.exp(-dt / (if (falling) tuning.speedTauFallMs else tuning.speedTauMs))).toFloat()
             val newV = kv * inst + (1 - kv) * velocity
             val aSpan = (nowMs - accelAt).coerceAtLeast(1.0)
             val aInst = ((newV - accelSpeed) / aSpan).toFloat()
@@ -841,7 +878,7 @@ class ShadeEngine(
      * or what calibration has seen the overlay miss by lately, whichever is more.
      */
     private fun marginPx(nowMs: Double): Int {
-        val lead = leadMs()
+        val lead = horizonMs()
         val unsure = max(1.2f * frameMs, 1.6f * (if (lagErrMs < 0) 0.6f * lead else lagErrMs))
         val speed = abs(velocity)
         val timing = tuning.marginPerLeadPx * speed * unsure
@@ -855,8 +892,18 @@ class ShadeEngine(
         return tuning.marginBasePx + ceil(timing + 0.5f * stop + accelErr + onset).toInt()
     }
 
-    /** Half the travel a page stopping dead would leave the shade ahead by: rows to draw it behind the prediction. */
-    private fun stopBias(): Float = 0.5f * tuning.stopRisk * abs(velocity) * leadMs()
+    /**
+     * Half the travel a page stopping dead would leave the shade ahead by: rows to draw it behind the
+     * prediction. The reach is the prediction's own, and a frame more: the first still frame of a
+     * scroll is taken for a hitch, and only the next one for a stop.
+     */
+    private fun stopBias(): Float = 0.5f * tuning.stopRisk * abs(velocity) * (horizonMs() + frameMs)
+
+    /**
+     * How far past the newest frame's stamp the prediction reaches: the lead, plus the time the
+     * frame took to reach the engine. A page that stops is known to have stopped only that long after.
+     */
+    private fun horizonMs(): Float = leadMs() + max(0.0, delayMs).toFloat()
 
     private fun artRecently(nowMs: Double) = nowMs - artSeenAtMs <= tuning.artMemoryMs
 
@@ -1092,8 +1139,8 @@ class ShadeEngine(
         /** Frames remembered for reading speed and acceleration over more than one. */
         const val HISTORY = 12
 
-        /** Rows the speed must have promised for one frame of no motion at all to mean the page has stopped. */
-        const val STOP_ROWS = 1.5f
+        /** A frame's own speed below this share of the running speed is the page slowing, not wavering. */
+        const val FALLING = 0.8f
         const val CAL_COLS = 10
         const val MAX_EDGES = 48
         const val MAX_ACCEL = 0.03f
