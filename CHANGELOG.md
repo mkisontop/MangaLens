@@ -30,15 +30,21 @@ the README.
 - **Cleaner starts and stops.** The margin against the page stopping dead is
   kept on the edge the shade moves toward, the only one a stop can push it
   past, and a slightly wider margin goes up the moment a finger touches the
-  screen. Where a gutter meets a soft-edged drawing, the shade no longer stops a
-  row short once the page comes to rest after a scroll.
+  screen. A finger that catches a fling holds the shade where the page stopped
+  instead of letting it run on until the next frame says so. Where a gutter
+  meets a soft-edged drawing, the shade no longer stops a row short once the
+  page comes to rest after a scroll.
+- **Long white gutters keep their shade.** Scrolling through a gutter that fills
+  the screen, with almost nothing on it to measure the motion by, no longer makes
+  the shade give up and blink off.
 - **Tested much harder.** A new bench plays every kind of scroll — slow
   reading, drags, flings, reversals, stop-and-go — at 60 and 120 Hz, with the
   timing as ragged as a phone's, and measures how far the shade wobbles against
-  the page, how dark the gutters stay and any art it covers. Across more than a
-  hundred scenarios the shade's wobble against the page fell by about two fifths
-  overall and by more than half at 120 Hz, and the gutters stay a little darker
-  while you scroll. Which white is a gutter at rest is unchanged.
+  the page, how dark the gutters stay and any art it covers. With a phone's
+  timing, the shade's wobble against the page fell from 7.3 to 3.0 rows on
+  average, its frame-to-frame flicker by nearly two thirds, and the gutters
+  stay darker while you scroll; at 120 Hz the wobble is a third of what it was.
+  Which white is a gutter at rest is unchanged.
 
 ## 1.1.3
 
