@@ -197,21 +197,8 @@ object GapFinder {
         // panel boxed in a border, however thin, flush with the frame never gets there. Beside a bar
         // the sealed paper stops a seal's width short of the bar, plus the ramp of a soft edge, and
         // the tolerance says so.
-        // A margin that ends in plain paper is different again: every gutter runs on into it,
-        // unbroken, to where its white begins — the frame's edge, or a bar's. White that only comes
-        // near it — inside panels set in from the strip's edge, behind their borders — does not,
-        // however thin the border.
-        val reachL = when {
-            colL == 0 -> 1
-            column.paperLeft == 0 -> 0
-            column.paperLeft > 0 -> min(column.paperLeft + 2 * sealR + 2, colL - 1)
-            else -> colL + 2 * sealR + 2
-        }
-        val reachR = when {
-            colR == 0 || column.paperRight == 0 -> w - 1
-            column.paperRight > 0 -> max(w - column.paperRight - 2 * sealR - 2, w - colR)
-            else -> w - colR - 2 * sealR - 2
-        }
+        val reachL = if (colL == 0) 1 else colL + 2 * sealR + 2
+        val reachR = if (colR == 0) w - 1 else w - colR - 2 * sealR - 2
         // Paper that runs on into a black bar, near the top or the bottom of the screen, is on
         // the browser's or the site's bars — a grey of theirs that passes for paper under the
         // shade — and not the page's: beside a gutter the bar is black.
@@ -605,14 +592,6 @@ object GapFinder {
         /** Plane rows [pageTop, pageBottom) between the bars across the top and bottom of the screen. */
         val pageTop: Int = 0,
         val pageBottom: Int = Int.MAX_VALUE,
-        /**
-         * Where that side's margin turns to paper, when it ends in paper — white from top to bottom
-         * right up to the strip: a site's white page, the strip's own white edge beside panels that
-         * are all set in from it, a white margin between a black bar and the panels. Plane columns
-         * from the frame's edge; -1 when the margin does not end in paper.
-         */
-        val paperLeft: Int = -1,
-        val paperRight: Int = -1,
     )
 
     internal fun column(planes: Planes): Column {
@@ -670,24 +649,15 @@ object GapFinder {
             val bit = 1L shl (x and 63)
             return (allPaper[k] and bit) != 0L || (allInk[k] and bit) != 0L
         }
-        fun paperAt(x: Int) = (allPaper[x ushr 6] and (1L shl (x and 63))) != 0L
-        // In from each edge over what is the same all the way down: a black bar, a white margin, or
-        // a white margin beside a black bar. Ink after white is not a bar but a panel's border, seen
-        // from a frame that lies wholly inside the panel: the margin ends there.
         var l = 0
-        while (l < cap && uniform(l) && !(l > 0 && paperAt(l - 1) && !paperAt(l))) l++
+        while (l < cap && uniform(l)) l++
         var r = 0
-        while (r < cap && uniform(w - 1 - r) && !(r > 0 && paperAt(w - r) && !paperAt(w - 1 - r))) r++
+        while (r < cap && uniform(w - 1 - r)) r++
         val barL = barPastCrossings(left, rows, barMin, cap)
         val barR = barPastCrossings(right, rows, barMin, cap)
         if (barL > l) l = barL
         if (barR > r) r = barR
         if (w - l - r < 0.3f * w) return Column(0, 0, false, false)
-        // where the white of a margin that ends in white begins
-        var pl = l
-        while (pl > 0 && paperAt(pl - 1)) pl--
-        var pr = r
-        while (pr > 0 && paperAt(w - pr)) pr--
         val blackL = barL > 0 && barL == l
         val blackR = barR > 0 && barR == r
         // Only beside a black bar that something crosses is there a bar across the screen to find.
@@ -696,7 +666,7 @@ object GapFinder {
         val bandL = if (blackL) l else if (blackR && mostlyBlack(left, rows, r)) r else 0
         val bandR = if (blackR) r else if (blackL && mostlyBlack(right, rows, l)) l else 0
         val (top, bottom) = pageRows(planes, left, right, rows, bandL, bandR)
-        return Column(l, r, blackL, blackR, top, bottom, if (pl < l) pl else -1, if (pr < r) pr else -1)
+        return Column(l, r, blackL, blackR, top, bottom)
     }
 
     /**

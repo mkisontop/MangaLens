@@ -101,7 +101,7 @@ class ShadeTuning(
      * per frame, so that the shade rides a 120 Hz screen as steadily as a 60 Hz one.
      */
     val speedBaseMs: Double = 14.0,
-    val speedTauMs: Double = 21.0,
+    val speedTauMs: Double = 30.0,
     val accelBaseMs: Double = 30.0,
     val accelTauMs: Double = 47.0,
 
@@ -148,6 +148,12 @@ class ShadeSnapshot(
      * needs that margin; the trailing edge does not, and keeps the gutter darker for it.
      */
     val biasPx: Float = 0f,
+    /**
+     * When the frame [offset] was read from reached the engine: [offsetAtMs] or later. A frame is
+     * stamped with when it was on the screen, and reaches the engine a capture's delay after that;
+     * the prediction may run on a lead and a frame past its arrival, not past its stamp.
+     */
+    val receivedAtMs: Double = offsetAtMs,
 ) {
     /**
      * Calls [f] with each rectangle as it is drawn [shift] rows down, cut to the page's rows and
@@ -167,8 +173,14 @@ class ShadeSnapshot(
     fun shiftAt(nowMs: Double): Int {
         var shift = (offset - baseOffset).toFloat()
         if (moving) {
-            // Never extrapolate far: if frames stop, the page has stopped.
-            val cap = min(maxExtrapolateMs, leadMs + 1.0f * frameMs)
+            // Never extrapolate far: if frames stop, the page has stopped. Counted from when the
+            // newest frame arrived — it was already a capture's delay old by then — and far enough
+            // to ride over a frame or two the capture lost: a page that stops still sends frames,
+            // our own shade moving over it, and the first of them says so. Held to one frame past
+            // the lead, every lost frame stalled the shade for a moment and then sent it lurching
+            // on to catch up.
+            val delay = (receivedAtMs - offsetAtMs).toFloat().coerceAtLeast(0f)
+            val cap = delay + min(maxExtrapolateMs, leadMs + LOST_FRAMES * frameMs)
             var dt = ((nowMs - offsetAtMs).toFloat() + leadMs).coerceIn(0f, cap)
             // A page that is slowing down does not turn round: stop the prediction where it would stop.
             val a = accelTrust * accel
@@ -180,6 +192,9 @@ class ShadeSnapshot(
 
     companion object {
         val EMPTY = ShadeSnapshot(IntArray(0), 0, 0, 0, 0.0, 0f, 0f, 16f, 30f, 100f, false)
+
+        /** Frames the prediction rides on past its lead without news: the next one, and two lost. */
+        const val LOST_FRAMES = 3f
     }
 }
 
@@ -259,7 +274,9 @@ class ShadeEngine(
     private var lagErrMs = -1f
     private var calibrations = 0
     private var prevProfile: IntArray? = null
+    /** When the newest frame read was on the screen, by its own stamp; and when it reached the engine. */
     private var prevAtMs = -1.0
+    private var receivedAtMs = -1.0
     private var lastFrameAtMs = -1.0
     private var lastMoveAtMs = -1e9
     private var motionStartMs = -1e9
@@ -403,6 +420,7 @@ class ShadeEngine(
     fun reset(nowMs: Double) {
         prevProfile = null
         prevAtMs = -1.0
+        receivedAtMs = -1.0
         velocity = 0f
         accel = 0f
         accelUnc = 0f
@@ -422,12 +440,17 @@ class ShadeEngine(
      * A frame arrived at [nowMs]. Returns the detection it calls for, if any; the caller
      * runs it and returns the result through [onDetected].
      */
-    fun onFrame(src: PixelSource, nowMs: Double): DetectJob? {
+    fun onFrame(src: PixelSource, nowMs: Double, shownAtMs: Double = nowMs): DetectJob? {
         if (src.width != width || src.height != height) return null
-        val sinceLast = if (lastFrameAtMs < 0) Double.MAX_VALUE else nowMs - lastFrameAtMs
+        // Two clocks. [shownAtMs] is when the frame was on the screen — its own stamp — and the
+        // page's motion is read on it: from one frame's stamp to the next is how long the page
+        // took to move. [nowMs] is when it reached the engine, and everything else — whether the
+        // page is still moving, the margins, the detections — runs on that.
+        val sinceLast = if (lastFrameAtMs < 0) Double.MAX_VALUE else shownAtMs - lastFrameAtMs
         if (sinceLast < tuning.minTrackGapMs) return null
         if (sinceLast in 2.0..60.0) frameMs = 0.85f * frameMs + 0.15f * sinceLast.toFloat()
-        lastFrameAtMs = nowMs
+        lastFrameAtMs = shownAtMs
+        receivedAtMs = nowMs
 
         // The page's motion is read from the page: the bars that stay put above and below it
         // would only argue that nothing moved.
@@ -440,7 +463,7 @@ class ShadeEngine(
         var jumped = false
         var flat = false
         if (prev != null) {
-            val dt = (nowMs - prevAtMs).coerceAtLeast(1.0)
+            val dt = (shownAtMs - prevAtMs).coerceAtLeast(1.0)
             val centre = (velocity * dt).roundToInt()
             val m = tracker.match(prev, profile, y0, y1, centre)
             when {
@@ -458,13 +481,13 @@ class ShadeEngine(
             }
             val frames = (dt / 16.7).toFloat()
             if (measured) {
-                measureMotion(offset + dy, dy, nowMs, dt)
+                measureMotion(offset + dy, dy, shownAtMs, dt)
                 coastingSinceMs = -1.0
                 flatSinceMs = -1.0
             } else if (!jumped) {
                 if (flat) {
                     // Coast on the last speed, easing off: a gutter this long can end at any moment.
-                    if (flatSinceMs < 0) flatSinceMs = nowMs
+                    if (flatSinceMs < 0) flatSinceMs = shownAtMs
                     velocity *= Math.pow(0.985, frames.toDouble()).toFloat()
                     accel *= Math.pow(0.9, frames.toDouble()).toFloat()
                 } else {
@@ -476,10 +499,10 @@ class ShadeEngine(
             }
         }
         prevProfile = profile
-        prevAtMs = nowMs
+        prevAtMs = shownAtMs
 
-        val lost = (coastingSinceMs >= 0 && nowMs - coastingSinceMs > tuning.maxCoastMs) ||
-            (flatSinceMs >= 0 && nowMs - flatSinceMs > tuning.maxFlatMs)
+        val lost = (coastingSinceMs >= 0 && shownAtMs - coastingSinceMs > tuning.maxCoastMs) ||
+            (flatSinceMs >= 0 && shownAtMs - flatSinceMs > tuning.maxFlatMs)
         if (jumped || lost) {
             // Not the page we were following: a turn, a jump, or a screen with nothing to hold on to.
             velocity = 0f
@@ -1012,11 +1035,12 @@ class ShadeEngine(
      */
     private fun publish(nowMs: Double, moving: Boolean) {
         val at = if (prevAtMs >= 0 && prevAtMs <= nowMs) prevAtMs else nowMs
+        val received = if (receivedAtMs >= at && receivedAtMs <= nowMs) receivedAtMs else at
         // behind the motion: against the way the page moves
         val bias = if (moving) -Math.signum(velocity) * stopBias() else 0f
         snapshot = ShadeSnapshot(
             rects, rectCount, baseOffset, offset, at, velocity, accel, frameMs, leadMs(),
-            tuning.maxExtrapolateMs, moving, pageTop, pageBottom, tuning.accelTrust, bias,
+            tuning.maxExtrapolateMs, moving, pageTop, pageBottom, tuning.accelTrust, bias, received,
         )
     }
 

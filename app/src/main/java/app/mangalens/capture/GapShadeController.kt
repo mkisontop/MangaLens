@@ -135,8 +135,9 @@ class GapShadeController(
             val plane = image.planes[0]
             val raw = ImageBufferPixels(plane.buffer, plane.rowStride / 4, width, height)
             val src: PixelSource = if (level < 0.999f) LiftedPixels(raw, 1f / level) else raw
-            // The frame's own stamp, not the moment this thread got round to it: see [GapClock.frameMs].
-            after(e, e.onFrame(src, GapClock.frameMs(image.timestamp)))
+            // The page's motion is timed by the frame's own stamp, not by the moment this thread got
+            // round to it: see [GapClock.frameMs].
+            after(e, e.onFrame(src, GapClock.nowMs(), GapClock.frameMs(image.timestamp)))
             captureHandler.removeCallbacks(quiet)
             captureHandler.postDelayed(quiet, QUIET_MS)
         }

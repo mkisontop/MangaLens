@@ -56,7 +56,8 @@ class PlaneBuilderTest {
         // half resolution, sampling every second row and column missed the border on odd rows
         val w = 720
         val h = 1400
-        for (y0 in 300..303) for (x1 in 717..719) {
+        val x1 = w - 1
+        for (y0 in 300..303) {
             val f = frame(w, h) { s ->
                 s.solid(0, y0, x1 + 1, y0 + 700, Strip.BLACK)
                 s.solid(1, y0 + 1, x1, y0 + 699, Strip.WHITE)

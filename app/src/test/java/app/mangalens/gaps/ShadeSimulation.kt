@@ -102,10 +102,18 @@ internal class ShadeSimulation(
         ARRIVAL,
 
         /**
-         * When the frame was on the glass, plus the constant [captureLagMs]: what the image's own
-         * timestamp would give. Capture jitter does not.
+         * When the frame was on the glass, plus the constant [captureLagMs]: a stamp with the
+         * capture's delay taken out of the jitter but not out of the time. Capture jitter does not
+         * land in the measurements.
          */
         GLASS,
+
+        /**
+         * What the app does on a phone: the frame's own stamp, the time it was on the glass, as the
+         * time the page was where the frame shows it; and the time it reached the engine besides,
+         * for everything else.
+         */
+        STAMP,
     }
 
     val engine = ShadeEngine(w, h, style, GapParams(), tuning).also { e ->
@@ -262,8 +270,13 @@ internal class ShadeSimulation(
         report.framesDelivered++
         lastGlass = frame
         lastDelivered = arrivedMs
-        val stamp = if (timeSource == TimeSource.GLASS) glassMs + captureLagMs else arrivedMs
-        runJob(engine.onFrame(ArrayPixels(w, h, frame), stamp), arrivedMs)
+        val src = ArrayPixels(w, h, frame)
+        val job = when (timeSource) {
+            TimeSource.ARRIVAL -> engine.onFrame(src, arrivedMs)
+            TimeSource.GLASS -> engine.onFrame(src, arrivedMs, glassMs + captureLagMs)
+            TimeSource.STAMP -> engine.onFrame(src, arrivedMs, glassMs)
+        }
+        runJob(job, arrivedMs)
         val gen = ++quietGen
         at(arrivedMs + quietMs) {
             if (gen == quietGen) runJob(engine.onQuiet(ArrayPixels(w, h, lastGlass!!), arrivedMs + quietMs), arrivedMs + quietMs)

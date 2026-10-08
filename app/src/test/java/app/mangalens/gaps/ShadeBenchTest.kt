@@ -128,7 +128,7 @@ class ShadeBenchTest {
      * A phone as the app now reads it: frames still come in up to 6 ms late and one in ten is
      * lost, but each is dated by its own stamp, and the view draws for its frame's vsync.
      */
-    private val device = Timing("device", captureJitterMs = 6.0, dropShare = 0.10, jobJitterMs = 10.0, source = ShadeSimulation.TimeSource.GLASS)
+    private val device = Timing("device", captureJitterMs = 6.0, dropShare = 0.10, jobJitterMs = 10.0, source = ShadeSimulation.TimeSource.STAMP)
 
     private val hz60 = 1000.0 / 60
     private val hz120 = 1000.0 / 120
