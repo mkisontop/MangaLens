@@ -154,6 +154,12 @@ class ShadeSnapshot(
      * the prediction may run on a lead and a frame past its arrival, not past its stamp.
      */
     val receivedAtMs: Double = offsetAtMs,
+    /**
+     * From when the page is known to stand still, though no frame has said so yet: a finger
+     * landed on it while it moved, and a finger landing on a scrolling page stops it. The
+     * prediction carries the shade up to then and no further.
+     */
+    val haltAtMs: Double = Double.MAX_VALUE,
 ) {
     /**
      * Calls [f] with each rectangle as it is drawn [shift] rows down, cut to the page's rows and
@@ -181,7 +187,8 @@ class ShadeSnapshot(
             // on to catch up.
             val delay = (receivedAtMs - offsetAtMs).toFloat().coerceAtLeast(0f)
             val cap = delay + min(maxExtrapolateMs, leadMs + LOST_FRAMES * frameMs)
-            var dt = ((nowMs - offsetAtMs).toFloat() + leadMs).coerceIn(0f, cap)
+            val until = min(nowMs + leadMs, haltAtMs)
+            var dt = (until - offsetAtMs).toFloat().coerceIn(0f, cap)
             // A page that is slowing down does not turn round: stop the prediction where it would stop.
             val a = accelTrust * accel
             if (a * velocity < 0f) dt = min(dt, -velocity / a)
@@ -280,9 +287,12 @@ class ShadeEngine(
     private var lastFrameAtMs = -1.0
     private var lastMoveAtMs = -1e9
     private var motionStartMs = -1e9
-    /** Since when the motion has not been measurable, coasting on the last speed, or on a featureless screen; -1 while it has been. */
-    private var coastingSinceMs = -1.0
-    private var flatSinceMs = -1.0
+    /**
+     * How long, since the motion was last measured, frames have been unmeasurable — coasting on
+     * the last speed — and how long featureless; each counts only its own kind of frame.
+     */
+    private var coastingMs = 0.0
+    private var flatMs = 0.0
 
     /** The page's offset, and the running speed, at the last frames measured — newest last — for speeds read over more than one frame. */
     private val histAt = DoubleArray(HISTORY)
@@ -299,6 +309,9 @@ class ShadeEngine(
     private var srcMargin = 0
     private var appliedMargin = 0
     private var armedUntilMs = -1e9
+
+    /** See [ShadeSnapshot.haltAtMs]: when a finger stopped the moving page; cleared by the next frame that shows it moving. */
+    private var haltAtMs = Double.MAX_VALUE
 
     /** Since when the margin wanted has been below the one applied, and when it was last given back; -1 while it is not. */
     private var marginLowSinceMs = -1.0
@@ -418,14 +431,15 @@ class ShadeEngine(
 
     /** The shade is switched off, or the screen changed shape. */
     fun reset(nowMs: Double) {
+        haltAtMs = Double.MAX_VALUE
         prevProfile = null
         prevAtMs = -1.0
         receivedAtMs = -1.0
         velocity = 0f
         accel = 0f
         accelUnc = 0f
-        coastingSinceMs = -1.0
-        flatSinceMs = -1.0
+        coastingMs = 0.0
+        flatMs = 0.0
         histCount = 0
         pending = null
         dropShade()
@@ -482,16 +496,16 @@ class ShadeEngine(
             val frames = (dt / 16.7).toFloat()
             if (measured) {
                 measureMotion(offset + dy, dy, shownAtMs, dt)
-                coastingSinceMs = -1.0
-                flatSinceMs = -1.0
+                coastingMs = 0.0
+                flatMs = 0.0
             } else if (!jumped) {
                 if (flat) {
                     // Coast on the last speed, easing off: a gutter this long can end at any moment.
-                    if (flatSinceMs < 0) flatSinceMs = shownAtMs
+                    flatMs += dt
                     velocity *= Math.pow(0.985, frames.toDouble()).toFloat()
                     accel *= Math.pow(0.9, frames.toDouble()).toFloat()
                 } else {
-                    if (coastingSinceMs < 0) coastingSinceMs = prevAtMs
+                    coastingMs += dt
                     velocity *= Math.pow(0.92, frames.toDouble()).toFloat()
                     accel *= Math.pow(0.8, frames.toDouble()).toFloat()
                 }
@@ -501,20 +515,20 @@ class ShadeEngine(
         prevProfile = profile
         prevAtMs = shownAtMs
 
-        val lost = (coastingSinceMs >= 0 && shownAtMs - coastingSinceMs > tuning.maxCoastMs) ||
-            (flatSinceMs >= 0 && shownAtMs - flatSinceMs > tuning.maxFlatMs)
+        val lost = coastingMs > tuning.maxCoastMs || flatMs > tuning.maxFlatMs
         if (jumped || lost) {
             // Not the page we were following: a turn, a jump, or a screen with nothing to hold on to.
             velocity = 0f
             accel = 0f
-            coastingSinceMs = -1.0
-            flatSinceMs = -1.0
+            coastingMs = 0.0
+            flatMs = 0.0
             histCount = 0
             dropShade()
             publish(nowMs, false)
             return maybeSettle(src, nowMs)
         }
 
+        if (dy != 0 && shownAtMs > haltAtMs) haltAtMs = Double.MAX_VALUE
         if (dy != 0) {
             if (!isMoving(nowMs)) motionStartMs = nowMs
             offset += dy
@@ -615,6 +629,11 @@ class ShadeEngine(
      */
     fun arm(nowMs: Double) {
         armedUntilMs = nowMs + tuning.armMs
+        // A finger landing on a page that is moving stops it: a fling is caught. The frames that
+        // show it still are a capture's delay away, and the shade, carried on by the prediction
+        // meanwhile, would run on past the gutters by the page's speed times that delay. If the
+        // page does move on — the finger drags it — the next frame says so.
+        if (isMoving(nowMs) && velocity != 0f) haltAtMs = nowMs
         updateMargin(nowMs)
         publish(nowMs, isMoving(nowMs))
     }
@@ -695,10 +714,11 @@ class ShadeEngine(
      * caller kept one. The page has stopped, and gets the exact pass.
      */
     fun onQuiet(rest: PixelSource?, nowMs: Double): DetectJob? {
+        haltAtMs = Double.MAX_VALUE
         velocity = 0f
         accel = 0f
-        coastingSinceMs = -1.0
-        flatSinceMs = -1.0
+        coastingMs = 0.0
+        flatMs = 0.0
         histCount = 0
         publish(nowMs, false)
         if (rest == null || rest.width != width || rest.height != height) return null
@@ -775,7 +795,9 @@ class ShadeEngine(
             }
         }
         val span = (nowMs - baseAt).coerceAtLeast(1.0)
-        if (dy == 0 && pos == baseOffset) {
+        // Stopped: nothing moved over the stretch the speed is read on — or nothing at all since the
+        // last frame, when the speed said it would be rows: a page stopped dead, said so at once.
+        if (dy == 0 && (pos == baseOffset || abs(velocity) * dt >= STOP_ROWS)) {
             velocity = 0f
             accel = 0f
         } else {
@@ -955,6 +977,8 @@ class ShadeEngine(
         }
         val rec = best ?: return
         if (bestScore < 3 || bestScore * 2 < n || second > bestScore - 2) return
+        // a draw held back by a halt says nothing about the lead
+        if (rec.snap.haltAtMs != Double.MAX_VALUE) return
 
         // Where the page is now, against where this draw put the rectangles.
         val ideal = offset - rec.snap.baseOffset
@@ -1041,6 +1065,7 @@ class ShadeEngine(
         snapshot = ShadeSnapshot(
             rects, rectCount, baseOffset, offset, at, velocity, accel, frameMs, leadMs(),
             tuning.maxExtrapolateMs, moving, pageTop, pageBottom, tuning.accelTrust, bias, received,
+            if (moving) haltAtMs else Double.MAX_VALUE,
         )
     }
 
@@ -1066,6 +1091,9 @@ class ShadeEngine(
 
         /** Frames remembered for reading speed and acceleration over more than one. */
         const val HISTORY = 12
+
+        /** Rows the speed must have promised for one frame of no motion at all to mean the page has stopped. */
+        const val STOP_ROWS = 1.5f
         const val CAL_COLS = 10
         const val MAX_EDGES = 48
         const val MAX_ACCEL = 0.03f

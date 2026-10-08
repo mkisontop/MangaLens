@@ -202,6 +202,81 @@ class ShadeEngineTest {
     }
 
     @Test
+    fun `a lost frame does not stall the shade and send it lurching after the page`() {
+        // Frames dated by their own stamps reach the engine a capture's delay late, and now and
+        // then one is lost. The prediction must ride over that, not stop a frame past the newest
+        // stamp and catch up with a jump when the next one comes.
+        val vs = 1000.0 / 60
+        val disp = 2
+        val lead = 80.0
+        val sc0 = Scrolls.ramp(1500.0, 800.0, 150.0, 1900.0)
+        val sc: (Double) -> Double = { t -> sc0((t - lead).coerceAtLeast(0.0)) }
+        val firstTop = Math.round(sc(0.0)).toInt()
+        val drawn = HashMap<Int, IntArray>()
+        var sim: ShadeSimulation? = null
+        val errs = ArrayList<Int>()
+        sim = ShadeSimulation(
+            strip, w, h, style, vs, 16.0, disp, 25.0,
+            captureJitterMs = 6.0, captureDropShare = 0.15, timeSource = ShadeSimulation.TimeSource.STAMP, seed = 7L,
+            onGlass = { k, _ ->
+                val t = k * vs
+                val sn = sim!!.engine.snapshot
+                drawn[k] = intArrayOf(sn.baseOffset, sn.shiftAt(t), sn.rectCount, Math.round(sn.biasPx))
+                val d = drawn[k - disp]
+                val top = Math.round(sc(minOf(t, 2000.0))).toInt()
+                if (d != null && d[2] > 0 && t in 500.0..1900.0) errs.add(d[1] - d[3] - ((firstTop - top) - d[0]))
+            },
+        )
+        val r = sim.run(sc0, 2000.0, touchLeadMs = lead)
+        val worst = errs.maxOf { kotlin.math.abs(it) }
+        assertTrue("the drawn shade strayed $worst rows from the page (bias aside)", worst <= 8)
+        assertTrue("frames were lost: ${r.framesDropped}", r.framesDropped > 3)
+    }
+
+    @Test
+    fun `a gutter that fills the screen keeps its shade when the timing is ragged`() {
+        // Frames with nothing to measure by alternate there with frames too faint to measure; only
+        // the second kind may count toward giving up on the page, and they must not add up to it.
+        val long = longGutterStrip(w)
+        val sm = ShadeSimulation(
+            long, w, h, style, 1000.0 / 60, 16.0, 2, 25.0,
+            captureJitterMs = 6.0, captureDropShare = 0.1, drawJitterMs = 5.0, jobJitterMs = 10.0, seed = 1L,
+        )
+        val r = sm.run(Scrolls.ramp(900.0, 900.0, 160.0, 4300.0), 4500.0, touchLeadMs = touch)
+        report("long gutter, ragged timing", r)
+        assertEquals("the shade was dropped", 0, r.drops)
+        assertEquals("no stretch with the gutter on screen and the shade gone", 0, r.moving.blackouts)
+        assertEquals(0, r.restDamage)
+    }
+
+    @Test
+    fun `a finger landing on a moving page holds the shade where the page stopped`() {
+        val eng = ShadeEngine(w, h, style)
+        var top = 2000
+        var t = 0.0
+        val job = eng.kick(ArrayPixels(w, h, strip.frame(top, h)), t)!!
+        eng.onDetected(job, job.run(), t + 20)
+        for (i in 0 until 20) {
+            t += 16.7
+            top += 12
+            eng.onFrame(ArrayPixels(w, h, strip.frame(top, h)), t + 18, t)?.let { eng.onDetected(it, it.run(), t + 30) }
+        }
+        val touchAt = t + 25
+        eng.arm(touchAt)
+        val sn = eng.snapshot
+        assertTrue("still riding the page", sn.moving)
+        // the prediction goes no further than the moment the finger landed
+        assertEquals(sn.shiftAt(touchAt), sn.shiftAt(touchAt + 40))
+        assertTrue("and was carried up to it", sn.shiftAt(touchAt) < sn.offset - sn.baseOffset)
+        // a frame that shows the page moving on lets it go again
+        t += 33.4
+        top += 24
+        eng.onFrame(ArrayPixels(w, h, strip.frame(top, h)), t + 18, t)
+        val moved = eng.snapshot
+        assertTrue("predicting again", moved.shiftAt(t + 60) < moved.shiftAt(t + 20))
+    }
+
+    @Test
     fun `a page turn drops the shade within a few frames and restores it exactly`() {
         // the page is replaced by a different part of the strip in one frame, as a tap-to-turn reader does
         val jump: (Double) -> Double = { t -> if (t < 600) 2000.0 else 7300.0 }
