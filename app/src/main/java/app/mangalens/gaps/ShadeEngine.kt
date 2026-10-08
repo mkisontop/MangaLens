@@ -72,7 +72,7 @@ class ShadeTuning(
      * touch is how almost every scroll begins, and the overlay cannot react to the first
      * rows of motion until a frame has been captured, measured and drawn.
      */
-    val armMarginPx: Int = 18,
+    val armMarginPx: Int = 32,
 
     /** How long that margin stays up if no scroll follows: a tap, not a drag. */
     val armMs: Double = 320.0,

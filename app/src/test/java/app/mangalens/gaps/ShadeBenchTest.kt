@@ -124,6 +124,12 @@ class ShadeBenchTest {
     private val real = Timing("real", captureJitterMs = 6.0, drawJitterMs = 5.0, dropShare = 0.10, jobJitterMs = 10.0)
     private val realGlass = Timing("realGlass", 6.0, 5.0, 0.10, 10.0, ShadeSimulation.TimeSource.GLASS)
 
+    /**
+     * A phone as the app now reads it: frames still come in up to 6 ms late and one in ten is
+     * lost, but each is dated by its own stamp, and the view draws for its frame's vsync.
+     */
+    private val device = Timing("device", captureJitterMs = 6.0, dropShare = 0.10, jobJitterMs = 10.0, source = ShadeSimulation.TimeSource.GLASS)
+
     private val hz60 = 1000.0 / 60
     private val hz120 = 1000.0 / 120
 
@@ -148,6 +154,10 @@ class ShadeBenchTest {
         s({ plain }, "plain", slow, hz120, realGlass),
         s({ plain }, "plain", stopGo, hz60, real),
         s({ plain }, "plain", stopGo, hz60, realGlass),
+        s({ plain }, "plain", drag, hz60, device),
+        s({ plain }, "plain", drag, hz120, device),
+        s({ plain }, "plain", fling, hz60, device),
+        s({ plain }, "plain", stopGo, hz60, device),
         s({ bars }, "bars", drag, hz60, ideal),
         s({ whiteArt }, "white", whiteSlow, hz60, ideal),
         s({ whiteArt }, "white", whiteDrag, hz60, ideal),
@@ -155,7 +165,7 @@ class ShadeBenchTest {
 
     private fun fullMatrix(): List<Scenario> {
         val out = ArrayList<Scenario>()
-        val timings = listOf(ideal, real, realGlass)
+        val timings = listOf(ideal, real, realGlass, device)
         for (m in listOf(slow, drag, fling, reverse, stopGo, steady700)) for (vs in listOf(hz60, hz120)) for (t in timings) out += s({ plain }, "plain", m, vs, t)
         for (vs in listOf(hz60, hz120)) for (t in listOf(ideal, real)) out += s({ long }, "long", longGutter, vs, t)
         for (m in listOf(gritty600, drag, stopGo)) for (vs in listOf(hz60, hz120)) for (t in listOf(ideal, real)) out += s({ grit }, "gritty", m, vs, t)
