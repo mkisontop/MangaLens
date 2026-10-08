@@ -1,5 +1,45 @@
 # Changelog
 
+## 1.1.4
+
+Dark gaps ride the page smoothly while you scroll.
+
+**Download:** `MangaLens.apk` below updates 0.9.2 and newer in place. Still on
+0.9.1? Use `MangaLens-legacy-update.apk` once (Android 9+), as described in
+the README.
+
+- **No more twitching.** Every time a detection came back — a score of times a
+  second while the page moved — the shade restarted its prediction from where
+  the page had been a few milliseconds earlier, and fell back by the speed
+  times that delay: up to a dozen rows, again and again. The prediction now
+  always starts from the frame the page's position was read from.
+- **Timed by the screen, not by the phone's workload.** The page's motion is
+  timed by each captured frame's own timestamp instead of the moment the app
+  got round to reading it, and the shade is drawn for the exact display refresh
+  it will appear in instead of whenever the draw happened to run. When the
+  capture loses a frame or two, the shade rides on instead of stalling and then
+  lurching to catch up.
+- **Steady at 120 Hz.** Every frame of a 120 Hz screen is followed, and the
+  speed is read over time rather than frame by frame, so a row more or less
+  between two frames no longer shakes the shade.
+- **Edges that hold still.** The margin that keeps the shade off the art while
+  you scroll was rebuilt with every detection, so its edges moved in and out
+  with each one. It is now held steady, grows at once when needed and gives way
+  gently. The fast detections used while scrolling look at every pixel and are
+  lined up with the page, so each finds the same edges as the last.
+- **Cleaner starts and stops.** The margin against the page stopping dead is
+  kept on the edge the shade moves toward, the only one a stop can push it
+  past, and a slightly wider margin goes up the moment a finger touches the
+  screen. Where a gutter meets a soft-edged drawing, the shade no longer stops a
+  row short once the page comes to rest after a scroll.
+- **Tested much harder.** A new bench plays every kind of scroll — slow
+  reading, drags, flings, reversals, stop-and-go — at 60 and 120 Hz, with the
+  timing as ragged as a phone's, and measures how far the shade wobbles against
+  the page, how dark the gutters stay and any art it covers. Across more than a
+  hundred scenarios the shade's wobble against the page fell by about two fifths
+  overall and by more than half at 120 Hz, and the gutters stay a little darker
+  while you scroll. Which white is a gutter at rest is unchanged.
+
 ## 1.1.3
 
 Dark gaps stay off the browser's and the site's bars while you scroll.

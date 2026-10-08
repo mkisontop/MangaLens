@@ -19,7 +19,7 @@ about 1.5–2 s after you stop.
 · [all releases](https://github.com/mkisontop/mangalens/releases)
 · [changelog](CHANGELOG.md)
 
-Current release: **1.1.3**. Still on 0.9.1? Follow the
+Current release: **1.1.4**. Still on 0.9.1? Follow the
 [one-time update instructions](#one-time-update-from-091) instead of using
 the normal APK.
 
@@ -638,17 +638,24 @@ it works in any browser or reader. What it does with them:
 - **It rides the scroll.** The page's movement is measured to the pixel from
   the frames themselves (a row profile of edge strength, aligned frame to frame —
   gradients, so the shade's own brightness does not matter), and the overlay is
-  drawn where the page *will be* by the time the pixels reach the glass. That lead
-  — capture delay plus display delay, which differ per device — is calibrated
-  continuously from the shade's own edges, which are visible in the capture.
+  drawn where the page *will be* by the time the pixels reach the glass. The
+  page's motion is timed by each captured frame's own timestamp, not by when the
+  app got round to it, and every frame of a 120 Hz screen is followed; the shade
+  is drawn for the exact display refresh it will appear in. The lead — the display
+  delay, which differs per device — is calibrated continuously from the shade's
+  own edges, which are visible in the capture.
 - **A margin guards the art while it moves.** The shade is pulled back from every
   gutter edge by a margin that grows with speed and with how wrong the prediction
   has lately been, so a misjudged stop or start costs a strip of white at the
-  edge for a frame or two, never darkened art. A finger touching the screen puts a
-  margin up *before* the page moves, since a touch precedes every scroll. Fast
-  half-resolution detection runs a few times a second while moving; the moment the
-  page stops, one exact full-resolution pass replaces it, and the edges land on
-  the pixel.
+  edge for a frame or two, never darkened art. The margin is held steady — it grows
+  at once when needed and gives way gently — so the edges do not pulse in and out;
+  the part of it that guards against the page stopping dead sits on the edge the
+  shade is moving toward, the only one a stop can push it past. A finger touching
+  the screen puts a margin up *before* the page moves, since a touch precedes every
+  scroll. Fast half-resolution detection runs while moving, looking at every pixel
+  and lined up with the page so each pass finds the same edges as the last; the
+  moment the page stops, one exact full-resolution pass replaces it, and the edges
+  land on the pixel.
 - **The rest of the app never sees it.** OCR, the balloon finder and the change
   detectors read the page as if the shade were not there (paper restored under it,
   thumbnails corrected), so translation behaves exactly as before.
