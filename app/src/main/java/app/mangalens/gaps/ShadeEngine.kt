@@ -27,8 +27,12 @@ class ShadeTuning(
     val onsetBoostPx: Int = 22,
     val onsetMs: Double = 240.0,
 
-    /** Share of a lead's travel kept as margin against the page stopping dead. */
-    val stopRisk: Float = 0.3f,
+    /**
+     * Share of a lead's travel kept as margin against the page stopping dead. Only the edge the
+     * shade moves toward needs it — a page that stops leaves the shade ahead of it, never behind —
+     * so it is laid on that edge alone: see [ShadeSnapshot.biasPx].
+     */
+    val stopRisk: Float = 0.6f,
 
     /** Fewest milliseconds between detections while the page moves. */
     val detectIntervalMs: Double = 40.0,
@@ -137,6 +141,13 @@ class ShadeSnapshot(
     val pageBottom: Int = Int.MAX_VALUE,
     /** How much of [accel] the prediction believes. */
     val accelTrust: Float = 0.65f,
+    /**
+     * Rows the rectangles are drawn behind the prediction while the page moves: half the margin
+     * kept against the page stopping dead, taken from the edge the shade trails with and given to
+     * the edge it leads with. A page that stops leaves the shade ahead of it, so the leading edge
+     * needs that margin; the trailing edge does not, and keeps the gutter darker for it.
+     */
+    val biasPx: Float = 0f,
 ) {
     /**
      * Calls [f] with each rectangle as it is drawn [shift] rows down, cut to the page's rows and
@@ -162,7 +173,7 @@ class ShadeSnapshot(
             // A page that is slowing down does not turn round: stop the prediction where it would stop.
             val a = accelTrust * accel
             if (a * velocity < 0f) dt = min(dt, -velocity / a)
-            shift += velocity * dt + 0.5f * a * dt * dt
+            shift += velocity * dt + 0.5f * a * dt * dt + biasPx
         }
         return shift.roundToInt()
     }
@@ -789,13 +800,18 @@ class ShadeEngine(
         val unsure = max(1.2f * frameMs, 1.6f * (if (lagErrMs < 0) 0.6f * lead else lagErrMs))
         val speed = abs(velocity)
         val timing = tuning.marginPerLeadPx * speed * unsure
-        // A page can stop dead, and the overlay will have been carried a lead's worth past it.
-        val stop = tuning.stopRisk * speed * lead
+        // A page can stop dead, and the overlay will have been carried a lead's worth past it: on
+        // the edge it leads with. Half of that is margin on both edges, and [stopBias] moves the
+        // shade back by the other half, so the leading edge has all of it and the trailing none.
+        val stop = 2f * stopBias()
         // And speed itself is only known as it was a moment ago.
         val accelErr = 0.4f * accelUnc * lead * lead
         val onset = tuning.onsetBoostPx * (1.0 - (nowMs - motionStartMs) / tuning.onsetMs).coerceIn(0.0, 1.0)
-        return tuning.marginBasePx + ceil(timing + stop + accelErr + onset).toInt()
+        return tuning.marginBasePx + ceil(timing + 0.5f * stop + accelErr + onset).toInt()
     }
+
+    /** Half the travel a page stopping dead would leave the shade ahead by: rows to draw it behind the prediction. */
+    private fun stopBias(): Float = 0.5f * tuning.stopRisk * abs(velocity) * leadMs()
 
     private fun artRecently(nowMs: Double) = nowMs - artSeenAtMs <= tuning.artMemoryMs
 
@@ -919,7 +935,8 @@ class ShadeEngine(
 
         // Where the page is now, against where this draw put the rectangles.
         val ideal = offset - rec.snap.baseOffset
-        val e = (rec.shift - ideal).toFloat()
+        // the bias is drawn on purpose, and is no error of the lead's
+        val e = rec.shift - ideal - (if (rec.snap.moving) rec.snap.biasPx else 0f)
         val ms = (e / v).coerceIn(-90f, 90f)
         val used = rec.snap.leadMs
         val measured = (used - ms).coerceIn(tuning.leadMinMs * 0.5f, tuning.leadCeilingMs)
@@ -995,9 +1012,11 @@ class ShadeEngine(
      */
     private fun publish(nowMs: Double, moving: Boolean) {
         val at = if (prevAtMs >= 0 && prevAtMs <= nowMs) prevAtMs else nowMs
+        // behind the motion: against the way the page moves
+        val bias = if (moving) -Math.signum(velocity) * stopBias() else 0f
         snapshot = ShadeSnapshot(
             rects, rectCount, baseOffset, offset, at, velocity, accel, frameMs, leadMs(),
-            tuning.maxExtrapolateMs, moving, pageTop, pageBottom, tuning.accelTrust,
+            tuning.maxExtrapolateMs, moving, pageTop, pageBottom, tuning.accelTrust, bias,
         )
     }
 
