@@ -22,6 +22,14 @@ class ArrayPixels(override val width: Int, override val height: Int, val data: I
     override fun pixel(x: Int, y: Int): Int = data[y * width + x]
 }
 
+/** [src] from its row [y0] down: row 0 of this is row [y0] of that. */
+class RowsFrom(private val src: PixelSource, private val y0: Int) : PixelSource {
+    override val width: Int get() = src.width
+    override val height: Int = (src.height - y0).coerceAtLeast(0)
+    override fun readRow(y: Int, dst: IntArray) = src.readRow(y + y0, dst)
+    override fun pixel(x: Int, y: Int): Int = src.pixel(x, y + y0)
+}
+
 /**
  * How dark the gaps are painted, and so what paper looks like once it is painted.
  *
@@ -145,7 +153,7 @@ class Planes(
 object PlaneBuilder {
 
     /**
-     * Classifies every [step]-th pixel of every [step]-th row of [src].
+     * Classifies [src], one plane pixel for each block of [step] by [step] frame pixels.
      *
      * Paper is `(p and 0xF0F0F0) == 0xF0F0F0` — every channel in 240..255 — which is one
      * mask-and-compare per pixel and, because all three channels sit in a 16-wide band, a
@@ -155,6 +163,12 @@ object PlaneBuilder {
      * (`x0, y0, x1, y1` in frame pixels) — MangaLens's own controls, over the page — every
      * pixel is ink: they are not the page, and are never to be shaded, nor to cut a black bar
      * beside the strip in two.
+     *
+     * A coarse block is paper only if every pixel in it is, and ink if any pixel is. Looking at
+     * one pixel of the block instead — the cheaper way — missed a panel's border one or two pixels
+     * thick whenever it fell between the samples, and the gutter ran on through the gap into the
+     * white of the panel: a white sky, a white shirt, darkened while the page moved and lit again
+     * when it stopped, flickering as the border's rows went in and out of step with the samples.
      */
     fun build(
         src: PixelSource,
@@ -178,7 +192,9 @@ object PlaneBuilder {
         val hi = style.sigHi
         val faintLight = style.faintLight
         val flat = BooleanArray(ph)
-        for (py in 0 until ph) {
+        if (step > 1) {
+            classifyBlocks(src, step, style, ignoreTop, ignoreBottom, keepOut, paper, ink, faint, flat)
+        } else for (py in 0 until ph) {
             val y = py * step
             if (y < ignoreTop || y >= fh - ignoreBottom) continue
             src.readRow(y, row)
@@ -221,10 +237,10 @@ object PlaneBuilder {
             }
         }
         for (r in keepOut) {
-            // the plane pixels whose sample falls inside the rectangle
-            val x0 = (r[0].coerceAtLeast(0) + step - 1) / step
+            // the plane pixels whose block reaches into the rectangle
+            val x0 = r[0].coerceAtLeast(0) / step
             val x1 = (r[2].coerceAtMost(fw) + step - 1) / step
-            val ry0 = (r[1].coerceAtLeast(0) + step - 1) / step
+            val ry0 = r[1].coerceAtLeast(0) / step
             val ry1 = (r[3].coerceAtMost(fh) + step - 1) / step
             for (py in ry0 until minOf(ry1, ph)) {
                 val y = py * step
@@ -238,6 +254,93 @@ object PlaneBuilder {
         val y0 = ((ignoreTop + step - 1) / step).coerceIn(0, ph)
         val y1 = ((fh - ignoreBottom + step - 1) / step).coerceIn(y0, ph)
         return Planes(fw, fh, step, paper, ink, y0, y1, lum, style.sigHi, faint, keepOut, flat)
+    }
+
+    /**
+     * The coarse classification: a block of [step] by [step] frame pixels is paper when all of
+     * them are, ink when any of them is, faint when any is and none is ink.
+     *
+     * The blocks are read a pair of rows at a time and written straight into the planes' words,
+     * with a quick way through the commonest block of all, four pixels of plain paper: this runs
+     * on the capture thread for every detection while the page moves.
+     */
+    private fun classifyBlocks(
+        src: PixelSource,
+        step: Int,
+        style: ShadeStyle,
+        ignoreTop: Int,
+        ignoreBottom: Int,
+        keepOut: List<IntArray>,
+        paper: BitPlane,
+        ink: BitPlane,
+        faint: BitPlane,
+        flat: BooleanArray,
+    ) {
+        val fw = src.width
+        val fh = src.height
+        val pw = paper.w
+        val wpr = paper.wpr
+        val lo = style.sigLo
+        val hi = style.sigHi
+        val faintLight = style.faintLight
+        val rows = Array(step) { IntArray(fw) }
+        for (py in 0 until paper.h) {
+            val y = py * step
+            if (y < ignoreTop || y >= fh - ignoreBottom) continue
+            val n = minOf(y + step, fh - ignoreBottom) - y
+            for (r in 0 until n) src.readRow(y + r, rows[r])
+            flat[py] = flatRow(rows[0], fw, step, y, keepOut)
+            val base = py * wpr
+            for (k in 0 until wpr) {
+                var pv = 0L
+                var iv = 0L
+                var fv = 0L
+                val px0 = k shl 6
+                val count = minOf(64, pw - px0)
+                for (i in 0 until count) {
+                    val x0 = (px0 + i) * step
+                    val x1 = minOf(x0 + step, fw)
+                    // every pixel of the block plain paper: the gutter, nearly always
+                    var all = 0xF0F0F0
+                    for (r in 0 until n) {
+                        val row = rows[r]
+                        for (x in x0 until x1) all = all and row[x]
+                    }
+                    if ((all and 0xF0F0F0) == 0xF0F0F0) {
+                        pv = pv or (1L shl i)
+                        continue
+                    }
+                    var isPaper = true
+                    var isInk = false
+                    var isFaint = false
+                    blocks@ for (r in 0 until n) {
+                        val row = rows[r]
+                        for (x in x0 until x1) {
+                            val p = row[x]
+                            if ((p and 0xF0F0F0) == 0xF0F0F0) continue
+                            if ((p and 0xC0C0C0) != 0xC0C0C0) {
+                                // dark: paper under our own shade, or ink
+                                if (!inWindow(p, lo, hi)) {
+                                    isInk = true
+                                    break@blocks
+                                }
+                            } else {
+                                isPaper = false
+                                if (((p ushr 16) and 0xFF) < faintLight || ((p ushr 8) and 0xFF) < faintLight || (p and 0xFF) < faintLight) isFaint = true
+                            }
+                        }
+                    }
+                    when {
+                        isInk -> iv = iv or (1L shl i)
+                        isPaper -> pv = pv or (1L shl i)
+                        isFaint -> fv = fv or (1L shl i)
+                    }
+                }
+                paper.bits[base + k] = pv
+                ink.bits[base + k] = iv
+                faint.bits[base + k] = fv
+            }
+        }
     }
 
     /** Whether every [step]-th pixel of frame [row] [y], those under [keepOut] aside, is within [FLAT_RANGE] of one colour. */

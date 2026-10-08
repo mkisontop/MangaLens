@@ -3,6 +3,7 @@ package app.mangalens.overlay
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
+import android.view.Choreographer
 import android.view.View
 import app.mangalens.gaps.ShadeSnapshot
 import app.mangalens.gaps.ShadeStyle
@@ -11,6 +12,23 @@ import app.mangalens.gaps.ShadeWindow
 /** The one clock the shade uses, everywhere: monotonic, in milliseconds with a fraction. */
 object GapClock {
     fun nowMs(): Double = System.nanoTime() / 1_000_000.0
+
+    /**
+     * When a captured frame was put on the screen, from the [timestampNs] its producer stamped on
+     * it — the same monotonic clock as [nowMs]. The capture thread gets to its frames when it can:
+     * straight away, or after a few milliseconds of other work. The page's speed was read from
+     * the times they came in, and wobbled by however late that was; the stamp does not. A stamp
+     * that is missing, from some other clock, or in the future is not used.
+     */
+    fun frameMs(timestampNs: Long): Double {
+        val now = nowMs()
+        if (timestampNs <= 0L) return now
+        val t = timestampNs / 1_000_000.0
+        return if (t <= now + 1.0 && now - t <= MAX_FRAME_AGE_MS) t else now
+    }
+
+    /** A frame stamped longer ago than this was stamped on another clock, or waited too long to say when the page was there. */
+    private const val MAX_FRAME_AGE_MS = 250.0
 }
 
 /**
@@ -28,6 +46,13 @@ object GapClock {
  * drawing; while the page moves it asks for every frame, because the position is a prediction
  * that advances with the clock. They are cut to the rows the page scrolls in, so that riding
  * the page never carries them onto the browser's or a site's bars.
+ *
+ * The prediction is made for the frame's vsync, not for whenever the draw happens to run. The
+ * page under the shade moves once a vsync; a draw runs a millisecond or several after it,
+ * however busy the main thread is, and a position worked out for that moment was ahead of the
+ * page by that much — a few rows at reading speed, different every frame: the shade shivered
+ * against the page it was riding. So frames are asked for through [Choreographer], whose
+ * callback is told the vsync it belongs to.
  *
  * The black is painted so that what reaches the glass is [ShadeStyle.alpha] of black, whatever
  * the window is drawn at, and so that under the veil MangaLens lays over the page the capture,
@@ -48,8 +73,30 @@ class GapShadeLayer : BubbleOverlayView.Underlay {
     /** Told, on the UI thread, of every draw: the snapshot, the shift it was drawn at, and when. */
     @Volatile var onDrawn: ((ShadeSnapshot, Int, Double) -> Unit)? = null
 
-    /** The view that draws this layer, for asking it to draw again. Main thread. */
+    /** The view that draws this layer, for asking it to draw again. Set on the main thread. */
     var host: View? = null
+        set(value) {
+            field = value
+            // the main thread's: the frames are the ones the host is drawn in
+            if (value != null && choreographer == null) choreographer = Choreographer.getInstance()
+        }
+
+    private var choreographer: Choreographer? = null
+
+    /** The vsync of the newest frame asked for, and when its callback ran, in [GapClock] milliseconds. */
+    @Volatile private var vsyncMs = 0.0
+    @Volatile private var vsyncSeenMs = -1e9
+
+    /** A frame has been asked for and its callback has not run yet. */
+    private val asked = java.util.concurrent.atomic.AtomicBoolean(false)
+
+    private val nextFrame = Choreographer.FrameCallback { frameTimeNanos ->
+        vsyncMs = frameTimeNanos / 1_000_000.0
+        vsyncSeenMs = GapClock.nowMs()
+        asked.set(false)
+        // in this frame: the views are drawn right after the frame's callbacks
+        host?.invalidate()
+    }
 
     /** Whether the shade is shown at all. Main thread. */
     var visible = false
@@ -68,20 +115,43 @@ class GapShadeLayer : BubbleOverlayView.Underlay {
 
     /** Any thread: draw again at the next frame. */
     fun invalidate() {
-        host?.postInvalidateOnAnimation()
+        val c = choreographer
+        if (c == null) {
+            host?.postInvalidateOnAnimation()
+            return
+        }
+        if (asked.compareAndSet(false, true)) c.postFrameCallback(nextFrame)
+    }
+
+    /**
+     * When the frame being drawn is to show the page: its vsync, if this draw is in the frame
+     * whose callback just ran — the views are drawn straight after it — and otherwise, for a
+     * draw that came about some other way, now.
+     */
+    private fun frameTimeMs(): Double {
+        val now = GapClock.nowMs()
+        val v = vsyncMs
+        return if (now - vsyncSeenMs <= SAME_FRAME_MS && v <= now) v else now
     }
 
     override fun draw(canvas: Canvas, view: BubbleOverlayView): Boolean {
         if (!visible) return false
         val snap = source?.invoke() ?: return false
-        val now = GapClock.nowMs()
-        val shift = snap.shiftAt(now)
-        onDrawn?.invoke(snap, shift, now)
+        val at = frameTimeMs()
+        val shift = snap.shiftAt(at)
+        onDrawn?.invoke(snap, shift, at)
         paint.alpha = ShadeWindow.paintAlpha(style.alpha, view.windowAlpha, view.screenLevel)
         // Cut to the rows the page scrolls in: the bars above and below it stay put.
         snap.forEachDrawn(shift, view.height) { x0, y0, x1, y1 ->
             canvas.drawRect(x0.toFloat(), y0.toFloat(), x1.toFloat(), y1.toFloat(), paint)
         }
-        return snap.moving
+        // The next frame is asked for here rather than by the host, so that it comes with its vsync.
+        if (snap.moving) invalidate()
+        return false
+    }
+
+    private companion object {
+        /** A draw this soon after the frame callback is in the same frame: callbacks, then the views. */
+        const val SAME_FRAME_MS = 6.0
     }
 }

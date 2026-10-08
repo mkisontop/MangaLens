@@ -135,7 +135,8 @@ class GapShadeController(
             val plane = image.planes[0]
             val raw = ImageBufferPixels(plane.buffer, plane.rowStride / 4, width, height)
             val src: PixelSource = if (level < 0.999f) LiftedPixels(raw, 1f / level) else raw
-            after(e, e.onFrame(src, GapClock.nowMs()))
+            // The frame's own stamp, not the moment this thread got round to it: see [GapClock.frameMs].
+            after(e, e.onFrame(src, GapClock.frameMs(image.timestamp)))
             captureHandler.removeCallbacks(quiet)
             captureHandler.postDelayed(quiet, QUIET_MS)
         }
@@ -158,13 +159,14 @@ class GapShadeController(
 
     /**
      * Capture thread. Corrects a grey thumbnail of a captured frame for the shade that was on
-     * the glass when it was captured, so that the change detectors see the page, not our shade.
+     * the glass when it was captured, at [capturedAtMs], so that the change detectors see the
+     * page, not our shade.
      */
-    fun correctThumb(thumb: IntArray, srcW: Int, srcH: Int) {
+    fun correctThumb(thumb: IntArray, srcW: Int, srcH: Int, capturedAtMs: Double) {
         if (!enabled) return
         val e = engine ?: return
         guard {
-            val shown = e.displayedAt(GapClock.nowMs()) ?: return@guard
+            val shown = e.displayedAt(capturedAtMs) ?: return@guard
             if (shown.rectCount == 0) return@guard
             val cov = Unshade.thumbCoverage(shown.rects, shown.rectCount, shown.shift, srcW, srcH, thumb.size.let { Math.sqrt(it.toDouble()).toInt() })
             Unshade.correctThumb(thumb, cov, e.style)

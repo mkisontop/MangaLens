@@ -873,17 +873,19 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
     private fun process(image: Image, now: Long) {
         try {
             val level = screenLevel
+            // when this frame was on the screen, on the dark gaps' clock: what was drawn over it then is what it carries
+            val shownAtMs = GapClock.frameMs(image.timestamp)
             val bmp = imageToBitmap(image)
             synchronized(frameLock) {
                 latestBitmap = bmp
                 latestLevel = level
-                latestBitmapAtMs = GapClock.nowMs()
+                latestBitmapAtMs = shownAtMs
             }
             val thumb = FrameStability.grayThumb(bmp, capW, capH)
             if (level != 1f) FrameStability.lift(thumb, 1f / level)
             // Our own dark gaps are in the capture; the detectors below were written for a
             // page with white ones, so the thumbnail is made to read as the page would.
-            shade?.correctThumb(thumb, capW, capH)
+            shade?.correctThumb(thumb, capW, capH, shownAtMs)
             val mask = overlayMask
             // Our own painting and clearing is motion too, as far as
             // frame-to-frame differencing can tell. For the moments around

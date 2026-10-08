@@ -64,6 +64,16 @@ class GapResult(
     /** The same result, with the page found to scroll in rows [top, bottom). */
     fun within(top: Int, bottom: Int) = GapResult(rects, rectCount, shadedPixels, sawArt, gapCount, top, bottom)
 
+    /** The same result for a frame that starts [dy] rows further down: found on rows [dy, ...) of it. */
+    fun shiftedDown(dy: Int): GapResult {
+        val out = rects.copyOf(rectCount * 4)
+        for (i in 0 until rectCount) {
+            out[i * 4 + 1] += dy
+            out[i * 4 + 3] += dy
+        }
+        return GapResult(out, rectCount, shadedPixels, sawArt, gapCount, pageTop + dy, if (pageBottom == Int.MAX_VALUE) pageBottom else pageBottom + dy)
+    }
+
     companion object {
         val EMPTY = GapResult(IntArray(0), 0, 0L, false, 0)
     }
@@ -187,8 +197,21 @@ object GapFinder {
         // panel boxed in a border, however thin, flush with the frame never gets there. Beside a bar
         // the sealed paper stops a seal's width short of the bar, plus the ramp of a soft edge, and
         // the tolerance says so.
-        val reachL = if (colL == 0) 1 else colL + 2 * sealR + 2
-        val reachR = if (colR == 0) w - 1 else w - colR - 2 * sealR - 2
+        // A margin that ends in plain paper is different again: every gutter runs on into it,
+        // unbroken, to where its white begins — the frame's edge, or a bar's. White that only comes
+        // near it — inside panels set in from the strip's edge, behind their borders — does not,
+        // however thin the border.
+        val reachL = when {
+            colL == 0 -> 1
+            column.paperLeft == 0 -> 0
+            column.paperLeft > 0 -> min(column.paperLeft + 2 * sealR + 2, colL - 1)
+            else -> colL + 2 * sealR + 2
+        }
+        val reachR = when {
+            colR == 0 || column.paperRight == 0 -> w - 1
+            column.paperRight > 0 -> max(w - column.paperRight - 2 * sealR - 2, w - colR)
+            else -> w - colR - 2 * sealR - 2
+        }
         // Paper that runs on into a black bar, near the top or the bottom of the screen, is on
         // the browser's or the site's bars — a grey of theirs that passes for paper under the
         // shade — and not the page's: beside a gutter the bar is black.
@@ -313,15 +336,10 @@ object GapFinder {
         // Only the exact pass takes in the edge: in motion the shade is pulled back from it anyway.
         if (planes.lum != null && marginPx == 0) growFringe(shade, planes, halo)
 
-        // 6. Margin for motion.
+        // 6. Margin for motion. (A coarse plane pixel is paper only if its whole block is, so a
+        // coarse shade never reaches past the paper it was found on.)
         val marginRows = (marginPx + step - 1) / step
         if (marginRows > 0) shade.erodeV(marginRows, outside = false)
-        // A coarse plane pixel stands for a block of frame pixels of which only one was looked
-        // at. Pulling the shade back by one sample keeps it off a hairline between samples.
-        if (step > 1) {
-            shade.erodeH(1)
-            if (marginRows == 0) shade.erodeV(1)
-        }
 
         return extractRects(shade, step, planes.frameW, planes.frameH, kept).within(top, bottom)
     }
@@ -369,25 +387,24 @@ object GapFinder {
      *
      * It must be the union that is eroded, not each rectangle on its own: a balloon's outline
      * is a stack of rectangles one row tall, and shrinking each of them would cut the gutter
-     * into strips. The shape is rasterised at half resolution — conservatively, so no pixel is
-     * covered that was not — eroded, and turned back into rectangles.
+     * into strips. The shape is rasterised — every row, and every second column, conservatively,
+     * so no pixel is covered that was not — eroded, and turned back into rectangles. The rows are
+     * kept whole: the margin moves with the page, and rounded to rows of the screen its edges
+     * would step a row up and down against the page as it went.
      */
     fun erodeRects(rects: IntArray, count: Int, frameW: Int, frameH: Int, marginPx: Int): GapResult {
         if (count == 0) return GapResult.EMPTY
         val step = 2
         val pw = (frameW + step - 1) / step
-        val ph = (frameH + step - 1) / step
-        val plane = BitPlane(pw, ph)
+        val plane = BitPlane(pw, frameH)
         for (i in 0 until count) {
             val x0 = (rects[i * 4] + step - 1) / step
             val x1 = rects[i * 4 + 2] / step
-            val y0 = (rects[i * 4 + 1] + step - 1) / step
-            val y1 = rects[i * 4 + 3] / step
-            for (y in y0 until y1) plane.setRun(y, x0, x1)
+            for (y in max(0, rects[i * 4 + 1]) until min(frameH, rects[i * 4 + 3])) plane.setRun(y, x0, x1)
         }
-        plane.erodeV((marginPx + step - 1) / step, outside = false)
+        plane.erodeV(marginPx, outside = false)
         if (plane.isEmpty()) return GapResult.EMPTY
-        return extractRects(plane, step, frameW, frameH, 0)
+        return extractRects(plane, step, frameW, frameH, 0, rowStep = 1)
     }
 
     /**
@@ -583,6 +600,14 @@ object GapFinder {
         /** Plane rows [pageTop, pageBottom) between the bars across the top and bottom of the screen. */
         val pageTop: Int = 0,
         val pageBottom: Int = Int.MAX_VALUE,
+        /**
+         * Where that side's margin turns to paper, when it ends in paper — white from top to bottom
+         * right up to the strip: a site's white page, the strip's own white edge beside panels that
+         * are all set in from it, a white margin between a black bar and the panels. Plane columns
+         * from the frame's edge; -1 when the margin does not end in paper.
+         */
+        val paperLeft: Int = -1,
+        val paperRight: Int = -1,
     )
 
     internal fun column(planes: Planes): Column {
@@ -640,15 +665,24 @@ object GapFinder {
             val bit = 1L shl (x and 63)
             return (allPaper[k] and bit) != 0L || (allInk[k] and bit) != 0L
         }
+        fun paperAt(x: Int) = (allPaper[x ushr 6] and (1L shl (x and 63))) != 0L
+        // In from each edge over what is the same all the way down: a black bar, a white margin, or
+        // a white margin beside a black bar. Ink after white is not a bar but a panel's border, seen
+        // from a frame that lies wholly inside the panel: the margin ends there.
         var l = 0
-        while (l < cap && uniform(l)) l++
+        while (l < cap && uniform(l) && !(l > 0 && paperAt(l - 1) && !paperAt(l))) l++
         var r = 0
-        while (r < cap && uniform(w - 1 - r)) r++
+        while (r < cap && uniform(w - 1 - r) && !(r > 0 && paperAt(w - r) && !paperAt(w - 1 - r))) r++
         val barL = barPastCrossings(left, rows, barMin, cap)
         val barR = barPastCrossings(right, rows, barMin, cap)
         if (barL > l) l = barL
         if (barR > r) r = barR
         if (w - l - r < 0.3f * w) return Column(0, 0, false, false)
+        // where the white of a margin that ends in white begins
+        var pl = l
+        while (pl > 0 && paperAt(pl - 1)) pl--
+        var pr = r
+        while (pr > 0 && paperAt(w - pr)) pr--
         val blackL = barL > 0 && barL == l
         val blackR = barR > 0 && barR == r
         // Only beside a black bar that something crosses is there a bar across the screen to find.
@@ -657,7 +691,7 @@ object GapFinder {
         val bandL = if (blackL) l else if (blackR && mostlyBlack(left, rows, r)) r else 0
         val bandR = if (blackR) r else if (blackL && mostlyBlack(right, rows, l)) l else 0
         val (top, bottom) = pageRows(planes, left, right, rows, bandL, bandR)
-        return Column(l, r, blackL, blackR, top, bottom)
+        return Column(l, r, blackL, blackR, top, bottom, if (pl < l) pl else -1, if (pr < r) pr else -1)
     }
 
     /**
@@ -1088,7 +1122,7 @@ object GapFinder {
      * If a very busy page would need too many, rows are merged in groups, always keeping
      * only what every row of the group agrees on.
      */
-    internal fun extractRects(shade: BitPlane, step: Int, frameW: Int, frameH: Int, gaps: Int): GapResult {
+    internal fun extractRects(shade: BitPlane, step: Int, frameW: Int, frameH: Int, gaps: Int, rowStep: Int = step): GapResult {
         var group = 1
         while (true) {
             val plane = if (group == 1) shade else groupRows(shade, group)
@@ -1129,7 +1163,7 @@ object GapFinder {
                 group *= 2
                 continue
             }
-            return finish(out, count, group, step, frameW, frameH, gaps)
+            return finish(out, count, group, step, rowStep, frameW, frameH, gaps)
         }
     }
 
@@ -1150,10 +1184,10 @@ object GapFinder {
         return dst
     }
 
-    private fun finish(out: IntList, count: Int, group: Int, step: Int, frameW: Int, frameH: Int, gaps: Int): GapResult {
+    private fun finish(out: IntList, count: Int, group: Int, step: Int, rowStep: Int, frameW: Int, frameH: Int, gaps: Int): GapResult {
         val rects = IntArray(count * 4)
         var shaded = 0L
-        val rowScale = step * group
+        val rowScale = rowStep * group
         for (i in 0 until count) {
             val x0 = min(frameW, out.a[i * 4] * step)
             val y0 = min(frameH, out.a[i * 4 + 1] * rowScale)

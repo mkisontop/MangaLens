@@ -76,6 +76,17 @@ class ShadeTuning(
 
     /** How long that margin stays up if no scroll follows: a tap, not a drag. */
     val armMs: Double = 320.0,
+
+    /**
+     * How long the margin waits, once the speed no longer asks for all of it, before it starts
+     * to give it back; and then how fast: the excess decays with [marginReleaseMs] as its time
+     * constant, and never slower than [marginReleasePxPerSec]. A margin that followed the speed
+     * frame by frame moved every edge of the shade in and out with each waver of the finger;
+     * one that let go too slowly kept a slowing fling's gutters pale long after it needed to.
+     */
+    val marginHoldMs: Double = 100.0,
+    val marginReleaseMs: Double = 220.0,
+    val marginReleasePxPerSec: Double = 90.0,
 )
 
 /**
@@ -156,8 +167,11 @@ class DetectJob internal constructor(
     internal val moveEpoch: Int,
     internal val baseOffset: Int,
     internal val startedMs: Double,
+    /** The frame row the planes start at: their row 0 is this row of the frame. */
+    private val rowOrigin: Int = 0,
 ) {
-    fun run(params: GapParams = GapParams()): GapResult = GapFinder.find(planes, marginPx, params, artRecently)
+    fun run(params: GapParams = GapParams()): GapResult =
+        GapFinder.find(planes, marginPx, params, artRecently).let { if (rowOrigin == 0) it else it.shiftedDown(rowOrigin) }
 }
 
 /**
@@ -235,6 +249,10 @@ class ShadeEngine(
     private var srcMargin = 0
     private var appliedMargin = 0
     private var armedUntilMs = -1e9
+
+    /** Since when the margin wanted has been below the one applied, and when it was last given back; -1 while it is not. */
+    private var marginLowSinceMs = -1.0
+    private var marginGivenAtMs = -1.0
     private var baseOffset = 0
     private var artSeenAtMs = -1e12
     private var lastInstallMs = -1e9
@@ -466,7 +484,7 @@ class ShadeEngine(
             }
         }
 
-        applyMargin(wantedMargin(nowMs), growOnly = true)
+        updateMargin(nowMs)
         publish(nowMs, isMoving(nowMs))
         return if (isMoving(nowMs)) maybeFast(src, nowMs) else maybeSettle(src, nowMs)
     }
@@ -540,13 +558,13 @@ class ShadeEngine(
      */
     fun arm(nowMs: Double) {
         armedUntilMs = nowMs + tuning.armMs
-        applyMargin(wantedMargin(nowMs), growOnly = true)
+        updateMargin(nowMs)
         publish(nowMs, isMoving(nowMs))
     }
 
     /** The clock moved on with no frame to say so: lets an unanswered touch lapse. */
     fun tick(nowMs: Double) {
-        if (nowMs >= armedUntilMs && !isMoving(nowMs)) applyMargin(wantedMargin(nowMs), growOnly = false)
+        updateMargin(nowMs)
         publish(nowMs, isMoving(nowMs))
     }
 
@@ -557,18 +575,55 @@ class ShadeEngine(
     }
 
     /**
-     * Brings the published rectangles to [want] pixels of margin. Growing is immediate and
-     * works on what is already on the glass; shrinking waits for the next detection, which
-     * arrives with the margin it was asked for, unless [growOnly] is false.
+     * Brings the margin the shade is pulled back by toward what [wantedMargin] asks for now.
+     *
+     * The margin belongs to the engine, not to a detection: every detection comes back with
+     * none, and the one margin in force is laid on whatever is newest. It grows at once — it is
+     * what keeps the shade off the art — and in even steps, so that a margin creeping up with
+     * the speed is not rebuilt every frame. It gives way slowly: only once the speed has asked
+     * for less for [ShadeTuning.marginHoldMs], and then at [ShadeTuning.marginReleasePxPerSec].
+     * A finger's speed wavers from frame to frame, and a margin that followed it moved every
+     * edge of the shade in and out with it. With the page at rest and no finger down, it goes
+     * at once: the exact pass is coming, and replaces everything.
      */
-    private fun applyMargin(want: Int, growOnly: Boolean) {
-        if (srcCount == 0) return
-        if (growOnly && want <= appliedMargin) return
-        if (want == appliedMargin) return
-        // A little beyond what is asked, so that a margin that creeps up with the speed is not rebuilt every frame.
-        appliedMargin = max(if (want > appliedMargin) want + 2 else want, srcMargin)
+    private fun updateMargin(nowMs: Double) {
+        val want = (wantedMargin(nowMs) + 1) and 1.inv()
+        val settled = !isMoving(nowMs) && nowMs >= armedUntilMs
+        if (want >= appliedMargin || settled) {
+            marginLowSinceMs = -1.0
+            setMargin(want)
+            return
+        }
+        if (marginLowSinceMs < 0) {
+            marginLowSinceMs = nowMs
+            marginGivenAtMs = nowMs
+            return
+        }
+        if (nowMs - marginLowSinceMs < tuning.marginHoldMs) {
+            marginGivenAtMs = nowMs
+            return
+        }
+        val dt = nowMs - marginGivenAtMs
+        val decay = (appliedMargin - want) * (1.0 - kotlin.math.exp(-dt / tuning.marginReleaseMs))
+        val give = max(decay, dt * tuning.marginReleasePxPerSec / 1000.0).toInt() and 1.inv()
+        if (give >= 2) {
+            setMargin(max(want, appliedMargin - give))
+            marginGivenAtMs = nowMs
+        }
+    }
+
+    /** Lays [margin] pixels of margin on the newest detection. */
+    private fun setMargin(margin: Int) {
+        val m = max(margin, srcMargin)
+        if (m == appliedMargin) return
+        appliedMargin = m
+        applyMargin()
+    }
+
+    /** Rebuilds the published rectangles: the newest detection, pulled back by [appliedMargin]. */
+    private fun applyMargin() {
         val extra = appliedMargin - srcMargin
-        if (extra <= 0) {
+        if (srcCount == 0 || extra <= 0) {
             rects = srcRects
             rectCount = srcCount
         } else {
@@ -621,13 +676,13 @@ class ShadeEngine(
         srcRects = result.rects
         srcCount = result.rectCount
         srcMargin = job.marginPx
-        rects = srcRects
-        rectCount = srcCount
-        appliedMargin = srcMargin
         baseOffset = job.baseOffset
         lastInstallMs = nowMs
         if (job.full) needFull = false
-        applyMargin(wantedMargin(nowMs), growOnly = true)
+        // the margin in force, on the new rectangles; then brought up to date
+        appliedMargin = max(appliedMargin, srcMargin)
+        applyMargin()
+        updateMargin(nowMs)
         publish(nowMs, isMoving(nowMs))
     }
 
@@ -671,11 +726,25 @@ class ShadeEngine(
         return true
     }
 
+    /**
+     * The fast pass, at half resolution, with no margin: the engine lays its own on the result.
+     *
+     * Its blocks of two rows are laid on the page, not on the screen: they start on the same rows
+     * of the page whichever way it has moved. Laid on the screen, a block took in one row of a
+     * gutter's edge and one of the art when the page stood one way and two of the gutter when it
+     * stood the other, and each pass found the gutter a row longer or shorter than the last.
+     */
     private fun maybeFast(src: PixelSource, nowMs: Double): DetectJob? {
         if (pendingBusy(nowMs) || nowMs - lastDetectAtMs < tuning.detectIntervalMs) return null
         lastDetectAtMs = nowMs
-        val planes = PlaneBuilder.build(src, 2, style, ignoreTopRows, ignoreBottomRows, keepOut)
-        val job = DetectJob(planes, marginPx(nowMs), artRecently(nowMs), false, hardEpoch, moveEpoch, offset, nowMs)
+        val origin = Math.floorMod(offset, FAST_STEP)
+        val planes = if (origin == 0) {
+            PlaneBuilder.build(src, FAST_STEP, style, ignoreTopRows, ignoreBottomRows, keepOut)
+        } else {
+            val shifted = keepOut.map { intArrayOf(it[0], it[1] - origin, it[2], it[3] - origin) }
+            PlaneBuilder.build(RowsFrom(src, origin), FAST_STEP, style, max(0, ignoreTopRows - origin), ignoreBottomRows, shifted)
+        }
+        val job = DetectJob(planes, 0, artRecently(nowMs), false, hardEpoch, moveEpoch, offset, nowMs, origin)
         pending = job
         return job
     }
@@ -797,7 +866,6 @@ class ShadeEngine(
         srcRects = IntArray(0)
         srcCount = 0
         srcMargin = 0
-        appliedMargin = 0
         hardEpoch++
         needFull = true
         pending = null
@@ -836,9 +904,17 @@ class ShadeEngine(
 
     // ---------------------------------------------------------------------------------------
 
+    /**
+     * Publishes what the view is to draw. The page's offset is stamped with the time of the frame
+     * it was read from — not with [nowMs], the moment of publishing, which for a detection coming
+     * back or a touch is later. Stamped with that, the prediction started over from a page that
+     * had in truth moved on, and the shade fell back by the speed times the difference: up to a
+     * dozen rows, every time a detection landed, a score of times a second.
+     */
     private fun publish(nowMs: Double, moving: Boolean) {
+        val at = if (prevAtMs >= 0 && prevAtMs <= nowMs) prevAtMs else nowMs
         snapshot = ShadeSnapshot(
-            rects, rectCount, baseOffset, offset, nowMs, velocity, accel, frameMs, leadMs(),
+            rects, rectCount, baseOffset, offset, at, velocity, accel, frameMs, leadMs(),
             tuning.maxExtrapolateMs, moving, pageTop, pageBottom,
         )
     }
@@ -859,6 +935,9 @@ class ShadeEngine(
 
     private companion object {
         const val DRAW_LOG = 24
+
+        /** Frame pixels to a plane pixel, each way, in the fast pass. */
+        const val FAST_STEP = 2
         const val CAL_COLS = 10
         const val MAX_EDGES = 48
         const val MAX_ACCEL = 0.03f
