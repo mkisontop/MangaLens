@@ -495,7 +495,12 @@ object GapFinder {
             } else {
                 // An edge where the shade is already on the glass: the same ramp, at a tenth of the
                 // brightness. Only here — dark art looks like a shaded ramp and must not be taken for one.
-                ramp(x0, y0, dx, dy, hi, 1, hi / 3, SHADED_FRINGE_MIN, SHADED_FRINGE_MIN)
+                // Or the shade on the glass stops just short of the ramp — it was pulled back while the
+                // page moved — and the ramp is in the page's own brightness after all, beside paper that
+                // would be white without the shade. Missed, it stays a pale hairline once the page is still.
+                if (!ramp(x0, y0, dx, dy, hi, 1, hi / 3, SHADED_FRINGE_MIN, SHADED_FRINGE_MIN)) {
+                    ramp(x0, y0, dx, dy, 255, FRINGE_STEP, FRINGE_ANCHOR, FRINGE_ANCHOR / 3, FRINGE_FIRST)
+                }
             }
         }
 

@@ -626,4 +626,25 @@ class GapFinderTest {
         assertNoDamage(f, "close lines")
         assertLetteringStaysOnLight(f, 70, 440, 660, 560, 6)
     }
+
+    @Test
+    fun `an edge the moving shade stopped just short of is still taken in at rest`() {
+        // Art whose edge onto the gutter is a ramp of greys. While the page moved, the shade was
+        // pulled back to the paper and stopped right against the ramp; the exact pass at rest then
+        // starts from shaded paper beside an unshaded ramp, and must take the ramp in all the same,
+        // or a pale hairline is left between the dark gutter and the art for as long as the page is still.
+        val s = Strip(w, h)
+        s.art(0, 0, w, 500); s.rules(0, 0, w, 500)
+        s.solid(0, 500, w, 501, Strip.rgb(104, 104, 104))
+        s.solid(0, 501, w, 502, Strip.rgb(180, 180, 180))
+        s.art(0, 900, w, h); s.rules(0, 900, w, h)
+        val clean = find(s.px)
+        assertTrue("the ramp is taken in on the clean page", clean.isCovered(360, 500) && clean.isCovered(360, 501))
+        // the shade as it stood when the page stopped: the paper only, up to the ramp
+        val paperOnly = intArrayOf(0, 502, w, 900)
+        val glass = composite(s.px, w, h, paperOnly, 1, style)
+        val atRest = find(glass)
+        assertTrue("and over a shade that stops just short of it", atRest.isCovered(360, 500) && atRest.isCovered(360, 501))
+        assertNoDamage(Found(s.px, atRest.result, atRest.covered, w, h))
+    }
 }
