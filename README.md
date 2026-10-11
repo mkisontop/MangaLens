@@ -656,6 +656,14 @@ it works in any browser or reader. What it does with them:
   and lined up with the page so each pass finds the same edges as the last; the
   moment the page stops, one exact full-resolution pass replaces it, and the edges
   land on the pixel.
+- **Gutters come in from the edge of the screen as the page brings them.** A gutter
+  that runs off the top or bottom of the screen is taken to go on, and each
+  captured frame says how far: the rows the page has brought in are read column by
+  column, and the shade runs as far as they are paper, a margin short. Only paper
+  seen plain is believed — the shade only ever darkens — so a row already under the
+  shade counts only if it was seen as paper when it came in. The white at the edge
+  a gutter comes in at holds still, rather than growing with the page and snapping
+  shut each time a detection lands.
 - **The rest of the app never sees it.** OCR, the balloon finder and the change
   detectors read the page as if the shade were not there (paper restored under it,
   thumbnails corrected), so translation behaves exactly as before.

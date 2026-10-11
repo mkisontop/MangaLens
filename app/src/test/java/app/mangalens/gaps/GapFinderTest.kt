@@ -647,4 +647,16 @@ class GapFinderTest {
         assertTrue("and over a shade that stops just short of it", atRest.isCovered(360, 500) && atRest.isCovered(360, 501))
         assertNoDamage(Found(s.px, atRest.result, atRest.covered, w, h))
     }
+
+    @Test
+    fun `a margin laid on a gutter running out of the rows worked in is not cut where it runs out`() {
+        // two gutters: one shut in, rows 300..400; one running out past row 1400, carried on to 1600
+        val rects = intArrayOf(0, 300, w, 400, 0, 1300, w, 1600)
+        fun spans(r: GapResult) = (0 until r.rectCount).map { r.rects[it * 4 + 1] to r.rects[it * 4 + 3] }.sortedBy { it.first }
+        val open = GapFinder.erodeRectsIn(rects, 2, w, -100, 1600, 20, openEnds = true)
+        assertEquals("shut in: cut on both edges; running out: cut on the edge it was found at only", listOf(320 to 380, 1320 to 1600), spans(open))
+        val shut = GapFinder.erodeRectsIn(rects, 2, w, -100, 1600, 20, openEnds = false)
+        assertEquals("without: cut where it leaves the rows as well", listOf(320 to 380, 1320 to 1580), spans(shut))
+        assertEquals("the frame's own rows, as before", spans(GapFinder.erodeRects(rects, 2, w, h, 20)), spans(GapFinder.erodeRectsIn(rects, 2, w, 0, h, 20, openEnds = false)))
+    }
 }

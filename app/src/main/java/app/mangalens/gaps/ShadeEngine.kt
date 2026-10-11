@@ -124,6 +124,15 @@ class ShadeTuning(
 
     /** How much of the measured acceleration the prediction believes: it is noisy. */
     val accelTrust: Float = 0.65f,
+
+    /**
+     * How far past the page's edge on screen a gutter that runs out of it is carried before the
+     * frames have seen it (see [ShadeEngine]'s applyMargin): [openReachPx], and as far as the page
+     * goes in [openReachMs] and the prediction's reach — longer than a detection's rectangles stay
+     * on the glass before the next one's replace them.
+     */
+    val openReachPx: Int = 48,
+    val openReachMs: Double = 120.0,
 )
 
 /**
@@ -327,11 +336,27 @@ class ShadeEngine(
     private var histCount = 0
 
     // ---- the shade ----
-    /** What is published: the newest detection, pulled further back from the edges if speed or a touch asks for it. */
+    /**
+     * What is published: the newest detection, pulled further back from the edges if speed or a
+     * touch asks for it, and carried past the page's edges on screen as far as the frames have
+     * seen its gutters run on ([clampOpenEnds]).
+     */
     private var rects = IntArray(0)
     private var rectCount = 0
     private var srcRects = IntArray(0)
     private var srcCount = 0
+
+    /** [rects] before [clampOpenEnds]: the gutters that run out of the page's edges carried as far as they may go. */
+    private var fullRects = IntArray(0)
+    private var fullCount = 0
+
+    /** How far such gutters run, at the bottom and at the top, as the frames have shown them coming in. */
+    private val bottomWatch = EdgeWatch(width, bottom = true)
+    private val topWatch = EdgeWatch(width, bottom = false)
+
+    /** The time the newest call into the engine brought: whether the page is moving, for what is rebuilt between frames. */
+    private var lastNowMs = -1e9
+
     private var srcMargin = 0
     private var appliedMargin = 0
     private var armedUntilMs = -1e9
@@ -408,10 +433,12 @@ class ShadeEngine(
     /** A shade as it was drawn, and where: [rects] are cut to what reached the glass. */
     class Displayed(val rects: IntArray, val rectCount: Int, val shift: Int)
 
-    /** What [rec] put on the glass: its rectangles cut to the page's rows, in their own coordinates. */
+    /**
+     * What [rec] put on the glass: its rectangles cut to the page's rows, in their own coordinates.
+     * Always cut: a gutter that runs out of the screen is drawn on past it.
+     */
     private fun displayed(rec: DrawRecord): Displayed {
         val sn = rec.snap
-        if (sn.pageTop <= 0 && sn.pageBottom >= height) return Displayed(sn.rects, sn.rectCount, rec.shift)
         rec.cut?.let { return it }
         val out = IntArray(sn.rectCount * 4)
         var n = 0
@@ -457,6 +484,7 @@ class ShadeEngine(
 
     /** The shade is switched off, or the screen changed shape. */
     fun reset(nowMs: Double) {
+        lastNowMs = nowMs
         haltAtMs = Double.MAX_VALUE
         lastMovedShownMs = -1.0
         prevProfile = null
@@ -483,6 +511,7 @@ class ShadeEngine(
      */
     fun onFrame(src: PixelSource, nowMs: Double, shownAtMs: Double = nowMs): DetectJob? {
         if (src.width != width || src.height != height) return null
+        lastNowMs = nowMs
         // Two clocks. [shownAtMs] is when the frame was on the screen — its own stamp — and the
         // page's motion is read on it: from one frame's stamp to the next is how long the page
         // took to move. [nowMs] is when it reached the engine, and everything else — whether the
@@ -593,8 +622,94 @@ class ShadeEngine(
         }
 
         updateMargin(nowMs)
+        clampOpenEnds(src)
         publish(nowMs, isMoving(nowMs))
         return if (isMoving(nowMs)) maybeFast(src, nowMs) else maybeSettle(src, nowMs)
+    }
+
+    /**
+     * Sets how far each gutter that runs out of the page's edge on screen is drawn (see
+     * [applyMargin]): as far as the frames have shown it running, less the margin in force.
+     *
+     * The page brings in rows the detection never saw, and they are in [src], the newest frame: the
+     * [EdgeWatch] at the edge they come in at walks them, in each such gutter's columns, and the
+     * gutter ends where the walk stops. It walks the detection's own last rows at the edge as well,
+     * which a fast pass reads in blocks and the margin used to cut away. So the end of the shade
+     * there moves with each frame, a frame's travel at a time, and keeps the one margin every other
+     * edge keeps: the reader sees a gutter come in dark behind a strip of white no deeper than the
+     * page moves while a frame is captured and drawn, and the margin — where a detection's
+     * rectangles left a band as deep as the page had moved since the detection, and then jumped down
+     * it when the next came back. With no frame to hand, the newest walk is all there is to go on.
+     *
+     * At rest the exact pass is believed as it stands; a finger that comes down on it puts the
+     * margin up at the edge as everywhere else, before the page has moved.
+     */
+    private fun clampOpenEnds(src: PixelSource?) {
+        val full = fullRects
+        val n = fullCount
+        if (n == 0) {
+            rects = full
+            rectCount = 0
+            return
+        }
+        val s = offset - baseOffset
+        val lo = pageLo()
+        val hi = pageHi()
+        val moving = isMoving(lastNowMs)
+        val margin = (appliedMargin - srcMargin).coerceAtLeast(0)
+        // The shade is drawn behind the motion: at the edge the page comes in at, that would carry the
+        // end of a gutter running in from it onto rows the frames have not shown plain. It is taken back.
+        val bias = ceil(abs(biasPx(moving))).toInt()
+        val backBottom = if (velocity < 0f) bias else 0
+        val backTop = if (velocity > 0f) bias else 0
+        // the detection's own rows at the edge that are walked again: as deep as the margin used to
+        // cut there, and a fast pass's blocks besides
+        val recheck = margin + EDGE_ROWS
+        // where the walks start, in frame rows
+        val fromBottom = max(hi + s - recheck, lo)
+        val fromTop = min(lo + s + recheck, hi) - 1
+        val walkBottom = moving && s < 0
+        val walkTop = moving && s > 0
+        if (src != null) {
+            // Every column, not only the gutters' now: the next detection's may be a column wider, and
+            // a column not walked is taken to stop where its walk would have started. Columns of art
+            // stop at their first row.
+            if (walkBottom) bottomWatch.mark(0, width)
+            if (walkTop) topWatch.mark(0, width)
+            // What a watch saw stays known while the page moves the other way, or stops: rows of
+            // the page, they are as true when it comes back.
+            if (walkBottom) bottomWatch.walk(src, fromBottom, hi, offset, style, keepOut)
+            if (walkTop) topWatch.walk(src, fromTop, lo, offset, style, keepOut)
+        }
+        var out: IntArray? = null
+        for (i in 0 until n) {
+            val x0 = full[i * 4]
+            val x1 = full[i * 4 + 2]
+            val y0 = full[i * 4 + 1]
+            val y1 = full[i * 4 + 3]
+            var ny0 = y0
+            var ny1 = y1
+            if (y1 > hi - recheck) {
+                // the newest frame's last row of the page, in the rectangle's coordinates
+                var end = hi - s
+                if (walkBottom) end = min(end, bottomWatch.stopIn(x0, x1, orElse = fromBottom - offset) + offset - s)
+                ny1 = min(y1, end - margin - backBottom)
+            }
+            if (y0 < lo + recheck) {
+                // the newest frame's first row of the page, in the rectangle's coordinates
+                var start = lo - s
+                if (walkTop) start = max(start, topWatch.stopIn(x0, x1, orElse = fromTop + 1 - offset) + offset - s)
+                ny0 = max(y0, start + margin + backTop)
+            }
+            if (ny1 < ny0) ny1 = ny0
+            if (ny0 != y0 || ny1 != y1) {
+                val o = out ?: full.copyOf(n * 4).also { out = it }
+                o[i * 4 + 1] = ny0
+                o[i * 4 + 3] = ny1
+            }
+        }
+        rects = out ?: full
+        rectCount = n
     }
 
     /**
@@ -665,6 +780,7 @@ class ShadeEngine(
      * motion — which the overlay cannot answer for a few frames — fall on white, not on art.
      */
     fun arm(nowMs: Double) {
+        lastNowMs = nowMs
         armedUntilMs = nowMs + tuning.armMs
         // A finger landing on a page that is moving stops it: a fling is caught. The frames that
         // show it still are a capture's delay away, and the shade, carried on by the prediction
@@ -677,6 +793,7 @@ class ShadeEngine(
 
     /** The clock moved on with no frame to say so: lets an unanswered touch lapse. */
     fun tick(nowMs: Double) {
+        lastNowMs = nowMs
         updateMargin(nowMs)
         publish(nowMs, isMoving(nowMs))
     }
@@ -733,24 +850,125 @@ class ShadeEngine(
         applyMargin()
     }
 
-    /** Rebuilds the published rectangles: the newest detection, pulled back by [appliedMargin]. */
+    /**
+     * Rebuilds the published rectangles: the newest detection, pulled back by [appliedMargin], and
+     * carried on past the edges of the page on screen wherever it reaches them.
+     *
+     * A gutter that runs out of the screen goes on past it, as far as anyone knows, and the page
+     * brings that part in as it moves. Drawn as found, the shade stopped where the screen had
+     * stopped when the frame was taken: the gutter came in white, in a band as deep as the page
+     * had moved since, until the next detection, and then the shade jumped down it — a score of
+     * times a second, at the edge the reader's eye goes to next — and the margin cut a strip off
+     * that edge besides. So a rectangle that reaches the edge is carried on past it, as far as the
+     * page may move before the next detection comes back, with no margin cut there; how far of
+     * that is drawn, frame by frame, is [clampOpenEnds]'s to say.
+     */
     private fun applyMargin() {
+        if (srcCount == 0) {
+            fullRects = srcRects
+            fullCount = 0
+            clampOpenEnds(null)
+            return
+        }
+        val lo = pageLo()
+        val hi = pageHi()
+        val reach = openReach()
+        val open = withOpenEnds(lo, hi, reach)
+        val count = open.size / 4
         val extra = appliedMargin - srcMargin
-        if (srcCount == 0 || extra <= 0) {
-            rects = srcRects
-            rectCount = srcCount
+        if (extra <= 0) {
+            fullRects = open
+            fullCount = count
         } else {
-            val r = GapFinder.erodeRects(srcRects, srcCount, width, height, extra)
-            rects = r.rects
-            rectCount = r.rectCount
+            val r = GapFinder.erodeRectsIn(open, count, width, lo - reach, hi + reach, extra, openEnds = true)
+            fullRects = r.rects
+            fullCount = r.rectCount
+        }
+        clampOpenEnds(null)
+    }
+
+    /** Lets the edges' watches go, and takes the gutters [exact] found at the page's edges on screen for seen. */
+    private fun seedWatches(exact: GapResult) {
+        bottomWatch.clear()
+        topWatch.clear()
+        val lo = max(exact.pageTop, ignoreTopRows).coerceIn(0, height)
+        val hi = min(exact.pageBottom, height - ignoreBottomRows).coerceIn(lo, height)
+        val r = exact.rects
+        // top to bottom, so that rectangles stacked in a column join up
+        val order = (0 until exact.rectCount).sortedBy { r[it * 4 + 1] }
+        for (i in order) {
+            val y0 = r[i * 4 + 1]
+            val y1 = r[i * 4 + 3]
+            if (y1 >= hi - SEED_ROWS) bottomWatch.seed(r[i * 4], r[i * 4 + 2], y0 - baseOffset, y1 - baseOffset)
+        }
+        for (i in order.reversed()) {
+            val y0 = r[i * 4 + 1]
+            val y1 = r[i * 4 + 3]
+            if (y0 <= lo + SEED_ROWS) topWatch.seed(r[i * 4], r[i * 4 + 2], y0 - baseOffset, y1 - baseOffset)
         }
     }
+
+    /**
+     * The newest detection's rectangles, and with them one more for each run of columns its gutters
+     * run out of the page's edge on screen in, from below the last of them there on past the edge
+     * by [reach]; likewise at the top. Rectangles of their own rather than the ones at the edge
+     * drawn longer: a fast pass's blocks can leave two of those stacked in the same columns, a row
+     * apart, and drawn longer both, they overlapped and the shade there was laid on twice — dark
+     * enough to pass for ink with the next detection, which left the gutter out.
+     */
+    private fun withOpenEnds(lo: Int, hi: Int, reach: Int): IntArray {
+        val src = srcRects
+        val n = srcCount
+        val out = IntList(n * 4 + 64)
+        for (k in 0 until n * 4) out.add(src[k])
+        // per column, where the gutter that runs out at the bottom is last a rectangle; and at the top first
+        val bottomFrom = IntArray(width) { Int.MIN_VALUE }
+        val topTo = IntArray(width) { Int.MAX_VALUE }
+        for (i in 0 until n) {
+            val y0 = src[i * 4 + 1]
+            val y1 = src[i * 4 + 3]
+            for (x in max(0, src[i * 4]) until min(width, src[i * 4 + 2])) {
+                if (y1 >= hi - OPEN_SLACK) bottomFrom[x] = max(bottomFrom[x], y1)
+                if (y0 <= lo + OPEN_SLACK) topTo[x] = min(topTo[x], y0)
+            }
+        }
+        var x = 0
+        while (x < width) {
+            val b = bottomFrom[x]
+            var e = x + 1
+            while (e < width && bottomFrom[e] == b) e++
+            if (b != Int.MIN_VALUE && b < hi + reach) { out.add(x); out.add(b); out.add(e); out.add(hi + reach) }
+            x = e
+        }
+        x = 0
+        while (x < width) {
+            val t = topTo[x]
+            var e = x + 1
+            while (e < width && topTo[e] == t) e++
+            if (t != Int.MAX_VALUE && t > lo - reach) { out.add(x); out.add(lo - reach); out.add(e); out.add(t) }
+            x = e
+        }
+        return out.a.copyOf(out.n)
+    }
+
+    /** The screen rows [pageLo, pageHi) the page is seen in: between the bars, and clear of the rows set aside at the top and the bottom. */
+    private fun pageLo(): Int = max(pageTop, ignoreTopRows).coerceIn(0, height)
+    private fun pageHi(): Int = min(pageBottom, height - ignoreBottomRows).coerceIn(pageLo(), height)
+
+    /**
+     * How far past the page's edge on screen a gutter that runs out of it is drawn: as far as the
+     * page may move before a detection made after this one is on the glass, and a little more for
+     * a page at rest, which a scroll may start at any moment.
+     */
+    private fun openReach(): Int =
+        (tuning.openReachPx + ceil(abs(velocity) * (tuning.openReachMs + horizonMs()))).toInt().coerceAtMost(height)
 
     /**
      * No frame has arrived for a while: the screen is still. [rest] is the last frame, if the
      * caller kept one. The page has stopped, and gets the exact pass.
      */
     fun onQuiet(rest: PixelSource?, nowMs: Double): DetectJob? {
+        lastNowMs = nowMs
         haltAtMs = Double.MAX_VALUE
         velocity = 0f
         accel = 0f
@@ -781,6 +999,7 @@ class ShadeEngine(
     // ---------------------------------------------------------------------------------------
 
     fun onDetected(job: DetectJob, result: GapResult, nowMs: Double) {
+        lastNowMs = nowMs
         if (pending === job) pending = null
         if (job.hardEpoch != hardEpoch) return
         // An exact pass describes a page at rest; if the page has moved since, it is stale.
@@ -793,7 +1012,13 @@ class ShadeEngine(
         srcMargin = job.marginPx
         baseOffset = job.baseOffset
         lastInstallMs = nowMs
-        if (job.full) needFull = false
+        if (job.full) {
+            needFull = false
+            // The page at rest, read whole: what was seen of its edges in motion is let go, and its
+            // gutters at the edges taken for seen, or the first frames of the next scroll, finding
+            // them under the shade, would take it off them.
+            seedWatches(result)
+        }
         // the margin in force, on the new rectangles; then brought up to date
         appliedMargin = max(appliedMargin, srcMargin)
         applyMargin()
@@ -1056,6 +1281,10 @@ class ShadeEngine(
     private fun dropShade() {
         rects = IntArray(0)
         rectCount = 0
+        fullRects = rects
+        fullCount = 0
+        bottomWatch.clear()
+        topWatch.clear()
         srcRects = IntArray(0)
         srcCount = 0
         srcMargin = 0
@@ -1107,14 +1336,16 @@ class ShadeEngine(
     private fun publish(nowMs: Double, moving: Boolean) {
         val at = if (prevAtMs >= 0 && prevAtMs <= nowMs) prevAtMs else nowMs
         val received = if (receivedAtMs >= at && receivedAtMs <= nowMs) receivedAtMs else at
-        // behind the motion: against the way the page moves
-        val bias = if (moving) -Math.signum(velocity) * stopBias() else 0f
+        val bias = biasPx(moving)
         snapshot = ShadeSnapshot(
             rects, rectCount, baseOffset, offset, at, velocity, accel, frameMs, leadMs(),
-            tuning.maxExtrapolateMs, moving, pageTop, pageBottom, tuning.accelTrust, bias, received,
+            tuning.maxExtrapolateMs, moving, pageLo(), pageHi(), tuning.accelTrust, bias, received,
             if (moving) haltAtMs else Double.MAX_VALUE,
         )
     }
+
+    /** Rows the shade is drawn behind the motion ([ShadeSnapshot.biasPx]): against the way the page moves. */
+    private fun biasPx(moving: Boolean): Float = if (moving) -Math.signum(velocity) * stopBias() else 0f
 
     private fun isPaper(p: Int) = (p and 0xF0F0F0) == 0xF0F0F0
 
@@ -1142,6 +1373,15 @@ class ShadeEngine(
         /** A frame's own speed below this share of the running speed is the page slowing, not wavering. */
         const val FALLING = 0.8f
         const val CAL_COLS = 10
+
+        /** A fast pass's blocks at the page's edge on screen: rows of a detection's own walked again besides the margin. */
+        const val EDGE_ROWS = 8
+
+        /** How near the page's edge on screen the exact pass's rectangles are taken for seen. */
+        const val SEED_ROWS = 256
+
+        /** Rows short of the page's edge on screen a rectangle may stop and still be taken to run out of it: a fast pass's block. */
+        const val OPEN_SLACK = FAST_STEP
         const val MAX_EDGES = 48
         const val MAX_ACCEL = 0.03f
         const val CLASS_OTHER = 0

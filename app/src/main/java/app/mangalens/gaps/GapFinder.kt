@@ -379,19 +379,31 @@ object GapFinder {
      * kept whole: the margin moves with the page, and rounded to rows of the screen its edges
      * would step a row up and down against the page as it went.
      */
-    fun erodeRects(rects: IntArray, count: Int, frameW: Int, frameH: Int, marginPx: Int): GapResult {
-        if (count == 0) return GapResult.EMPTY
+    fun erodeRects(rects: IntArray, count: Int, frameW: Int, frameH: Int, marginPx: Int): GapResult =
+        erodeRectsIn(rects, count, frameW, 0, frameH, marginPx, openEnds = false)
+
+    /**
+     * [erodeRects] over rows [rowFrom, rowTo), which may reach past the frame. With [openEnds], what
+     * lies beyond those rows is taken for more of the same: a rectangle that runs out of them is not
+     * pulled back from there. That is a gutter running on past the edge of the page on screen, whose
+     * end has not been seen, and a margin cut at the edge would only leave a strip of its white
+     * there, the first the reader sees of it as the page brings it in.
+     */
+    fun erodeRectsIn(rects: IntArray, count: Int, frameW: Int, rowFrom: Int, rowTo: Int, marginPx: Int, openEnds: Boolean): GapResult {
+        if (count == 0 || rowTo <= rowFrom) return GapResult.EMPTY
         val step = 2
         val pw = (frameW + step - 1) / step
-        val plane = BitPlane(pw, frameH)
+        val ph = rowTo - rowFrom
+        val plane = BitPlane(pw, ph)
         for (i in 0 until count) {
             val x0 = (rects[i * 4] + step - 1) / step
             val x1 = rects[i * 4 + 2] / step
-            for (y in max(0, rects[i * 4 + 1]) until min(frameH, rects[i * 4 + 3])) plane.setRun(y, x0, x1)
+            for (y in max(rowFrom, rects[i * 4 + 1]) until min(rowTo, rects[i * 4 + 3])) plane.setRun(y - rowFrom, x0, x1)
         }
-        plane.erodeV(marginPx, outside = false)
+        plane.erodeV(marginPx, outside = openEnds)
         if (plane.isEmpty()) return GapResult.EMPTY
-        return extractRects(plane, step, frameW, frameH, 0, rowStep = 1)
+        val out = extractRects(plane, step, frameW, ph, 0, rowStep = 1)
+        return if (rowFrom == 0) out else out.shiftedDown(rowFrom)
     }
 
     /**

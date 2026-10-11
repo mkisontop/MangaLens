@@ -341,6 +341,77 @@ class ShadeEngineTest {
     }
 
     @Test
+    fun `a gutter coming in at the screen's edge comes in steadily, not in jumps`() {
+        // The gutter that fills the screen runs on past the bottom of it. The shade used to stop where
+        // the screen had stopped when a detection's frame was taken: the gutter came in white, in a
+        // band that grew with the page until the next detection came back and then snapped shut, a
+        // score of times a second, at the edge the reader's eye goes to next.
+        val long = longGutterStrip(w)
+        val scroll = Scrolls.ramp(900.0, 900.0, 160.0, 4300.0)
+        val vs = 1000.0 / 60
+        val bands = ArrayList<Int>()
+        val sm = ShadeSimulation(long, w, h, style, vs, 16.0, 2, 25.0, onGlass = { k, glass ->
+            val t = k * vs
+            // from once the first balloon has gone by the bottom of the screen to before the second comes in
+            if (t in 400.0..1800.0) {
+                val page = long.frame(Math.round(scroll((t - touch).coerceAtLeast(0.0))).toInt(), h)
+                // the white at the bottom of the screen, in the middle column, up to where the shade starts
+                val x = w / 2
+                var y = h - 1
+                while (y > 0 && glass[y * w + x] == page[y * w + x] && Strip.isPaper(page[y * w + x])) y--
+                // counted only while the shade there starts on the gutter
+                if (Strip.isPaper(page[y * w + x]) && glass[y * w + x] != page[y * w + x]) bands.add(h - 1 - y)
+            }
+        })
+        val r = sm.run(scroll, 4500.0, touchLeadMs = touch)
+        report("gutter coming in", r)
+        val steps = bands.zipWithNext { a, b -> kotlin.math.abs(b - a) }.sorted()
+        val mean = steps.average()
+        val p95 = steps[(0.95 * steps.size).toInt()]
+        println("SIM    band at the edge: ${bands.size} frames, ${"%.0f".format(bands.average())} rows deep on average; from one frame to the next it moved ${"%.1f".format(mean)} rows on average, p95 $p95")
+        assertTrue("the gutter seen coming in: ${bands.size}", bands.size > 60)
+        assertTrue("the band holds still on the screen: ${"%.1f".format(mean)} rows a frame", mean < 4.0)
+        assertTrue("and never snaps: p95 $p95 rows", p95 <= 6)
+        assertEquals("art covered", 0, r.steadyMax)
+    }
+
+    /** The first two rectangles of [snap] that share a pixel, or null: where they do, the shade is laid on twice. */
+    private fun overlap(snap: ShadeSnapshot): String? {
+        val r = snap.rects
+        fun empty(k: Int) = r[k * 4 + 2] <= r[k * 4] || r[k * 4 + 3] <= r[k * 4 + 1]
+        for (i in 0 until snap.rectCount) for (j in i + 1 until snap.rectCount) {
+            if (empty(i) || empty(j)) continue
+            if (r[i * 4] < r[j * 4 + 2] && r[j * 4] < r[i * 4 + 2] && r[i * 4 + 1] < r[j * 4 + 3] && r[j * 4 + 1] < r[i * 4 + 3]) {
+                return "[${r[i * 4]},${r[i * 4 + 1]},${r[i * 4 + 2]},${r[i * 4 + 3]}] and [${r[j * 4]},${r[j * 4 + 1]},${r[j * 4 + 2]},${r[j * 4 + 3]}]"
+            }
+        }
+        return null
+    }
+
+    @Test
+    fun `the shade is never laid twice where a gutter runs out of the screen`() {
+        // A fast pass reads the page in blocks, and can end a gutter at the edge in two rectangles
+        // stacked in the same columns, a row apart. Each drawn on past the edge, they overlapped, and
+        // the shade there came out dark enough for the next detection to take it for ink.
+        val eng = ShadeEngine(w, h, style)
+        val job = eng.kick(ArrayPixels(w, h, strip.frame(2000, h)), 0.0)!!
+        eng.onDetected(job, GapResult(intArrayOf(0, 1000, w, 1398, 0, 1398, 360, 1400), 2, 0L, true, 1), 10.0)
+        assertEquals("at rest", null, overlap(eng.snapshot))
+        // and all through a scroll, with every detection and every frame
+        var top = 2000
+        var t = 10.0
+        var pending: DetectJob? = null
+        for (i in 0 until 90) {
+            t += 16.7
+            top += 9
+            eng.onFrame(ArrayPixels(w, h, strip.frame(top, h)), t)?.let { pending = it }
+            assertEquals("frame $i", null, overlap(eng.snapshot))
+            pending?.let { p -> eng.onDetected(p, p.run(), t + 8); pending = null }
+            assertEquals("frame $i, the detection landed", null, overlap(eng.snapshot))
+        }
+    }
+
+    @Test
     fun `a compositor that blends in linear light is learned, not fought`() {
         // On such a device white under the shade reads about 89, not 25. A shade that did not
         // notice would see its own output as ink, take itself down, and flicker.

@@ -1,5 +1,31 @@
 # Changelog
 
+## Unreleased
+
+Dark gaps hold still at the edge of the screen while you scroll.
+
+- **No more band of white jumping at the bottom of the screen.** A gutter
+  scrolling in from the edge of the screen was shaded only as far as the last
+  detection had seen it. In between it came in white, in a band that grew with
+  the page and then snapped shut when the next detection came back, a score of
+  times a second — the shade looked as if it kept jumping down the gutter. Now
+  every captured frame says how far the gutter has come in, column by column,
+  and the shade follows it frame by frame, a margin short of the newest row seen.
+  Scrolling through a long gutter, the white at the edge moved 20 rows from one
+  frame to the next on average; it now moves less than one with steady timing,
+  and about 7 with a phone's ragged capture.
+- **Never onto art it has not seen.** The frames carry the shade, and under it
+  very pale art looks just like paper. Only paper seen plain is believed — the
+  shade only ever darkens — so a row already under the shade counts as paper only
+  if it was seen as paper when it came in. The tests that hold the shade to never
+  covering art in steady motion all pass unchanged.
+- **Smaller jumps when a detection lands.** The edges of the shade jump over the
+  page about half as far on the frames a new detection is laid on (95th
+  percentile 21 → 13 rows in a drag at 60 Hz with a phone's timing).
+- **Off the top of the screen you skip.** While the page moves, the shade is kept
+  off the rows *Tweaks → Skip the top of the screen* sets aside, as it already
+  was at rest.
+
 ## 1.1.4
 
 Dark gaps ride the page smoothly while you scroll.
