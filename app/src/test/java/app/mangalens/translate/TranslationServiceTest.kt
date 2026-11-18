@@ -52,6 +52,17 @@ class TranslationServiceTest {
         AppSettings(provider = LlmProvider.CUSTOM, model = "m", customUrl = srv.base + "chat", apiKey = "k")
 
     @Test
+    fun aContinuingAddressLeavesAnUnconfirmedSpeakerUnnamed() {
+        val prior = "Rider: Chestnut! You're carrying me to the village?"
+        assertEquals("", VisionLlmEngine.speakerAfterAddress(prior, "You brought my bag, too.", "Chestnut"))
+        assertEquals("Rider", VisionLlmEngine.speakerAfterAddress(prior, "You brought my bag, too.", "Rider"))
+        assertEquals("Chestnut", VisionLlmEngine.speakerAfterAddress(prior, "Yes, I'm taking you home.", "Chestnut"))
+        assertEquals("Chestnut", VisionLlmEngine.speakerAfterAddress(prior, "You called. I'm Chestnut.", "Chestnut"))
+        assertEquals("Mina", VisionLlmEngine.speakerAfterAddress("— Wait here.", "You need the map.", "Mina"))
+        assertEquals("Chestnut", VisionLlmEngine.speakerAfterAddress("— Chestnut is ready!", "You brought a bag.", "Chestnut"))
+    }
+
+    @Test
     fun aDirectlyCalledNameCannotBecomeTheSpeakerInStoryMemory() {
         val source = "밤톨아! 이런 용감한 아이~"
         assertEquals("", VisionLlmEngine.attributedSpeaker(source, "Chestnut! You're so brave.", "chestnut", ""))

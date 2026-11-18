@@ -147,7 +147,8 @@ class VisionLlmEngine(
             val crops = if (closeups.isEmpty()) emptyList() else {
                 PageMarkup.encodeRegionCrops(bitmap, anchors, closeups, settings.dataSaver, omitFlatCrops)
             }
-            val history = JSONArray(StoryContext.snapshot())
+            val previousDialogue = StoryContext.snapshot()
+            val history = JSONArray(previousDialogue)
             val page = JSONObject()
                 .put("expected_source_language", langHint)
                 .put("story_so_far", history)
@@ -157,6 +158,7 @@ class VisionLlmEngine(
 
             val stream = if (onBubble == null) null else BubbleStream()
             val streamed = HashSet<Int>()
+            var streamedPreviousLine = previousDialogue.lastOrNull().orEmpty()
             val raw = LlmHttp.complete(
                 settings, SYSTEM_PROMPT, stable, listOf(jpegB64) + crops.map { it.second }, page,
                 effort = LlmHttp.effortLevel(settings, vision = true),
@@ -164,7 +166,11 @@ class VisionLlmEngine(
                 onDelta = if (stream == null) null else { delta ->
                     for (o in stream.feed(delta)) {
                         val bubble = entry(o, anchors, streamed, upload, bitmap.width, bitmap.height) ?: continue
-                        if (!bubble.needsAddressReview()) onBubble!!(bubble)
+                        if (!bubble.needsAddressReview()) {
+                            val ready = bubble.afterAddress(streamedPreviousLine)
+                            onBubble!!(ready)
+                            if (!ready.sfx) streamedPreviousLine = StoryContext.scriptLine(ready.en, ready.who)
+                        }
                     }
                 },
             )
@@ -179,6 +185,14 @@ class VisionLlmEngine(
             }
             val terms = reply.optJSONObject("new_terms") ?: JSONObject()
             reviewFormsOfAddress(out, stable, history, terms)
+            var previousLine = previousDialogue.lastOrNull().orEmpty()
+            for (i in out.indices) {
+                val bubble = out[i]
+                if (bubble.sfx) continue
+                val ready = bubble.afterAddress(previousLine)
+                out[i] = ready
+                previousLine = StoryContext.scriptLine(ready.en, ready.who)
+            }
             // A reply that lands after the reader moved on to another work (a
             // long pause, "New series") still letters its page, but what it
             // would teach belongs to the work it was asked about.
@@ -191,6 +205,11 @@ class VisionLlmEngine(
             }
             out
         }
+
+    private fun VisionBubble.afterAddress(previousLine: String): VisionBubble {
+        val speaker = speakerAfterAddress(previousLine, en, who)
+        return if (speaker == who) this else copy(who = speaker)
+    }
 
     private fun VisionBubble.needsAddressReview(): Boolean =
         !sfx && !refersToObject && DETACHED_KOREAN_ADDRESS.containsMatchIn(src) &&
@@ -337,6 +356,27 @@ class VisionLlmEngine(
             return who
         }
 
+        private val SECOND_PERSON = Regex("""\byou(?:r|rs|rself)?\b""", RegexOption.IGNORE_CASE)
+        private val CONTINUED_ADDRESS = Regex("""^[\s.…“"']*you\b""", RegexOption.IGNORE_CASE)
+        private val SELF_IDENTIFICATION = Regex("""\b(?:i am|i['’]m|my name is|this is)\s+""", RegexOption.IGNORE_CASE)
+
+        /** A follow-up still describing "you" does not establish that the person just addressed is speaking. */
+        internal fun speakerAfterAddress(previousLine: String, english: String, speaker: String): String {
+            if (speaker.isBlank() || !CONTINUED_ADDRESS.containsMatchIn(english)) return speaker
+            val unattributed = previousLine.startsWith("— ")
+            val previousSpeaker = if (unattributed) "" else previousLine.substringBefore(": ", "")
+            if (previousSpeaker.equals(speaker, ignoreCase = true)) return speaker
+            val previousWords = (if (unattributed) previousLine.removePrefix("— ")
+                else previousLine.substringAfter(": ", previousLine)).trimStart()
+            val mark = previousWords.indexOfAny(charArrayOf('!', '！', ',', '，', '~', '～'))
+            if (mark <= 0 || !previousWords.take(mark).trim().equals(speaker, ignoreCase = true) ||
+                !SECOND_PERSON.containsMatchIn(previousWords.substring(mark + 1))) return speaker
+            val self = SELF_IDENTIFICATION.find(english)?.let { english.substring(it.range.last + 1) }
+            if (self != null && self.startsWith(speaker, ignoreCase = true) &&
+                (self.length == speaker.length || !self[speaker.length].isLetter())) return speaker
+            return ""
+        }
+
         /** Adjust only a detached compliment; retain the speaker's action and every following word. */
         internal fun spokenAddress(source: String, english: String, referent: String, name: String): String {
             val called = DETACHED_KOREAN_ADDRESS.find(source) ?: return english
@@ -399,11 +439,11 @@ Identify whom each detached Korean remark describes. Use the called name, gramma
         private val SYSTEM_PROMPT = """
 Translate the lettering in this comic image into natural, concise English that can be printed in each balloon. Read the image first. The detected_regions OCR is only a rough hint and can be wrong. The magenta badge is the region id. If a numbered close-up follows the page, read its sharper lettering. Read vertical columns from right to left, top to bottom within each column. Keep a balloon's lines together.
 
-Return a JSON object with an array named "bubbles". For each numbered region give its numeric "id", "src" containing the words you actually read, "en" containing their English translation, "who" identifying the speaking character only when the artwork or previous dialogue establishes who speaks, and "kind" set to "dialogue", "sfx" or "skip". A name spoken as a direct address belongs to the listener. Leave "who" empty for an uncertain speaker. If a name is called and followed by a separate remark, identify what the remark describes before writing the English. Put "aside_to" ("listener", "object" or "unclear") after "src". For "listener", also give "listener_name" as the called name in English. Omit these fields for ordinary lines. Use real words in the values. Answer each id once. Skip already-English lettering, interface labels, watermarks and genuinely unreadable marks. For other visible comic lettering outside every outline, return the same fields with "box" [left, top, width, height] in thousandths of the page image instead of an id. Never duplicate a numbered balloon.
+Return compact, single-line JSON with "bubbles" first. For each numbered dialogue balloon give its "id", "src" containing the words you read, then "en" containing the complete translation. Ordinary dialogue needs only those three fields. Include "who" only if a speaker label, self-identification or the artwork and an established cast name independently identify the speaker. Omit an uncertain identity. A name in direct address identifies the listener. Use "kind":"sfx" for effects and only "id" and "kind":"skip" for an unlettered or excluded region. If a name is called and followed by a separate remark, identify what the remark describes before writing the English. Put "aside_to" ("listener", "object" or "unclear") after "src". For "listener", also give "listener_name" as the called name in English. Omit these fields for ordinary lines. Use real words in the values. Give the readable balloons in reading order before any skipped ids. Answer each id once. Skip already-English lettering, interface labels, watermarks and genuinely unreadable marks. For other visible comic lettering outside every outline, return the same fields with "box" [left, top, width, height] in thousandths of the page image instead of an id. Never duplicate a numbered balloon.
 
 Read all the way to the end of the last line before translating. Preserve the action, its actor and objects, negation, emphasis, emotion and the speaker's register. Keep the source's meaningful modifiers. When it gives the purpose of a place or the type of an object, state that purpose or type in English. When several things are named before a final verb, translate the complete clause. An ellipsis is a pause and adds no information. Use the art, balloon tails, dialogue history and series memory to resolve omitted subjects. An object's owner may be different from the person acting. Look at the preceding exchange before choosing a pronoun. If the actor remains unclear, use natural subjectless English. Introduce a recipient only when the dialogue establishes one. Honour the series glossary, pronouns, established names and meaningful honorifics. Keep ordinary personal names in their usual spelling. For an affectionate nickname or pet name that is plainly an everyday noun, use its natural English meaning unless the series has established a different rendering. When a speaker calls a name and then praises their listener, write the compliment as direct speech to that person. A demonstrative points to a separate object only when the scene establishes one. Keep a following question separate from the aside. Translate the source language visible in the image, even when the language hint differs. Translate sound effects into short English effects in capitals. For matching "run" numbers, read the whole sentence in "part" order, then divide its English across those balloons. Preserve the original tone and intensity. Add no explanations.
 
-After "bubbles", include "new_terms" mapping any newly established source names to English, and "characters" mapping newly identified English names to objects with "pronoun", "register" and "note". Use empty objects when there is nothing to add. Output JSON only.
+After "bubbles", add "new_terms" only for newly established mappings of source names to English. Add "characters" only for newly identified English names with evidenced "pronoun", "register" or "note". Omit empty sections and blank fields. Output JSON only.
 """.trim()
     }
 }

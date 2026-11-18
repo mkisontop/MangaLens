@@ -45,9 +45,14 @@ object StoryContext {
     fun remember(en: String, speaker: String = "") {
         val line = en.trim()
         if (line.isBlank()) return
-        val who = speaker.trim()
-        recent.addLast(if (who.isEmpty()) "— ${line.take(110)}" else "${who.take(24)}: ${line.take(110)}")
+        recent.addLast(scriptLine(line, speaker))
         while (recent.size > MAX_LINES) recent.removeFirst()
+    }
+
+    internal fun scriptLine(en: String, speaker: String): String {
+        val who = speaker.trim().take(24)
+        val words = en.trim().take(110)
+        return if (who.isEmpty()) "— $words" else "$who: $words"
     }
 
     @Synchronized
