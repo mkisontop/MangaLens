@@ -8,6 +8,7 @@ from pathlib import Path
 import struct
 import sys
 import time
+from threading import Event
 
 
 def jpeg_size(data):
@@ -81,7 +82,10 @@ class StreamTiming:
 
 class ModelObserver(BaseHTTPRequestHandler):
     def do_GET(self):
-        self.send_response(200 if self.path == "/health" else 404)
+        if self.path == "/completed-page":
+            self.send_response(200 if self.server.completed_page.wait(timeout=1) else 202)
+        else:
+            self.send_response(200 if self.path == "/health" else 404)
         self.end_headers()
 
     def do_POST(self):
@@ -152,11 +156,14 @@ class ModelObserver(BaseHTTPRequestHandler):
             record["elapsed_ms"] = round((time.monotonic() - start) * 1000)
             with self.server.report.open("a", encoding="utf-8") as report:
                 report.write(json.dumps(record) + "\n")
+            if record["images"] and record["completed"]:
+                self.server.completed_page.set()
 
 
 if __name__ == "__main__":
     port = int(sys.argv[2]) if len(sys.argv) > 2 else 7879
     with ThreadingHTTPServer(("127.0.0.1", port), ModelObserver) as server:
+        server.completed_page = Event()
         server.report = Path(sys.argv[1])
         server.report.write_text("", encoding="utf-8")
         server.serve_forever()

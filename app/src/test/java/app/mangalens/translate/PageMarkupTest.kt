@@ -41,7 +41,8 @@ class PageMarkupTest {
         fun dimension(lines: List<OcrLine> = normal, cropped: Boolean = true,
                       dataSaver: Boolean = true, anchors: List<Bubble> = listOf(dialogue, title), id: Int? = 0) =
             PageMarkup.zoomPageDimension(upload, cropped, anchors, id, lines, dataSaver)
-        assertEquals(512, dimension())
+        assertEquals(576, dimension())
+        assertEquals(512, dimension(anchors = listOf(dialogue)))
         assertEquals(630, dimension(lines = normal + normal[0].copy(box = Rect(220, 601, 363, 633))))
         assertEquals(1000, dimension(lines = normal + normal[0].copy(box = Rect(220, 601, 363, 611))))
         assertEquals(1000, dimension(lines = normal + normal[0].copy(box = Rect(10, 450, 72, 490))))

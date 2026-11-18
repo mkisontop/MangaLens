@@ -57,7 +57,9 @@ object PageMarkup {
         val longSide = max(upload.width(), upload.height())
         val smallest = lines.minOf { it.box.height() }
         val preserveLettering = ceil(28.0 * longSide / smallest).toInt()
-        return max(512, preserveLettering).coerceAtMost(normal)
+        // A second detected region may contain visual evidence about the speaker.
+        val sceneFloor = if (anchors.size > 1) 576 else 512
+        return max(sceneFloor, preserveLettering).coerceAtMost(normal)
     }
 
     /**

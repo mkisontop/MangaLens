@@ -92,7 +92,7 @@ if [[ "$holdout" == 1 && -n "${MANGALENS_LIVE_COMPARE_ORDER:-}" ]]; then
     adb shell appops set "$id" SYSTEM_ALERT_WINDOW allow
     adb logcat -c
     adb shell am instrument -w -r -e build projection -e liveModel "$MANGALENS_LIVE_MODEL" \
-        -e projectionEndpoint http://127.0.0.1:7880/v1/chat/completions \
+        -e projectionEndpoint http://127.0.0.1:7880/v1/chat/completions -e projectionCompletion http://127.0.0.1:7880/completed-page \
         -e class 'app.mangalens.reader.ReaderExperienceTest#liveScreenSharingReplacesUnseenJapaneseDialogue' \
         "$id.test/androidx.test.runner.AndroidJUnitRunner" | tee "$out/projection-instrumentation.txt"
     adb logcat -d > "$out/projection-device.log"

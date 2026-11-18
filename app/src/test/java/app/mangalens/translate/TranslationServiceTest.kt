@@ -52,6 +52,16 @@ class TranslationServiceTest {
         AppSettings(provider = LlmProvider.CUSTOM, model = "m", customUrl = srv.base + "chat", apiKey = "k")
 
     @Test
+    fun aDirectlyCalledNameCannotBecomeTheSpeakerInStoryMemory() {
+        val source = "밤톨아! 이런 용감한 아이~"
+        assertEquals("", VisionLlmEngine.attributedSpeaker(source, "Chestnut! You're so brave.", "chestnut", ""))
+        assertEquals("", VisionLlmEngine.attributedSpeaker(source, "Hey, you brave little one!", "Chestnut", "Chestnut"))
+        assertEquals("The rider", VisionLlmEngine.attributedSpeaker(source, "Chestnut! You're so brave.", "The rider", "Chestnut"))
+        assertEquals("Chestnut", VisionLlmEngine.attributedSpeaker("나는 밤톨이야.", "I'm Chestnut.", "Chestnut", ""))
+        assertEquals("Mina", VisionLlmEngine.attributedSpeaker("미나가 왔어!", "Mina is here!", "Mina", ""))
+    }
+
+    @Test
     fun disputedAddressesUseOneTextRequestAndLeaveOtherBalloonsIntact() = runBlocking {
         fun bubble(src: String, en: String) = VisionLlmEngine.VisionBubble(0, 0, 0, 0, 0, src, en, false, "")
         val first = bubble("봄이야! 이런 장난스러운 녀석~ 또 날 기다렸어?", "Spring! This playful little thing! Were you waiting for me?")

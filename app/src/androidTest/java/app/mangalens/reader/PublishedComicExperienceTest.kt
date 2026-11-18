@@ -253,6 +253,17 @@ class PublishedComicExperienceTest {
                 } else {
                     assertEquals("The image-reading request must complete", null, result.failure)
                     assertPanelMeaning(scene.name, cards.single())
+                    val transcript = when (scene.name) {
+                        "contest" -> "당근아 이런 귀여운 것 나를 대회 장소까지 데려다주는 거야"
+                        "outfit" -> "내 옷이랑 모자랑 포션까지 가지고 왔네"
+                        else -> "어떤 포션을 가져왔는지 볼까"
+                    }
+                    fun syllables(text: String) = text.filter { it in '가'..'힣' }
+                    assertEquals("Read every source syllable directly from its panel",
+                        syllables(transcript), syllables(result.bubbles.single().original))
+                    val story = app.mangalens.translate.StoryContext.snapshot().last()
+                    assertTrue("The listener must not be stored as the speaker: " + story,
+                        !story.substringBefore(": ", "").contains("Carrot", ignoreCase = true))
                     cards.single()
                 }
                 inst.runOnMainSync { overlay.setBubbles(result.bubbles, frame) }
@@ -316,6 +327,7 @@ class PublishedComicExperienceTest {
                         val record = JSONObject().put("model", settings.model).put("source_ocr", JSONArray(sourceLines))
                             .put("image_transcription", result.bubbles.single().original).put("english", expectedEnglish)
                             .put("display_ocr", recognized).put("ocr_and_translation_ms", elapsed)
+                            .put("story_line", app.mangalens.translate.StoryContext.snapshot().last())
                             .put("first_display_ocr", firstObserved).put("first_visible_ms", if (firstScreen == null) completeVisibleMs else firstVisibleMs)
                             .put("complete_visible_ms", completeVisibleMs).put("streamed_first", firstScreen != null)
                             .put("art_pixels_checked", art.first).put("art_pixels_changed", art.second)
@@ -381,7 +393,7 @@ class PublishedComicExperienceTest {
         val answer = translated.lowercase()
         if (scene == "contest") {
             assertTrue("The speaker asks their companion about taking them to the contest: " + answer,
-                Regex("""\b(contest|competition|tournament|venue)\b""").containsMatchIn(answer) &&
+                Regex("""\b(contest|competition|tournament|championship|match)\b""").containsMatchIn(answer) &&
                     Regex("""\b(take|takes|taking|bring|bringing|escort|escorting|carry|carrying|lead|leading|transport|driving|drop|dropping)\b""").containsMatchIn(answer) &&
                     Regex("""\bme\b""").containsMatchIn(answer))
             assertTrue("The affectionate aside should not become a means of travel: " + answer,

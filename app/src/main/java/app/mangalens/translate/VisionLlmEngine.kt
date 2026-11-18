@@ -234,7 +234,7 @@ class VisionLlmEngine(
             val name = edit.optString("name", "").trim()
             val proposed = edit.optString("en", "").ifBlank { original.en }
             val en = JunkFilter.accept(original.src, spokenAddress(original.src, proposed, "listener", name)) ?: continue
-            val corrected = original.copy(en = en)
+            val corrected = original.copy(en = en, who = attributedSpeaker(original.src, en, original.who, name))
             if (corrected.needsAddressReview()) continue
             pending.remove(id)
             bubbles[id] = corrected
@@ -273,9 +273,10 @@ class VisionLlmEngine(
         if (draft.isEmpty() || JunkFilter.isPromptPlaceholder(draft)) return null
         val sfx = o.optString("kind") == "sfx"
         val src = o.optString("src", "").trim()
-        val who = o.optString("who", "").trim().take(24)
         val referent = o.optString("aside_to", "")
-        val en = if (sfx) draft else spokenAddress(src, draft, referent, o.optString("listener_name", ""))
+        val listener = o.optString("listener_name", "")
+        val en = if (sfx) draft else spokenAddress(src, draft, referent, listener)
+        val who = attributedSpeaker(src, en, o.optString("who", ""), listener)
 
         val id = o.optInt("id", -1)
         if (id in anchors.indices) {
@@ -323,6 +324,18 @@ class VisionLlmEngine(
 
         private fun validName(name: String): Boolean = name.length <= 40 && ENGLISH_NAME.matches(name) &&
             app.mangalens.ocr.Script.cjkCount(name) == 0 && name.lowercase() !in GENERIC_NAMES
+
+        private val KOREAN_VOCATIVE = Regex("""^\s*[가-힣]{1,24}[아야]\s*[!,，！~～]""")
+
+        /** A name directly called by the speaker cannot identify the speaker of that line. */
+        internal fun attributedSpeaker(source: String, english: String, speaker: String, listener: String): String {
+            val who = speaker.trim().take(24)
+            if (who.isEmpty() || !KOREAN_VOCATIVE.containsMatchIn(source)) return who
+            val end = english.indexOfAny(charArrayOf('!', '！', ',', '，', '~', '～'))
+            val address = if (end > 0) english.take(end).trim() else ""
+            if (listOf(listener.trim(), address).any { validName(it) && who.equals(it, ignoreCase = true) }) return ""
+            return who
+        }
 
         /** Adjust only a detached compliment; retain the speaker's action and every following word. */
         internal fun spokenAddress(source: String, english: String, referent: String, name: String): String {
@@ -386,9 +399,9 @@ Identify whom each detached Korean remark describes. Use the called name, gramma
         private val SYSTEM_PROMPT = """
 Translate the lettering in this comic image into natural, concise English that can be printed in each balloon. Read the image first. The detected_regions OCR is only a rough hint and can be wrong. The magenta badge is the region id. If a numbered close-up follows the page, read its sharper lettering. Read vertical columns from right to left, top to bottom within each column. Keep a balloon's lines together.
 
-Return a JSON object with an array named "bubbles". For each numbered region give its numeric "id", "src" containing the words you actually read, "en" containing their English translation, "who" identifying the speaker when known, and "kind" set to "dialogue", "sfx" or "skip". If a name is called and followed by a separate remark, identify what the remark describes before writing the English. Put "aside_to" ("listener", "object" or "unclear") after "src". For "listener", also give "listener_name" as the called name in English. Omit these fields for ordinary lines. Use real words in the values. Answer each id once. Skip already-English lettering, interface labels, watermarks and genuinely unreadable marks. For other visible comic lettering outside every outline, return the same fields with "box" [left, top, width, height] in thousandths of the page image instead of an id. Never duplicate a numbered balloon.
+Return a JSON object with an array named "bubbles". For each numbered region give its numeric "id", "src" containing the words you actually read, "en" containing their English translation, "who" identifying the speaking character only when the artwork or previous dialogue establishes who speaks, and "kind" set to "dialogue", "sfx" or "skip". A name spoken as a direct address belongs to the listener. Leave "who" empty for an uncertain speaker. If a name is called and followed by a separate remark, identify what the remark describes before writing the English. Put "aside_to" ("listener", "object" or "unclear") after "src". For "listener", also give "listener_name" as the called name in English. Omit these fields for ordinary lines. Use real words in the values. Answer each id once. Skip already-English lettering, interface labels, watermarks and genuinely unreadable marks. For other visible comic lettering outside every outline, return the same fields with "box" [left, top, width, height] in thousandths of the page image instead of an id. Never duplicate a numbered balloon.
 
-Read all the way to the end of the last line before translating. Preserve the action, its actor and objects, negation, emphasis, emotion and the speaker's register. When several things are named before a final verb, translate the complete clause. An ellipsis is a pause and adds no information. Use the art, balloon tails, dialogue history and series memory to resolve omitted subjects. An object's owner may be different from the person acting. Look at the preceding exchange before choosing a pronoun. If the actor remains unclear, use natural subjectless English. Introduce a recipient only when the dialogue establishes one. Honour the series glossary, pronouns, established names and meaningful honorifics. Keep ordinary personal names in their usual spelling. For an affectionate nickname or pet name that is plainly an everyday noun, use its natural English meaning unless the series has established a different rendering. When a speaker calls a name and then praises their listener, write the compliment as direct speech to that person. A demonstrative points to a separate object only when the scene establishes one. Keep a following question separate from the aside. Translate the source language visible in the image, even when the language hint differs. Translate sound effects into short English effects in capitals. For matching "run" numbers, read the whole sentence in "part" order, then divide its English across those balloons. Preserve the original tone and intensity. Add no explanations.
+Read all the way to the end of the last line before translating. Preserve the action, its actor and objects, negation, emphasis, emotion and the speaker's register. Keep the source's meaningful modifiers. When it gives the purpose of a place or the type of an object, state that purpose or type in English. When several things are named before a final verb, translate the complete clause. An ellipsis is a pause and adds no information. Use the art, balloon tails, dialogue history and series memory to resolve omitted subjects. An object's owner may be different from the person acting. Look at the preceding exchange before choosing a pronoun. If the actor remains unclear, use natural subjectless English. Introduce a recipient only when the dialogue establishes one. Honour the series glossary, pronouns, established names and meaningful honorifics. Keep ordinary personal names in their usual spelling. For an affectionate nickname or pet name that is plainly an everyday noun, use its natural English meaning unless the series has established a different rendering. When a speaker calls a name and then praises their listener, write the compliment as direct speech to that person. A demonstrative points to a separate object only when the scene establishes one. Keep a following question separate from the aside. Translate the source language visible in the image, even when the language hint differs. Translate sound effects into short English effects in capitals. For matching "run" numbers, read the whole sentence in "part" order, then divide its English across those balloons. Preserve the original tone and intensity. Add no explanations.
 
 After "bubbles", include "new_terms" mapping any newly established source names to English, and "characters" mapping newly identified English names to objects with "pronoun", "register" and "note". Use empty objects when there is nothing to add. Output JSON only.
 """.trim()

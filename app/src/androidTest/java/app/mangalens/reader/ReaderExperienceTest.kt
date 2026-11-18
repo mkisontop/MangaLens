@@ -40,7 +40,9 @@ import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
+import java.net.HttpURLConnection
 import java.net.InetAddress
+import java.net.URL
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
@@ -213,6 +215,19 @@ class ReaderExperienceTest {
                     try { save(screen, "projection-japanese-last.png") } finally { screen.recycle() }
                 }
                 assertTrue("The captured Japanese page must visibly retain the negation, place and time: " + observed, complete)
+                // The reader already saw the English. Keep the service alive while the
+                // model closes the response and the observer records the completed turn.
+                val completionUrl = URL(requireNotNull(args.getString("projectionCompletion")))
+                await("model finished the screen-sharing response", 90000) {
+                    val request = completionUrl.openConnection() as HttpURLConnection
+                    try {
+                        request.connectTimeout = 2000
+                        request.readTimeout = 2000
+                        request.responseCode == 200
+                    } finally {
+                        request.disconnect()
+                    }
+                }
             } finally {
                 app.stopService(service)
                 before.recycle()
