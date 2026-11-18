@@ -146,6 +146,25 @@ class PageReaderTest {
     // ---- streaming and parsing ----
 
     @Test
+    fun `a late display receives the buffered burst whole and each collector retains order`() = runBlocking {
+        val lines = (0 until 8).map { n ->
+            item(listOf(50 + n * 100, 100, 110 + n * 100, 500), "speech", "", "문장" + n, "Line " + n)
+        }
+        val body = reply(*lines.toTypedArray())
+        val transport = FakeTransport { _, _, write -> write(body); body }
+        val read = reader(transport, race = 1).start(this, page(), SourceLang.KO)
+        val whole = read.collect(null)
+        assertEquals(8, whole.size)
+        val batches = mutableListOf<List<PageItem>>()
+        val again = read.collectAvailable { batches += it }
+        assertEquals(listOf(whole), batches)
+        assertEquals(whole, again)
+        val oneAtATime = mutableListOf<PageItem>()
+        read.collect { oneAtATime += it }
+        assertEquals(whole, oneAtATime)
+    }
+
+    @Test
     fun `items stream out as they close, before the reply is done, in page pixels`() = runBlocking {
         val firstSeen = CompletableDeferred<Unit>()
         val text = reply(hello, bye)

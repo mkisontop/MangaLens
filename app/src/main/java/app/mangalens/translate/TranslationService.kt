@@ -62,7 +62,12 @@ class TranslationService(
         }
         val missing = missingIdx.sorted().map { it to items[it] }
         val partial = HashMap<Int, String>()
-        for (i in items.indices) resolved[i]?.let { partial[i] = it }
+        // A cached member of a split sentence may get different wording once
+        // the missing part is read. Only independent hits are ready to letter.
+        for (i in items.indices) {
+            if (i !in missingIdx) resolved[i]?.let { partial[i] = it }
+        }
+        if (partial.isNotEmpty()) onProgress?.invoke(HashMap(partial))
         val fresh = engine.translateWithKinds(
             missing.map { it.second },
             missing.map { kinds?.getOrNull(it.first) ?: BubbleKind.DIALOGUE },

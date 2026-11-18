@@ -112,4 +112,42 @@ class TranslationServiceTest {
         assertEquals(first.texts, again.texts)
         assertEquals(1, srv.exchanges.size)
     }
+    @Test
+    fun `stable cached lines paint before the request and split sentences wait for their context`() = runBlocking {
+        val srv = serve { ex ->
+            val bubbles = JSONArray()
+                .put(JSONObject().put("id", 0).put("en", "Stay here."))
+                .put(JSONObject().put("id", 1).put("en", "I'll be back."))
+            val reply = JSONObject().put("bubbles", bubbles).toString()
+            ex.respond(200, JSONObject().put("choices", JSONArray().put(
+                JSONObject().put("message", JSONObject().put("content", reply))
+            )).toString())
+        }
+        val s = custom(srv)
+        val cache = TranslationCache()
+        val texts = listOf("괜찮아요", "여기 있어요", "곧 올게요")
+        fun key(i: Int) = TranslationCache.key(LlmEngine(s).cacheNamespace, "KO", texts[i])
+        cache.put(key(0), "It's okay.")
+        cache.put(key(1), "Previous wording.")
+        val frames = mutableListOf<Map<Int, String>>()
+        val outcome = TranslationService(cache).translate(texts, SourceLang.KO, s,
+            runs = listOf(-1, 7, 7), parts = listOf(0, 0, 1), onProgress = {
+                if (frames.isEmpty()) assertTrue("first paint precedes the request", srv.exchanges.isEmpty())
+                frames += it
+            })
+        assertEquals(mapOf(0 to "It's okay."), frames.first())
+        assertEquals(listOf("It's okay.", "Stay here.", "I'll be back."), outcome.texts)
+        assertEquals(1, srv.exchanges.size)
+    }
+
+    @Test
+    fun `Korean word boundaries distinguish meanings and repeated spaces preserve a hit`() {
+        fun key(text: String) = TranslationCache.key("fixture", "KO", text)
+        val enteringRoom = "아버지가 방에 들어가신다"
+        val enteringBag = "아버지 가방에 들어가신다"
+        val cache = TranslationCache()
+        cache.put(key(enteringRoom), "Father enters the room.")
+        assertEquals(null, cache.get(key(enteringBag)))
+        assertEquals("Father enters the room.", cache.get(key("  아버지가   방에\n들어가신다  ")))
+    }
 }

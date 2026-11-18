@@ -583,12 +583,6 @@ class TranslatePipeline(
                     vision.label, null,
                 )
             }
-        } else {
-            val ns = vision.cacheNamespace.removePrefix("Vision:")
-            val dialogue = bubbles.filter { it.kind == BubbleKind.DIALOGUE }
-            if (dialogue.isNotEmpty() && translation.fullyCached(ns, ocrResult.lang, dialogue.map { it.text })) {
-                return aiTextTranslate(bitmap, bubbles, ocrResult.lang, settings, detected)
-            }
         }
 
         // The answer streams, and every balloon it finishes is painted as it
@@ -791,10 +785,18 @@ class TranslatePipeline(
 
         var failure: Exception? = null
         val items: List<PageItem>? = try {
-            read.collect { item ->
+            read.collectAvailable { arrived ->
                 if (firstAt < 0) firstAt = elapsed()
-                streamed.add(item)
                 anchorIfRead()
+                if (streamed.isEmpty() && remembered.isEmpty() && arrived.size > 1 && onPartial != null) {
+                    // Give the reader the first line immediately. If analysis
+                    // or painting fell behind, catch up in one more layout.
+                    streamed.add(arrived.first())
+                    paint()
+                    streamed.addAll(arrived.subList(1, arrived.size))
+                } else {
+                    streamed.addAll(arrived)
+                }
                 paint()
             }
         } catch (e: CancellationException) {
@@ -1057,6 +1059,19 @@ class TranslatePipeline(
         val idx = bubbles.indices.filter { bubbles[it].text.isNotBlank() }
         if (idx.isEmpty()) return PageResult(emptyList(), "", null)
 
+        // The geometry, sampled paper and erasure are properties of this
+        // captured frame. A later line in the stream cannot change them.
+        val cards = arrayOfNulls<RenderBubble>(idx.size)
+        fun card(k: Int, answer: String): RenderBubble? {
+            val b = bubbles[idx[k]]
+            val english = JunkFilter.accept(b.text, answer) ?: return null
+            val previous = cards[k]
+            if (previous != null && previous.translated == english) return previous
+            val next = previous?.copy(translated = english)
+                ?: renderBubble(bitmap, b.box, english, b.text, b.vertical, b.kind, detected)
+            cards[k] = next
+            return next
+        }
         val outcome = translation.translate(
             idx.map { bubbles[it].text }, lang, settings,
             kinds = idx.map { bubbles[it].kind },
@@ -1066,20 +1081,13 @@ class TranslatePipeline(
                 { texts ->
                     emit(
                         texts.entries.sortedBy { it.key }.mapNotNull { (k, en) ->
-                            val b = bubbles[idx[k]]
-                            val gated = JunkFilter.accept(b.text, en) ?: return@mapNotNull null
-                            renderBubble(bitmap, b.box, gated, b.text, b.vertical, b.kind, detected)
+                            card(k, en)
                         }
                     )
                 }
             },
         )
-        val rendered = idx.mapIndexedNotNull { k, i ->
-            val b = bubbles[i]
-            val gated = JunkFilter.accept(b.text, outcome.texts.getOrElse(k) { "" })
-                ?: return@mapIndexedNotNull null
-            renderBubble(bitmap, b.box, gated, b.text, b.vertical, b.kind, detected)
-        }
+        val rendered = idx.indices.mapNotNull { k -> card(k, outcome.texts.getOrElse(k) { "" }) }
         return PageResult(rendered, outcome.engineLabel, null)
     }
 

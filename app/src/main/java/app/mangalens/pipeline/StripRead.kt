@@ -48,6 +48,11 @@ internal class StripRead(
         return read.collect { item -> onItem(onScreen(item)) }.map(::onScreen)
     }
 
+    override suspend fun collectAvailable(onBatch: suspend (List<PageItem>) -> Unit): List<PageItem> {
+        val read = inner ?: return emptyList()
+        return read.collectAvailable { batch -> onBatch(batch.map(::onScreen)) }.map(::onScreen)
+    }
+
     override fun cancel() {
         inner?.cancel()
     }

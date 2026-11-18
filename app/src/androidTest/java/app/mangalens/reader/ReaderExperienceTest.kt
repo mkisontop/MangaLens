@@ -4,7 +4,6 @@ import android.app.Activity
 import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Canvas
-import android.graphics.Color
 import android.graphics.Rect
 import android.media.projection.MediaProjectionManager
 import android.os.SystemClock
@@ -45,7 +44,7 @@ import kotlin.math.abs
 class ReaderExperienceTest {
     private val inst = InstrumentationRegistry.getInstrumentation()
     private val app = inst.targetContext
-    private val output = File(app.filesDir, "reader-ux").apply { mkdirs() }
+    private val output = File(app.filesDir, "reader-ux/" + InstrumentationRegistry.getArguments().getString("build", "candidate")).apply { mkdirs() }
     private val requests = ConcurrentHashMap<String, Long>()
     private lateinit var page: ReaderPage
 

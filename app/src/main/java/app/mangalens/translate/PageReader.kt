@@ -487,13 +487,17 @@ class PageReader internal constructor(
             state.update { s -> if (!s.finished) State(s.items, finished = true, error = error, endMs = at) else s }
         }
 
-        override suspend fun collect(onItem: (suspend (PageItem) -> Unit)?): List<PageItem> {
+        override suspend fun collect(onItem: (suspend (PageItem) -> Unit)?): List<PageItem> =
+            collectAvailable { batch -> if (onItem != null) for (item in batch) onItem(item) }
+
+        override suspend fun collectAvailable(onBatch: suspend (List<PageItem>) -> Unit): List<PageItem> {
             var sent = 0
             while (true) {
                 val s = state.first { it.items.size > sent || it.finished }
-                while (sent < s.items.size) {
-                    onItem?.invoke(s.items[sent])
-                    sent++
+                if (sent < s.items.size) {
+                    // Each published state owns an immutable list.
+                    onBatch(s.items.subList(sent, s.items.size))
+                    sent = s.items.size
                 }
                 if (s.finished) {
                     s.error?.let { throw it }
@@ -842,6 +846,10 @@ interface PendingRead {
      * cancelled. May be called more than once, by more than one collector.
      */
     suspend fun collect(onItem: (suspend (PageItem) -> Unit)? = null): List<PageItem>
+
+    /** Delivers all lines already available, in order, without waiting to form a batch. */
+    suspend fun collectAvailable(onBatch: suspend (List<PageItem>) -> Unit): List<PageItem> =
+        collect { item -> onBatch(listOf(item)) }
 
     fun cancel()
 }
