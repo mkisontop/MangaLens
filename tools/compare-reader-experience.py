@@ -25,6 +25,15 @@ def main(root):
     for build in ("baseline", "candidate"):
         turns = read(root, build, "metrics.csv")
         dense = read(root, build, "buffered.csv")
+        scrolls = read(root, build, "scroll.csv")
+        uploads = read(root, build, "uploads.csv")
+        require(len(scrolls) == 40 and len({(r["case"], r["trial"]) for r in scrolls}) == 40,
+                "Missing registration cases: " + build)
+        require({int(r["scroll_px"]) for r in uploads} == {121, -121} and len(uploads) == 2,
+                "Missing Gemini uploads: " + build)
+        require(all(int(r["final_lines"]) == 2 for r in uploads), "Scroll lost a translated line: " + build)
+        require(all(r["observed"] == "null" or r["observed"] == r["expected"] for r in scrolls),
+                "Lettering was moved to an unverified offset: " + build)
         require([int(r["page"]) for r in turns] == list(range(6)), "Missing page turns: " + build)
         require([int(r["trial"]) for r in dense] == list(range(7)), "Missing dense pages: " + build)
         require({r["script"] for r in dense} == {"KO", "JA", "ZH"}, "Missing script: " + build)
@@ -40,6 +49,12 @@ def main(root):
             "buffered_first_draw_ms": median(dense, "first_draw_ms"),
             "buffered_full_draw_ms": median(dense, "full_draw_ms"),
             "buffered_layouts": median(dense, "partial_layouts"),
+            "scroll_cases_correct": sum(r["observed"] == r["expected"] for r in scrolls),
+            "scroll_registration_ms": median([r for r in scrolls if int(r["trial"]) > 0], "ms"),
+            "gemini_image_bytes": median(uploads, "jpeg_bytes"),
+            "gemini_total_image_bytes": median(uploads, "total_jpeg_bytes"),
+            "gemini_encoded_height": median(uploads, "encoded_height"),
+            "scrolls_using_only_strip": sum(r["strip"] == "true" for r in uploads),
             "max_source_ink_remaining_pct": max(float(r["remaining_source_pct"]) for r in turns),
             "pages_with_hit_before_provider_reply": sum(
                 int(r["first_visible_ms"]) < int(r["provider_start_ms"]) + 1800 for r in turns
@@ -55,6 +70,9 @@ def main(root):
             "Complete pages regressed on identical delayed responses")
     require(after["buffered_layouts"] <= 2 and before["buffered_layouts"] == 12,
             "A buffered twelve-line reply still triggered redundant page layouts")
+    require(after["scroll_cases_correct"] == 40, "Incorrect scroll registration")
+    require(after["scrolls_using_only_strip"] == 2 and after["gemini_image_bytes"] < before["gemini_image_bytes"] * .8,
+            "The app reread the full frame where only a new strip was visible")
     require(after["buffered_first_draw_ms"] <= before["buffered_first_draw_ms"] * 1.20 + 18,
             "The first buffered line appeared later")
 

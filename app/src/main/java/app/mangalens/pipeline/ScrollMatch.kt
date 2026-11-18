@@ -35,44 +35,76 @@ internal class ScrollMatch private constructor(
     fun scrolledFrom(earlier: ScrollMatch): Int? {
         if (earlier.w != w || earlier.h != h) return null
         val reach = (h * MAX_SCROLL).toInt()
-        fun share(d: Int, step: Int): Float {
-            var n = 0
-            var hit = 0
-            var y = 0
-            while (y < h) {
-                val y2 = y + d
-                if (y2 in 0 until h && drawn[y]) {
-                    n++
-                    if (sameRow(y, earlier, y2)) hit++
+        // A sharp horizontal texture can change completely between adjacent
+        // scanlines. Vote for every pixel offset that actually matches a
+        // sampled row, so an offset between four-pixel steps cannot be lost.
+        val votes = IntArray(reach * 2 + 1)
+        val prefix = IntArray(h + 1)
+        for (y in 0 until h) {
+            prefix[y + 1] = prefix[y] + if (y % COARSE_ROWS == 0 && drawn[y]) 1 else 0
+        }
+        if (prefix[h] < MIN_ROWS / COARSE_ROWS) return null
+        fun evidence(delta: Int): Int =
+            prefix[minOf(h, h - delta)] - prefix[maxOf(0, -delta)]
+        val decisive = IntArray(votes.size) { i ->
+            val n = evidence(i - reach)
+            if (n < MIN_ROWS / COARSE_ROWS) Int.MAX_VALUE else (n * RIVAL).toInt() + 1
+        }
+        val index = earlier.rowIndex
+        var firstStrong = reach
+        var lastStrong = -reach
+        for (y in 0 until h step COARSE_ROWS) {
+            if (!drawn[y]) continue
+            for (position in index.nearestBucket(bands, y)) {
+                val otherY = index.rows[position]
+                val delta = otherY - y
+                if (delta !in -reach..reach || !sameRow(y, earlier, otherY)) continue
+                val i = delta + reach
+                if (++votes[i] == decisive[i]) {
+                    firstStrong = minOf(firstStrong, delta)
+                    lastStrong = maxOf(lastStrong, delta)
+                    // Even a perfect offset cannot beat both of these rivals.
+                    if (lastStrong - firstStrong > COARSE_STEP * 4) return null
                 }
-                y += step
-            }
-            return if (n < MIN_ROWS / step.coerceAtLeast(1) || n == 0) 0f else hit.toFloat() / n
-        }
-        val offsets = (-reach..reach step COARSE_STEP).toList()
-        val coarse = FloatArray(offsets.size) { share(offsets[it], COARSE_ROWS) }
-        var best = 0
-        var bestShare = -1f
-        for (i in offsets.indices) {
-            if (coarse[i] > bestShare) {
-                bestShare = coarse[i]
-                best = offsets[i]
             }
         }
-        // To the pixel, around the coarse answer.
+        fun score(delta: Int): Float {
+            val n = evidence(delta)
+            return if (n < MIN_ROWS / COARSE_ROWS) 0f else votes[delta + reach].toFloat() / n
+        }
+        var best = -reach
+        var bestScore = 0f
+        for (d in -reach..reach) {
+            val share = score(d)
+            if (share > bestScore) {
+                best = d
+                bestScore = share
+            }
+        }
+        if (bestScore == 0f) return null
+        // Recheck the best offset and its immediate neighbours with every
+        // drawn row. A screen with repeated bands must still have a single,
+        // decisive offset before any earlier lettering moves with it.
         var exact = best
-        var exactShare = -1f
-        for (e in best - COARSE_STEP..best + COARSE_STEP) {
-            val s = share(e, 1)
-            if (s > exactShare) {
-                exactShare = s
-                exact = e
+        var exactShare = 0f
+        for (d in maxOf(-reach, best - COARSE_STEP)..minOf(reach, best + COARSE_STEP)) {
+            var count = 0
+            var matches = 0
+            for (y in maxOf(0, -d) until minOf(h, h - d)) {
+                if (!drawn[y]) continue
+                count++
+                if (sameRow(y, earlier, y + d)) matches++
+            }
+            if (count < MIN_ROWS) continue
+            val share = matches.toFloat() / count
+            if (share > exactShare) {
+                exact = d
+                exactShare = share
             }
         }
         if (exactShare < MIN_MATCH) return null
-        // Decisive: no other offset explains the frame nearly as well.
-        for (i in offsets.indices) {
-            if (abs(offsets[i] - exact) > COARSE_STEP * 2 && coarse[i] > exactShare * RIVAL) return null
+        for (d in -reach..reach) {
+            if (abs(d - exact) > COARSE_STEP * 2 && score(d) > exactShare * RIVAL) return null
         }
         return exact
     }
@@ -112,6 +144,44 @@ internal class ScrollMatch private constructor(
             if (sameRow(y, earlier, y2)) hit++
         }
         return n > 0 && hit >= n * KEPT
+    }
+
+    // Indexed only for a frame a later stop actually compares against.
+    private val rowIndex by lazy { RowIndex(bands, h) }
+
+    private class RowIndex(values: IntArray, height: Int) {
+        private val boundaries = IntArray(BANDS * 257)
+        val rows = IntArray(BANDS * height)
+
+        init {
+            for (b in 0 until BANDS) {
+                val base = b * 257
+                boundaries[base] = b * height
+                for (y in 0 until height) boundaries[base + values[y * BANDS + b] + 1]++
+                for (v in 1..256) boundaries[base + v] += boundaries[base + v - 1]
+            }
+            val next = boundaries.copyOf()
+            for (y in 0 until height) for (b in 0 until BANDS) {
+                rows[next[b * 257 + values[y * BANDS + b]]++] = y
+            }
+        }
+
+        /** The least common of the six band values, including every value within tolerance. */
+        fun nearestBucket(values: IntArray, y: Int): IntRange {
+            var first = 0
+            var size = Int.MAX_VALUE
+            for (b in 0 until BANDS) {
+                val base = b * 257
+                val v = values[y * BANDS + b]
+                val start = boundaries[base + (v - ROW_TOLERANCE).coerceAtLeast(0)]
+                val end = boundaries[base + (v + ROW_TOLERANCE + 1).coerceAtMost(256)]
+                if (end - start < size) {
+                    first = start
+                    size = end - start
+                }
+            }
+            return first until first + size
+        }
     }
 
     private fun sameRow(y: Int, other: ScrollMatch, y2: Int): Boolean {
@@ -159,22 +229,28 @@ internal class ScrollMatch private constructor(
             val h = bitmap.height
             val bands = IntArray(h * BANDS)
             val step = (w / SAMPLES_ACROSS).coerceAtLeast(1)
-            val row = IntArray(w)
-            val sums = IntArray(BANDS)
+            // Bitmap.getPixels crosses into Android. Copy a modest strip per
+            // call and reuse the sample-to-band mapping for every scanline.
+            val rowsPerRead = minOf(h, 32, (65_536 / w).coerceAtLeast(1))
+            val pixels = IntArray(w * rowsPerRead)
+            val sampleBands = IntArray((w - 1) / step + 1) { ((it * step).toLong() * BANDS / w).toInt() }
             val counts = IntArray(BANDS)
-            for (y in 0 until h) {
-                bitmap.getPixels(row, 0, w, 0, y, w, 1)
-                sums.fill(0)
-                counts.fill(0)
-                var x = 0
-                while (x < w) {
-                    val p = row[x]
-                    val b = x * BANDS / w
-                    sums[b] += ((p shr 16 and 0xFF) * 299 + (p shr 8 and 0xFF) * 587 + (p and 0xFF) * 114) / 1000
-                    counts[b]++
-                    x += step
+            for (band in sampleBands) counts[band]++
+            val sums = IntArray(BANDS)
+            for (top in 0 until h step rowsPerRead) {
+                val rows = minOf(rowsPerRead, h - top)
+                bitmap.getPixels(pixels, 0, w, 0, top, w, rows)
+                for (dy in 0 until rows) {
+                    sums.fill(0)
+                    var pos = dy * w
+                    for (band in sampleBands) {
+                        val p = pixels[pos]
+                        sums[band] += ((p shr 16 and 0xFF) * 299 + (p shr 8 and 0xFF) * 587 + (p and 0xFF) * 114) / 1000
+                        pos += step
+                    }
+                    val dest = (top + dy) * BANDS
+                    for (b in 0 until BANDS) bands[dest + b] = if (counts[b] == 0) 0 else sums[b] / counts[b]
                 }
-                for (b in 0 until BANDS) bands[y * BANDS + b] = if (counts[b] == 0) 0 else sums[b] / counts[b]
             }
             val drawn = BooleanArray(h)
             for (y in 0 until h) {
