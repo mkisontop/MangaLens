@@ -13,7 +13,12 @@ bash tools/fetch-reader-page.sh "$id"
 # The app reaches the runner's private model over the emulator's loopback interface.
 python3 tools/observe-panel-model.py "$out/model-requests.jsonl" &
 observer=$!
-trap 'kill "$observer" 2>/dev/null || true' EXIT
+projection_observer=
+cleanup_observers() {
+    kill "$observer" 2>/dev/null || true
+    if [[ -n "$projection_observer" ]]; then kill "$projection_observer" 2>/dev/null || true; fi
+}
+trap cleanup_observers EXIT
 for attempt in {1..20}; do
     if curl -fsS http://127.0.0.1:7879/health > /dev/null 2>&1; then break; fi
     sleep 0.2
@@ -70,4 +75,31 @@ if [[ -n "${MANGALENS_LIVE_COMPARE_ORDER:-}" ]]; then
     grep -Eq '^OK \(1 test\)' "$out/anchored-instrumentation.txt"
     adb logcat -b events -d -s am_anr am_crash > "$out/process-events.txt"
     if grep -E 'am_(anr|crash).*[, ]app\.mangalens([.:, ]|$)' "$out/process-events.txt"; then exit 1; fi
+fi
+
+if [[ "$holdout" == 1 && -n "${MANGALENS_LIVE_COMPARE_ORDER:-}" ]]; then
+    # Test the system capture service with a different language and a previously unseen page.
+    python3 tools/observe-panel-model.py "$out/projection-requests.jsonl" 7880 &
+    projection_observer=$!
+    for attempt in {1..20}; do
+        if curl -fsS http://127.0.0.1:7880/health > /dev/null 2>&1; then break; fi
+        sleep 0.2
+    done
+    curl -fsS http://127.0.0.1:7880/health > /dev/null
+    adb reverse tcp:7880 tcp:7880
+    adb shell pm clear "$id" | grep -q Success
+    adb shell pm grant "$id" android.permission.POST_NOTIFICATIONS
+    adb shell appops set "$id" SYSTEM_ALERT_WINDOW allow
+    adb logcat -c
+    adb shell am instrument -w -r -e build projection -e liveModel "$MANGALENS_LIVE_MODEL" \
+        -e projectionEndpoint http://127.0.0.1:7880/v1/chat/completions \
+        -e class 'app.mangalens.reader.ReaderExperienceTest#liveScreenSharingReplacesUnseenJapaneseDialogue' \
+        "$id.test/androidx.test.runner.AndroidJUnitRunner" | tee "$out/projection-instrumentation.txt"
+    adb logcat -d > "$out/projection-device.log"
+    adb logcat -b events -d -s am_anr am_crash > "$out/projection-events.txt"
+    adb exec-out run-as "$id" tar -cf - -C files/reader-ux projection | tar -xf - -C "$out"
+    cat "$out/projection-requests.jsonl"
+    if grep -E 'am_(anr|crash).*[, ]app\.mangalens([.:, ]|$)' "$out/projection-events.txt"; then exit 1; fi
+    grep -Eq '^OK \(1 test\)' "$out/projection-instrumentation.txt"
+    cat "$out/projection/projection-japanese.json"
 fi

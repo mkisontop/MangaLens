@@ -127,6 +127,99 @@ class ReaderExperienceTest {
         }
     }
 
+    @Test fun liveScreenSharingReplacesUnseenJapaneseDialogue() {
+        val args = InstrumentationRegistry.getArguments()
+        val endpoint = args.getString("projectionEndpoint")
+        assumeTrue("Requires the private vision provider and an Android screen grant", endpoint != null)
+        runBlocking {
+            SettingsRepository(app).apply {
+                setProvider(LlmProvider.CUSTOM)
+                setCustomUrl(requireNotNull(endpoint))
+                setModel(LlmProvider.CUSTOM, requireNotNull(args.getString("liveModel")))
+                setSourceLang(SourceLang.JA)
+                setAiVision(AiVisionMode.ALWAYS)
+                setMode(CaptureMode.AUTO)
+                setDataSaver(true)
+                setAutoScrollButton(false)
+                setNoGhosts(true)
+            }
+        }
+        ActivityScenario.launch(ComponentActivity::class.java).use { scenario ->
+            lateinit var comic: JapaneseDialoguePage
+            scenario.onActivity { activity ->
+                activity.window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_FULLSCREEN or
+                    View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                comic = JapaneseDialoguePage(activity)
+                activity.setContentView(comic)
+            }
+            inst.waitForIdleSync()
+            val origin = IntArray(2)
+            inst.runOnMainSync { comic.getLocationOnScreen(origin) }
+            val area = comic.letteringArea().apply { offset(origin[0], origin[1]) }
+            var sourceFrame: Bitmap? = null
+            await("original Japanese lettering on screen", 6000) {
+                val shot = inst.uiAutomation.takeScreenshot() ?: return@await false
+                if (comic.sourcePixels(shot, area) > 500) {
+                    sourceFrame = shot
+                    true
+                } else {
+                    shot.recycle()
+                    false
+                }
+            }
+            val before = requireNotNull(sourceFrame)
+            val service = Intent(app, ScreenCaptureService::class.java)
+            try {
+                save(before, "projection-japanese-source.png")
+                val source = comic.sourcePixels(before, area)
+                assertTrue("The original screen contains colored Japanese strokes", source > 500)
+                val grant = captureGrant(scenario, "live-japanese-projection")
+                val start = SystemClock.elapsedRealtime()
+                ContextCompat.startForegroundService(app, grant)
+                await("real Android screen sharing", 15000) { ScreenCaptureService.running.value }
+                var observed = ""
+                var complete = false
+                DisplayText().use { latin ->
+                    while (!complete && SystemClock.elapsedRealtime() - start < 235000) {
+                        val screen = requireNotNull(inst.uiAutomation.takeScreenshot())
+                        try {
+                            val remaining = comic.sourcePixels(screen, area)
+                            if (remaining * 100 < source * 2) {
+                                observed = latin.read(screen, area)
+                                val words = observed.lowercase().replace('’', '\'').replace(Regex("""\s+"""), " ")
+                                val negated = Regex("""(?:don'?t|do not|not to|can'?t|cannot|mustn'?t|shouldn'?t)\s+(?:go|leave|head|return)|not (?:going|leaving|returning)|no going home""").containsMatchIn(words)
+                                val wait = Regex("""\b(wait|stay|remain)\b""").containsMatchIn(words)
+                                val morning = Regex("""\b(morning|dawn|daybreak|sunrise)\b""").containsMatchIn(words)
+                                if (negated && wait && morning && "here" in words) {
+                                    val elapsed = SystemClock.elapsedRealtime() - start
+                                    val art = comic.checkArt(before, screen, origin)
+                                    assertTrue("Sample at least fifty thousand scene pixels", art.first > 50000)
+                                    assertEquals("Art beyond the balloon must preserve its veiled colors", 0, art.second)
+                                    save(screen, "projection-japanese-translated.png")
+                                    val result = JSONObject().put("display_ocr", observed).put("visible_ms", elapsed)
+                                        .put("source_ink_pixels", source).put("residual_ink_pixels", remaining)
+                                        .put("art_pixels_checked", art.first).put("art_pixels_changed", art.second)
+                                    File(output, "projection-japanese.json").writeText(result.toString(2) + "\n")
+                                    complete = true
+                                }
+                            }
+                        } finally {
+                            screen.recycle()
+                        }
+                        if (!complete) SystemClock.sleep(450)
+                    }
+                }
+                if (!complete) inst.uiAutomation.takeScreenshot()?.let { screen ->
+                    try { save(screen, "projection-japanese-last.png") } finally { screen.recycle() }
+                }
+                assertTrue("The captured Japanese page must visibly retain the negation, place and time: " + observed, complete)
+            } finally {
+                app.stopService(service)
+                before.recycle()
+            }
+        }
+    }
+
     private fun captureGrant(scenario: ActivityScenario<ComponentActivity>, key: String): Intent {
         val granted = CompletableFuture<Intent>()
         scenario.onActivity { activity ->

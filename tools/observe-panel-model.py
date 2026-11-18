@@ -155,7 +155,8 @@ class ModelObserver(BaseHTTPRequestHandler):
 
 
 if __name__ == "__main__":
-    with ThreadingHTTPServer(("127.0.0.1", 7879), ModelObserver) as server:
+    port = int(sys.argv[2]) if len(sys.argv) > 2 else 7879
+    with ThreadingHTTPServer(("127.0.0.1", port), ModelObserver) as server:
         server.report = Path(sys.argv[1])
         server.report.write_text("", encoding="utf-8")
         server.serve_forever()

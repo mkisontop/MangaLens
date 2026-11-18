@@ -72,7 +72,16 @@ def compare(root):
         held = json.loads((directory / "live-potion.json").read_text())
         assert held["first_display_ocr"] and held["display_ocr"] and held["art_pixels_changed"] == 0
         holdouts[order] = held
-    result = {"pairs": pairs, "summary": summary, "anchored_dense_pages": dense, "additional_potion_panel": holdouts}
+    projection = {}
+    for order in ORDERS:
+        directory = root / ("live-published-page-" + order) / "candidate"
+        screen = json.loads((directory / "projection/projection-japanese.json").read_text())
+        observed = [json.loads(row) for row in (directory / "projection-requests.jsonl").read_text().splitlines()]
+        assert any(r["images"] > 0 and r["completed"] for r in observed), "Capture must reach the real vision model"
+        assert screen["art_pixels_changed"] == 0 and screen["residual_ink_pixels"] < .02 * screen["source_ink_pixels"]
+        projection[order] = screen
+    result = {"pairs": pairs, "summary": summary, "anchored_dense_pages": dense,
+              "additional_potion_panel": holdouts, "live_japanese_projection": projection}
     (root / "comparison.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
     print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
     assert all(order["candidate"] < order["baseline"] for order in dense["median_by_order"].values())
