@@ -181,6 +181,9 @@ class PublishedComicExperienceTest {
         val screenBox = Rect(expected).apply { offset(origin[0], origin[1]) }
         saveBalloonComparison(scene.name, original, original, screenBox)
         val ocr = OcrEngine()
+        var firstScreen: Bitmap? = null
+        var firstEnglish: String? = null
+        var firstVisibleMs = 0L
         try {
             MockWebServer().use { server ->
                 server.start(InetAddress.getByName("127.0.0.1"), 0)
@@ -222,7 +225,16 @@ class PublishedComicExperienceTest {
                     // be located correctly even when individual OCR syllables are wrong.
                     targetText += analysis.bubbles.filter { expected.contains(it.box.centerX(), it.box.centerY()) }
                         .map { it.text.filter(Char::isLetter) }.filter { it.isNotBlank() }
-                    analysis.bubbles.map { it.text } to pipeline.translate(analysis, settings, onPartial = {})
+                    Log.i("MangaLensUX", scene.name + " detected line bounds=" + analysis.anchorLines.map { it.box })
+                    val result = pipeline.translate(analysis, settings, onPartial = { progress ->
+                        if (liveEndpoint != null && firstScreen == null && progress.bubbles.size == 1) {
+                            inst.runOnMainSync { overlay.setBubbles(progress.bubbles, frame) }
+                            firstScreen = settledBalloonScreenshot(original, screenBox, true)
+                            firstVisibleMs = SystemClock.elapsedRealtime() - start
+                            firstEnglish = progress.bubbles.single().translated
+                        }
+                    })
+                    analysis.bubbles.map { it.text } to result
                 }
                 val elapsed = SystemClock.elapsedRealtime() - start
                 val cards = result.bubbles.map { it.translated }
@@ -246,6 +258,7 @@ class PublishedComicExperienceTest {
                 inst.runOnMainSync { overlay.setBubbles(result.bubbles, frame) }
                 inst.waitForIdleSync()
                 val display = settledBalloonScreenshot(original, screenBox, cards.isNotEmpty())
+                val completeVisibleMs = SystemClock.elapsedRealtime() - start
                 try {
                     for ((name, ref) in listOf("original" to original, "translated" to display)) {
                         File(output, "published-" + scene.name + "-" + name + ".png").outputStream().use {
@@ -287,9 +300,24 @@ class PublishedComicExperienceTest {
                         assertEquals("pixels changed outside the balloon", 0, art.second)
                     }
                     if (liveEndpoint != null) {
+                        val first = firstScreen ?: display
+                        val firstObserved = listOf(1f, .75f, 1.5f).asSequence()
+                            .map { english.read(first, screenBox, it) }
+                            .firstOrNull { DisplayText.letters(it).contains(target) }
+                        assertEquals("The earliest visible translation must preserve the final dialogue",
+                            expectedEnglish, firstEnglish ?: expectedEnglish)
+                        assertTrue("The OS screenshot of the first translation must contain the whole line",
+                            firstObserved != null)
+                        assertEquals("The first translation must also stay inside its balloon", 0,
+                            compareArt(original, first, origin, host.width, host.height, expected, dest).second)
+                        File(output, "published-" + scene.name + "-first.png").outputStream().use {
+                            first.compress(Bitmap.CompressFormat.PNG, 100, it)
+                        }
                         val record = JSONObject().put("model", settings.model).put("source_ocr", JSONArray(sourceLines))
                             .put("image_transcription", result.bubbles.single().original).put("english", expectedEnglish)
                             .put("display_ocr", recognized).put("ocr_and_translation_ms", elapsed)
+                            .put("first_display_ocr", firstObserved).put("first_visible_ms", if (firstScreen == null) completeVisibleMs else firstVisibleMs)
+                            .put("complete_visible_ms", completeVisibleMs).put("streamed_first", firstScreen != null)
                             .put("art_pixels_checked", art.first).put("art_pixels_changed", art.second)
                         val name = if (scene.name == "outfit") "live-panel.json" else "live-contest.json"
                         File(output, name).writeText(record.toString(2) + "\n")
@@ -300,6 +328,7 @@ class PublishedComicExperienceTest {
             }
         } finally {
             inst.runOnMainSync { host.removeAllViews() }
+            firstScreen?.recycle()
             original.recycle()
             ocr.close()
             frame.recycle()

@@ -2,11 +2,13 @@
 set -euo pipefail
 
 id=app.mangalens.preview
-out=app/build/reader-live-device
+out=${MANGALENS_LIVE_DEVICE_OUT:-app/build/reader-live-device}
+reader_source=${MANGALENS_READER_SOURCE:-.}
 mkdir -p "$out"
 bash tools/setup-reader-device.sh
-adb install -r -g app/build/outputs/apk/debug/app-debug.apk
+adb install -r -g "$reader_source/app/build/outputs/apk/debug/app-debug.apk"
 adb install -r -g app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+adb shell pm clear "$id" | grep -q Success
 bash tools/fetch-reader-page.sh "$id"
 # The app reaches the runner's private model over the emulator's loopback interface.
 python3 tools/observe-panel-model.py "$out/model-requests.jsonl" &
@@ -20,10 +22,10 @@ curl -fsS http://127.0.0.1:7879/health > /dev/null
 adb reverse tcp:7879 tcp:7879
 # A CPU runner pays a substantial one-time prompt prefill. Warm only the
 # app's fixed instructions; the comic image and its words arrive from Android.
-python3 - <<'PY'
-import json, os, re, textwrap, urllib.request
+python3 - "$reader_source" <<'PY'
+import json, os, re, sys, textwrap, urllib.request
 from pathlib import Path
-source = Path("app/src/main/java/app/mangalens/translate/VisionLlmEngine.kt").read_text()
+source = (Path(sys.argv[1]) / "app/src/main/java/app/mangalens/translate/VisionLlmEngine.kt").read_text()
 match = re.search(r'private val SYSTEM_PROMPT = """(.*?)"""', source, re.S)
 prompt = textwrap.dedent(match.group(1)).strip()
 body = {"model": os.environ["MANGALENS_LIVE_MODEL"], "max_tokens": 1,

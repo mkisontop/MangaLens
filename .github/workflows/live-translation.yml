@@ -3,7 +3,7 @@ name: Live translation quality
 on:
   workflow_dispatch:
   push:
-    branches: ["perf/reader-latency-and-lettering"]
+    branches: ["perf/reader-latency-and-lettering", "perf/unseen-page-translation"]
     paths:
       - ".github/workflows/live-translation.yml"
       - "tools/test-live-translation.sh"
@@ -12,6 +12,7 @@ on:
       - "tools/test-live-panel-on-device.sh"
       - "tools/setup-reader-device.sh"
       - "tools/observe-panel-model.py"
+      - "tools/compare-live-panels.py"
       - "app/src/main/java/app/mangalens/translate/**"
       - "app/src/main/java/app/mangalens/pipeline/**"
       - "app/src/main/java/app/mangalens/capture/**"
@@ -45,10 +46,18 @@ jobs:
           path: app/build/reader-live/translations.json
 
   published-page-on-android:
+    strategy:
+      fail-fast: false
+      matrix:
+        order: [baseline-first, candidate-first]
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
+    timeout-minutes: 50
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          ref: 94764de6c1fbf933d08c4480985df199aac4b692
+          path: previous-reader
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -57,6 +66,7 @@ jobs:
       - name: Build the Android reader and fetch the credited comic
         run: |
           ./gradlew -PreaderEmulator -PreaderPreview :app:assembleDebug :app:assembleDebugAndroidTest
+          (cd previous-reader && ./gradlew -PreaderEmulator -PreaderPreview :app:assembleDebug)
           bash tools/fetch-reader-page.sh
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
@@ -64,6 +74,7 @@ jobs:
       - name: Read a Korean comic panel with the pinned model and the Android compositor
         env:
           MANGALENS_LIVE_VISION: "1"
+          MANGALENS_LIVE_COMPARE_ORDER: ${{ matrix.order }}
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 33
@@ -75,5 +86,23 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: live-published-page
+          name: live-published-page-${{ matrix.order }}
           path: app/build/reader-live-device
+
+
+  cold-page-comparison:
+    needs: published-page-on-android
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: live-published-page-*
+          path: results
+      - name: Compare the same fresh model and panel on each emulator
+        run: python3 tools/compare-live-panels.py results
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: live-panel-comparison
+          path: results/comparison.json

@@ -3,6 +3,7 @@ package app.mangalens.translate
 import android.graphics.Bitmap
 import android.graphics.Rect
 import android.util.Base64
+import app.mangalens.ocr.OcrLine
 import app.mangalens.settings.AppSettings
 import app.mangalens.settings.SourceLang
 import java.io.ByteArrayOutputStream
@@ -66,6 +67,15 @@ class VisionLlmEngine(
         anchors: List<app.mangalens.ocr.Bubble>,
         onBubble: (suspend (VisionBubble) -> Unit)? = null,
     ): List<VisionBubble> =
+        translatePage(bitmap, lang, anchors, emptyList(), onBubble)
+
+    internal suspend fun translatePage(
+        bitmap: Bitmap,
+        lang: SourceLang,
+        anchors: List<app.mangalens.ocr.Bubble>,
+        lines: List<OcrLine>,
+        onBubble: (suspend (VisionBubble) -> Unit)?,
+    ): List<VisionBubble> =
         withContext(Dispatchers.IO) {
             LlmHttp.requireConfig(settings)
             // Noted before the memory is taken: see the learning below.
@@ -78,12 +88,6 @@ class VisionLlmEngine(
             val pageAnchors = if (cropped) anchors.map { bubble ->
                 bubble.copy(box = Rect(bubble.box).apply { offset(-upload.left, -upload.top) })
             } else anchors
-            val image = if (cropped) Bitmap.createBitmap(bitmap, upload.left, upload.top, upload.width(), upload.height()) else bitmap
-            val jpegB64 = try {
-                PageMarkup.encodeMarkedPage(image, pageAnchors, settings.dataSaver)
-            } finally {
-                if (image !== bitmap) image.recycle()
-            }
             val langHint = when (lang) {
                 SourceLang.KO -> "Korean"
                 SourceLang.JA -> "Japanese"
@@ -101,6 +105,15 @@ class VisionLlmEngine(
                     val box = pageAnchors[id].box
                     box.width() >= upload.width() / 3 && box.height() >= upload.height() / 6
                 }
+            val maxDimension = PageMarkup.zoomPageDimension(
+                upload, cropped, anchors, largeReadableId, lines, settings.dataSaver
+            )
+            val image = if (cropped) Bitmap.createBitmap(bitmap, upload.left, upload.top, upload.width(), upload.height()) else bitmap
+            val jpegB64 = try {
+                PageMarkup.encodeMarkedPage(image, pageAnchors, settings.dataSaver, maxDimension)
+            } finally {
+                if (image !== bitmap) image.recycle()
+            }
             val regions = JSONArray()
             pageAnchors.forEachIndexed { i, b ->
                 val o = JSONObject()

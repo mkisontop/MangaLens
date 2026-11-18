@@ -62,24 +62,33 @@ else
     echo "dfce12e3862a5283ccfb88221b48480e58745165de856439950d0f22590580db  $model_file" | sha256sum --check
     echo "539cf93f78e887edea1c04e2d7d8cdaca9d01dae9c9025bcb8accbe29df3d72a  $tail_file" | sha256sum --check
 fi
-LD_LIBRARY_PATH="$(dirname "$server")" "$server" -m "$model_file" "${extra[@]}" --alias "$model" -c 8192 -t 4 -np 1 \
-    --host 127.0.0.1 --port 7878 > "$work/server.log" 2>&1 &
-server_pid=$!
-for ((attempt=0; attempt<90; attempt++)); do
-    if curl -fsS http://127.0.0.1:7878/health > /dev/null 2>&1; then break; fi
-    if ! kill -0 "$server_pid" 2>/dev/null; then tail -40 "$work/server.log"; exit 1; fi
-    sleep 2
-done
-curl -fsS http://127.0.0.1:7878/health
 export MANGALENS_LIVE_ENDPOINT=http://127.0.0.1:7878/v1/chat/completions
 export MANGALENS_LIVE_MODEL="$model"
-run_test "$@"
-if [[ "${MANGALENS_LIVE_VISION:-0}" == 1 && $# -gt 0 ]]; then
-    python3 - "$work/server.log" <<'PY'
+start_model() {
+    LD_LIBRARY_PATH="$(dirname "$server")" "$server" -m "$model_file" "${extra[@]}" --alias "$model" -c 8192 -t 4 -np 1 \
+        --host 127.0.0.1 --port 7878 > "$work/server.log" 2>&1 &
+    server_pid=$!
+    for ((attempt=0; attempt<90; attempt++)); do
+        if curl -fsS http://127.0.0.1:7878/health > /dev/null 2>&1; then break; fi
+        if ! kill -0 "$server_pid" 2>/dev/null; then tail -40 "$work/server.log"; exit 1; fi
+        sleep 2
+    done
+    curl -fsS http://127.0.0.1:7878/health
+}
+
+stop_model() {
+    kill "$server_pid" 2>/dev/null || true
+    wait "$server_pid" 2>/dev/null || true
+    server_pid=
+}
+
+check_panel_requests() {
+    python3 - "$work/server.log" "$MANGALENS_LIVE_DEVICE_OUT" <<'PY'
 import json, re, sys
 from pathlib import Path
 log = Path(sys.argv[1]).read_text(errors="replace")
-records = [json.loads(row) for row in Path("app/build/reader-live-device/model-requests.jsonl").read_text().splitlines()]
+out_dir = Path(sys.argv[2])
+records = [json.loads(row) for row in (out_dir / "model-requests.jsonl").read_text().splitlines()]
 pages = [r for r in records if r["images"]]
 reviews = [r for r in records if not r["images"]]
 assert len(pages) == 2 and all(r["completed"] and r["image_bytes"] > 0 for r in pages), (
@@ -96,8 +105,32 @@ assert pages[0]["story_entries"] == 0 and pages[1]["story_entries"] > 0, (
     "The second frame must use the model's own preceding dialogue", records)
 images = [int(value) for value in re.findall(r"image (?:processed|slice encoded) in (\d+) ms", log)]
 report = {"android_requests": records, "image_processing_ms": images}
-out = Path("app/build/reader-live-device/model-timing.json")
+out = out_dir / "model-timing.json"
 out.write_text(json.dumps(report, indent=2) + "\n")
 print(report)
 PY
-fi
+}
+
+export MANGALENS_LIVE_DEVICE_OUT=${MANGALENS_LIVE_DEVICE_OUT:-app/build/reader-live-device}
+case "${MANGALENS_LIVE_COMPARE_ORDER:-single}" in
+    baseline-first) arms=(baseline candidate) ;;
+    candidate-first) arms=(candidate baseline) ;;
+    single) arms=(single) ;;
+    *) echo "Unknown model comparison order" >&2; exit 2 ;;
+esac
+report_root=$MANGALENS_LIVE_DEVICE_OUT
+for arm in "${arms[@]}"; do
+    if [[ "$arm" != single ]]; then
+        export MANGALENS_LIVE_DEVICE_OUT="$report_root/$arm"
+        if [[ "$arm" == baseline ]]; then
+            export MANGALENS_READER_SOURCE=previous-reader
+        else
+            export MANGALENS_READER_SOURCE=.
+        fi
+    fi
+    # Fresh model process for each build, so the other arm's images, answers and KV cache cannot leak into it.
+    start_model
+    run_test "$@"
+    if [[ "${MANGALENS_LIVE_VISION:-0}" == 1 && $# -gt 0 ]]; then check_panel_requests; fi
+    stop_model
+done

@@ -7,6 +7,7 @@ import android.graphics.Paint
 import android.graphics.Rect
 import android.util.Base64
 import app.mangalens.ocr.Bubble
+import app.mangalens.ocr.OcrLine
 import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -30,6 +31,27 @@ import org.robolectric.annotation.GraphicsMode
 @Config(sdk = [34])
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class PageMarkupTest {
+
+    @Test
+    fun zoomedDialoguesKeepEnoughPixelsForTheirSmallestLettering() {
+        val upload = Rect(0, 380, 720, 896)
+        val dialogue = Bubble("한글", Rect(145, 447, 692, 780), false)
+        val title = Bubble("", Rect(10, 450, 82, 544), false)
+        val normal = listOf(OcrLine("한글", Rect(222, 500, 370, 550), false))
+        fun dimension(lines: List<OcrLine> = normal, cropped: Boolean = true,
+                      dataSaver: Boolean = true, anchors: List<Bubble> = listOf(dialogue, title), id: Int? = 0) =
+            PageMarkup.zoomPageDimension(upload, cropped, anchors, id, lines, dataSaver)
+        assertEquals(512, dimension())
+        assertEquals(630, dimension(lines = normal + normal[0].copy(box = Rect(220, 601, 363, 633))))
+        assertEquals(1000, dimension(lines = normal + normal[0].copy(box = Rect(220, 601, 363, 611))))
+        assertEquals(1000, dimension(lines = normal + normal[0].copy(box = Rect(10, 450, 72, 490))))
+        assertEquals(1000, dimension(lines = listOf(normal[0].copy(vertical = true))))
+        assertEquals(1000, dimension(lines = emptyList()))
+        assertEquals(1000, dimension(cropped = false))
+        assertEquals(1000, dimension(id = null))
+        assertEquals(1400, dimension(dataSaver = false))
+        assertEquals(1000, dimension(anchors = listOf(dialogue.copy(vertical = true))))
+    }
 
     @Test
     fun aNativeZoomSkipsOnlyCompletelyFlatCloseups() {

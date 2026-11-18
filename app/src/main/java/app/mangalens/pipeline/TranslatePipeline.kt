@@ -602,7 +602,7 @@ class TranslatePipeline(
                         emit(PageResult(fromImage, vision.label, null))
                     }
                 }
-                val pageBubbles = vision.translatePage(bitmap, ocrResult.lang, bubbles, onBubble)
+                val pageBubbles = vision.translatePage(bitmap, ocrResult.lang, bubbles, anchorLines, onBubble)
                 // Accept the vision result only if it covered most of the
                 // dialogue regions we know exist. Otherwise fall back to the
                 // text path, which renders AI text on exact OCR geometry.
