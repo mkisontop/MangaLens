@@ -34,7 +34,7 @@ def main(root):
         artwork_scrolls = read(root, build, "published-scroll.csv")
         require({int(r["expected"]) for r in artwork_scrolls} == {-183, -121, -53, -17, -3, -1, 0, 2, 19, 78, 123, 181},
                 "Missing real artwork scrolls: " + build)
-        require({r["scene"] for r in published} == {"contest", "podium", "device"} and len(published) == 3,
+        require({r["scene"] for r in published} == {"contest", "outfit", "potion"} and len(published) == 3,
                 "Missing published Korean panels: " + build)
         require(all(r["english_read_back"] == "true" and r["original_marker_visible"] == "false" and int(r["art_pixels_checked"]) > 80000
                     and int(r["art_pixels_changed"]) == 0 for r in published),

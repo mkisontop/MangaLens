@@ -61,12 +61,12 @@ class PublishedComicExperienceTest {
 
     // Fractions of the published page. Each crop simulates zooming a panel in a comic reader.
     private val scenes = listOf(
-        Scene("contest", RectF(.045f, .009f, .31f, .277f), RectF(.074f, .029f, .311f, .205f),
-            listOf("코리앤더", "열망"), "Coriander wants to win the potion contest."),
-        Scene("podium", RectF(.30f, .012f, .613f, .296f), RectF(.303f, .032f, .565f, .241f),
-            listOf("지난번", "시상대"), "Last time she missed the podium."),
-        Scene("device", RectF(.495f, .29f, .794f, .557f), RectF(.507f, .327f, .733f, .492f),
-            listOf("장치", "물약"), "This device can catch different potions!"),
+        Scene("contest", RectF(.12f, .477f, .499f, .659f), RectF(.273f, .488f, .494f, .605f),
+            listOf("당근", "대회"), "Carrot, you sweetheart! Are you taking me to the contest?"),
+        Scene("outfit", RectF(.604f, .747f, .965f, .855f), RectF(.688f, .751f, .947f, .849f),
+            listOf("모자", "포션"), "You brought my clothes, my hat, and even the potion!"),
+        Scene("potion", RectF(.584f, .855f, .967f, .970f), RectF(.725f, .857f, .934f, .942f),
+            listOf("어떤", "볼까"), "Let's see which potion you brought."),
     )
 
     @Test
@@ -111,7 +111,7 @@ class PublishedComicExperienceTest {
     fun realModelLettersThePublishedKoreanPanelOnTheDevice() {
         val endpoint = InstrumentationRegistry.getArguments().getString("liveEndpoint")
         assumeTrue("Run the live Android reader job with a model endpoint", !endpoint.isNullOrBlank())
-        val scene = scenes.single { it.name == "device" }
+        val scene = scenes.single { it.name == "outfit" }
         readScenes(listOf(scene), "live-published.csv", requireNotNull(endpoint))
     }
 
@@ -221,12 +221,13 @@ class PublishedComicExperienceTest {
                     assertEquals("the published balloon was recognized: " + seen, listOf(scene.english), cards)
                     scene.english
                 } else {
-                    assertTrue("The published source mentions potions and a device: " + sourceLines,
+                    assertTrue("The published source mentions a hat and a potion: " + sourceLines,
                         scene.markers.all { marker -> sourceLines.any { marker in it.filter(Char::isLetter) } })
                     val answer = cards.single().lowercase()
-                    assertTrue("The real translation must preserve the apparatus and potions: " + answer,
+                    assertTrue("The real translation must preserve the clothing, hat and potion: " + answer,
                         Regex("potion|elixir|concoction").containsMatchIn(answer) &&
-                            Regex("device|apparatus|machine|mechanism|gadget|contraption|equipment").containsMatchIn(answer))
+                            Regex("clothes|clothing|outfit|garments|dress|costume").containsMatchIn(answer) &&
+                            Regex("\\b(hat|cap)s?\\b").containsMatchIn(answer))
                     cards.single()
                 }
                 inst.runOnMainSync { overlay.setBubbles(result.bubbles, frame) }
