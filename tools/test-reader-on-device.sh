@@ -13,6 +13,8 @@ for build in baseline candidate; do
     adb install -r -g "$apk"
     adb install -r -g app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
     adb shell pm clear app.mangalens
+    adb shell run-as app.mangalens mkdir -p files
+    adb exec-in run-as app.mangalens dd of=files/potion-contest-page.jpg < app/build/reader-fixtures/potion-contest-page.jpg
     adb shell pm grant app.mangalens android.permission.POST_NOTIFICATIONS
     adb shell appops set app.mangalens SYSTEM_ALERT_WINDOW allow
     adb logcat -c
@@ -44,5 +46,6 @@ PY
         fi
     fi
 done
+cp app/src/androidTest/assets/peppercarrot-CREDITS.txt "$out/"
 if ((failed)); then exit 1; fi
 python3 tools/compare-reader-experience.py "$out"

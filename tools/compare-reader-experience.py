@@ -28,6 +28,12 @@ def main(root):
         scrolls = read(root, build, "scroll.csv")
         uploads = read(root, build, "uploads.csv")
         erasures = read(root, build, "erasure.csv")
+        published = read(root, build, "published.csv")
+        require({r["scene"] for r in published} == {"contest", "podium", "device"} and len(published) == 3,
+                "Missing published Korean panels: " + build)
+        require(all(r["english_read_back"] == "true" and int(r["art_pixels_checked"]) > 80000
+                    and int(r["art_pixels_changed"]) == 0 for r in published),
+                "The reader could not read a published panel or its art was altered: " + build)
         require({(r["paper"], int(r["trial"])) for r in erasures} ==
                 {(paper, i) for paper in ("white", "colour", "gradient") for i in range(12)},
                 "Missing reference images or erasure timings: " + build)
@@ -60,6 +66,9 @@ def main(root):
                            for paper in ("white", "colour", "gradient")},
             "erased_image_crc": {paper: sorted({r["crc"] for r in erasures if r["paper"] == paper})
                                  for paper in ("white", "colour", "gradient")},
+            "published_panels_read_back": len(published),
+            "published_art_pixels_checked": sum(int(r["art_pixels_checked"]) for r in published),
+            "published_art_pixels_changed": sum(int(r["art_pixels_changed"]) for r in published),
             "scroll_cases_correct": sum(r["observed"] == r["expected"] for r in scrolls),
             "scroll_registration_ms": median([r for r in scrolls if int(r["trial"]) > 0], "ms"),
             "gemini_image_bytes": median(uploads, "jpeg_bytes"),
