@@ -14,6 +14,7 @@ android {
         targetSdk = 35
         versionCode = 39
         versionName = "1.1.4"
+        testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
 
         ndk {
             // Every modern tablet is arm64; dropping the other ABIs takes the
@@ -36,6 +37,15 @@ android {
     buildTypes {
         debug {
             signingConfig = signingConfigs.getByName("debug")
+            val preview = providers.gradleProperty("readerPreview").isPresent
+            manifestPlaceholders["debugAppLabel"] = if (preview) "MangaLens Preview" else "@string/app_name"
+            if (preview) {
+                applicationIdSuffix = ".preview"
+                versionNameSuffix = "-preview"
+            }
+            if (providers.gradleProperty("readerEmulator").isPresent) {
+                ndk.abiFilters += "x86_64"
+            }
         }
         release {
             isMinifyEnabled = false
@@ -95,4 +105,13 @@ dependencies {
     testImplementation(platform("androidx.compose:compose-bom:2024.12.01"))
     testImplementation("androidx.compose.ui:ui-test-junit4")
     debugImplementation("androidx.compose.ui:ui-test-manifest")
+    androidTestImplementation("androidx.test.ext:junit:1.2.1")
+    androidTestImplementation("androidx.test:runner:1.6.2")
+    androidTestImplementation("androidx.test.uiautomator:uiautomator:2.3.0")
+    androidTestImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
+    androidTestImplementation("com.google.mlkit:text-recognition:16.0.1")
+    if (providers.gradleProperty("readerEmulator").isPresent) {
+        // ML Kit discovers the bundled read-back model in the target app.
+        debugImplementation("com.google.mlkit:text-recognition:16.0.1")
+    }
 }

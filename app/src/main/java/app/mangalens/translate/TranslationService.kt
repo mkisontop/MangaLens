@@ -44,7 +44,7 @@ class TranslationService(
         val missingIdx = LinkedHashSet<Int>()
         for ((i, t) in items.withIndex()) {
             val hit = cache.get(TranslationCache.key(engine.cacheNamespace, lang.name, t))
-            if (hit != null) resolved[i] = hit else missingIdx.add(i)
+            if (hit != null && !JunkFilter.isPromptPlaceholder(hit)) resolved[i] = hit else missingIdx.add(i)
         }
         // A sentence split across balloons only translates correctly as a
         // whole. If any part missed the cache, pull its siblings back in
@@ -62,7 +62,12 @@ class TranslationService(
         }
         val missing = missingIdx.sorted().map { it to items[it] }
         val partial = HashMap<Int, String>()
-        for (i in items.indices) resolved[i]?.let { partial[i] = it }
+        // A cached member of a split sentence may get different wording once
+        // the missing part is read. Only independent hits are ready to letter.
+        for (i in items.indices) {
+            if (i !in missingIdx) resolved[i]?.let { partial[i] = it }
+        }
+        if (partial.isNotEmpty()) onProgress?.invoke(HashMap(partial))
         val fresh = engine.translateWithKinds(
             missing.map { it.second },
             missing.map { kinds?.getOrNull(it.first) ?: BubbleKind.DIALOGUE },
@@ -99,5 +104,7 @@ class TranslationService(
 
     /** True when every item is already cached under [ns] — no network needed. */
     fun fullyCached(ns: String, lang: SourceLang, items: List<String>): Boolean =
-        items.all { cache.get(TranslationCache.key(ns, lang.name, it)) != null }
+        items.all { text ->
+            cache.get(TranslationCache.key(ns, lang.name, text))?.let { !JunkFilter.isPromptPlaceholder(it) } == true
+        }
 }

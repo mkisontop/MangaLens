@@ -12,10 +12,15 @@ import app.mangalens.ocr.Script
  */
 object JunkFilter {
 
+    /** A model that copies the response template has supplied no translation. */
+    internal fun isPromptPlaceholder(value: String): Boolean =
+        value.trim().let { it.equals("<English>", true) || it.equals("<translation>", true) ||
+            it.equals("<English translation>", true) }
+
     /** Returns null when the translation should not be rendered at all. */
     fun accept(source: String, translated: String): String? {
         val out = translated.trim()
-        if (out.isEmpty()) return null
+        if (out.isEmpty() || isPromptPlaceholder(out)) return null
         // Untranslated echo: painting the original text over itself helps nobody.
         if (Script.cjkCount(out) > out.length * 0.4f) return null
         // The Latin flavour of the same failure — a Spanish source coming

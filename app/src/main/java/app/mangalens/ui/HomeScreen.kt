@@ -130,7 +130,7 @@ internal data class HomeUiState(
     val ghostsOffered: Boolean = false,
     /** "Brave" when it is installed, else null and the copy says "your browser". */
     val browserName: String? = null,
-    /** The last GO ended at the screen-capture dialog's Cancel. */
+    /** The reader needs a fresh screen-sharing grant. */
     val startRefused: Boolean = false,
     val update: UpdateChecker.Update? = null,
     val versionName: String = "",

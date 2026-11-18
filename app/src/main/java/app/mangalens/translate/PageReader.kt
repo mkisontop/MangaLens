@@ -93,7 +93,18 @@ class PageReader internal constructor(
      */
     fun start(scope: CoroutineScope, bitmap: Bitmap, lang: SourceLang, unread: IntArray? = null): PendingRead {
         val started = System.nanoTime()
-        val page = PageRequest(bitmap.width, bitmap.height, encode(bitmap, settings.dataSaver), lang, unread)
+        // A strip's unread band already uses strip coordinates. Only a full page
+        // with two proven empty margins can be cropped a second time.
+        val bounds = if (unread == null) PageMarkup.visiblePageBounds(bitmap, emptyList())
+            else Rect(0, 0, bitmap.width, bitmap.height)
+        val image = if (bounds.height() == bitmap.height) bitmap else
+            Bitmap.createBitmap(bitmap, bounds.left, bounds.top, bounds.width(), bounds.height())
+        val encoded = try {
+            encode(image, settings.dataSaver)
+        } finally {
+            if (image !== bitmap) image.recycle()
+        }
+        val page = PageRequest(bounds, encoded, lang, unread)
         val read = Read(started, elapsedMs(started))
         val job = scope.launch(Dispatchers.Default) {
             try {
@@ -368,7 +379,7 @@ class PageReader internal constructor(
      * when the page was captured, and the page's own size for mapping the
      * model's boxes back.
      */
-    private inner class PageRequest(val width: Int, val height: Int, val jpeg: String, lang: SourceLang, unread: IntArray? = null) {
+    private inner class PageRequest(val bounds: Rect, val jpeg: String, lang: SourceLang, unread: IntArray? = null) {
 
         /** The work the memory below was taken from; read first, so a reset part-way through only drops the learning. */
         val generation = StoryContext.generation
@@ -405,7 +416,9 @@ class PageReader internal constructor(
             return body
         }
 
-        fun item(o: JSONObject): PageItem? = toItem(o, width, height)
+        fun item(o: JSONObject): PageItem? = toItem(o, bounds.width(), bounds.height())?.also {
+            it.box.offset(bounds.left, bounds.top)
+        }
     }
 
     /** A read in flight: the items so far, and how it ended once it has. */
@@ -487,13 +500,17 @@ class PageReader internal constructor(
             state.update { s -> if (!s.finished) State(s.items, finished = true, error = error, endMs = at) else s }
         }
 
-        override suspend fun collect(onItem: (suspend (PageItem) -> Unit)?): List<PageItem> {
+        override suspend fun collect(onItem: (suspend (PageItem) -> Unit)?): List<PageItem> =
+            collectAvailable { batch -> if (onItem != null) for (item in batch) onItem(item) }
+
+        override suspend fun collectAvailable(onBatch: suspend (List<PageItem>) -> Unit): List<PageItem> {
             var sent = 0
             while (true) {
                 val s = state.first { it.items.size > sent || it.finished }
-                while (sent < s.items.size) {
-                    onItem?.invoke(s.items[sent])
-                    sent++
+                if (sent < s.items.size) {
+                    // Each published state owns an immutable list.
+                    onBatch(s.items.subList(sent, s.items.size))
+                    sent = s.items.size
                 }
                 if (s.finished) {
                     s.error?.let { throw it }
@@ -657,7 +674,7 @@ class PageReader internal constructor(
             // One line: a break copied from the source's columns would be set
             // as a hard break in the middle of the English.
             val en = o.optString("en", "").trim().replace(LINE_BREAKS, " ")
-            if (en.isEmpty()) return null
+            if (en.isEmpty() || JunkFilter.isPromptPlaceholder(en)) return null
             val b = o.optJSONArray("box_2d") ?: return null
             if (b.length() < 4) return null
             val v = DoubleArray(4) { b.optDouble(it) }
@@ -842,6 +859,10 @@ interface PendingRead {
      * cancelled. May be called more than once, by more than one collector.
      */
     suspend fun collect(onItem: (suspend (PageItem) -> Unit)? = null): List<PageItem>
+
+    /** Delivers all lines already available, in order, without waiting to form a batch. */
+    suspend fun collectAvailable(onBatch: suspend (List<PageItem>) -> Unit): List<PageItem> =
+        collect { item -> onBatch(listOf(item)) }
 
     fun cancel()
 }

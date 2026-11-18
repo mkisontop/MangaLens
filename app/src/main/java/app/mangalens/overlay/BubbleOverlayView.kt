@@ -104,6 +104,10 @@ data class RenderBubble(
      * the border into the next one. Null when the page's panels were not read.
      */
     val panel: Rect? = null,
+    /** An OCR source box whose strokes still need a fixed fallback wipe. */
+    val coverSource: Boolean = false,
+    /** Verified source lettering within a detected balloon, in capture coordinates. */
+    val sourceInkBounds: Rect? = null,
 ) {
     /** This card for the page moved [dy] rows down: everything it places moves with it. */
     fun shiftedBy(dy: Int): RenderBubble {
@@ -112,6 +116,7 @@ data class RenderBubble(
             box = moved(box),
             balloon = balloon?.let { it.copy(box = moved(it.box)) },
             patchRect = patchRect?.let(::moved),
+            sourceInkBounds = sourceInkBounds?.let(::moved),
             art = art?.shifted(dy),
             otherPanels = otherPanels.map(::moved),
             panel = panel?.let(::moved),
@@ -175,7 +180,7 @@ class BubbleOverlayView(context: Context) : View(context) {
         val movable: Boolean,
         val card: RectF? = null,
         val cardColor: Int = 0,
-        /** Rectangle wiped to [cardColor] under a card: an on-art vertical column. */
+        /** Source lettering cleared in place, even when its English card moves. */
         val wipe: RectF? = null,
         /** Tint for a flat balloon stamp; null draws the stamp's own colours. */
         val tint: PorterDuffColorFilter? = null,
@@ -216,6 +221,7 @@ class BubbleOverlayView(context: Context) : View(context) {
         val balloon: Balloon?,
         val inpainted: Boolean,
         val patched: Boolean,
+        val coverSource: Boolean,
         val busy: Boolean,
         /**
          * The panel free lettering is fitted and held to. It is the same for
@@ -250,6 +256,7 @@ class BubbleOverlayView(context: Context) : View(context) {
     private var setH = -1f
     private var setScale = Float.NaN
     private var setOpacity = Float.NaN
+    private var setAnimated = false
 
     private companion object {
         /** Smallest type, in dp, the text shrinks to. */
@@ -533,6 +540,7 @@ class BubbleOverlayView(context: Context) : View(context) {
         val lettering: Lettering,
         val stamp: Bitmap?,
         val stampDst: RectF?,
+        val sourceInkBounds: Rect?,
         val patch: Bitmap?,
         val patchDst: Rect?,
         val dy: Float,
@@ -638,7 +646,6 @@ class BubbleOverlayView(context: Context) : View(context) {
      * The view keeps the reference and never alters or frees it.
      */
     fun setBubbles(bubbles: List<RenderBubble>, page: Bitmap? = null) {
-        source = bubbles
         placed = placeAll(bubbles)
         backdrop = page
         invalidate()
@@ -655,17 +662,37 @@ class BubbleOverlayView(context: Context) : View(context) {
      * bubble is unchanged. The caches are rebuilt from this list alone, so
      * they never hold more than the page on screen.
      */
-    private fun placeAll(bubbles: List<RenderBubble>): List<Placed> {
+    private fun placeAll(next: List<RenderBubble>): List<Placed> {
         val screenW = screenWidth()
         val screenH = screenHeight()
-        if (screenW != setW || screenH != setH || textScale != setScale || bgOpacity != setOpacity) {
+        val dimensionsChanged = screenW != setW || screenH != setH || textScale != setScale || bgOpacity != setOpacity
+        val animated = animates()
+        // The final response often repeats the last streamed page. Its art
+        // is updated by setBubbles even when the lettering is already placed.
+        if (!dimensionsChanged && animated == setAnimated && source == next) return placed
+        if (dimensionsChanged) {
             letterings.clear()
             setW = screenW
             setH = screenH
             setScale = textScale
             setOpacity = bgOpacity
         }
-        val now = if (animates()) clock().coerceAtLeast(1L) else 0L
+        setAnimated = animated
+        // Rect is mutable. Snapshot the geometry so a caller moving its
+        // existing box or replacing entries in its list still relays out.
+        val bubbles = next.mapIndexed { index, b ->
+            val previous = source.getOrNull(index)
+            if (previous != null && previous == b) previous else b.copy(
+                box = Rect(b.box),
+                balloon = b.balloon?.let { it.copy(box = Rect(it.box)) },
+                patchRect = b.patchRect?.let(::Rect),
+                sourceInkBounds = b.sourceInkBounds?.let(::Rect),
+                panel = b.panel?.let(::Rect),
+                otherPanels = b.otherPanels.map(::Rect),
+            )
+        }
+        source = bubbles
+        val now = if (animated) clock().coerceAtLeast(1L) else 0L
         val nextLetterings = HashMap<Key, Lettering?>(bubbles.size * 2)
         val nextStamps = HashMap<StampKey, Bitmap?>()
         val nextBusy = IdentityHashMap<Bitmap, Boolean>()
@@ -696,6 +723,7 @@ class BubbleOverlayView(context: Context) : View(context) {
                 balloon = if (stamp != null) balloon else null,
                 inpainted = stamp != null && b.fill != null,
                 patched = patch != null,
+                coverSource = b.coverSource,
                 busy = busy,
                 panel = b.panel?.let(::Rect),
             )
@@ -730,7 +758,10 @@ class BubbleOverlayView(context: Context) : View(context) {
                 dy = claim.top - (l.card ?: l.inkRect).top
             }
             val bounds = RectF(l.inkRect).apply { offset(0f, dy) }
-            l.card?.let { bounds.union(claim) }
+            l.card?.let {
+                // The card's antialiased hairline belongs inside the capture mask too.
+                bounds.union(RectF(claim).apply { inset(-dp(1f), -dp(1f)) })
+            }
             l.wipe?.let { bounds.union(it) }
             val stampDst = if (stamp != null) RectF(balloon!!.box) else null
             stampDst?.let { bounds.union(it) }
@@ -1913,7 +1944,12 @@ class BubbleOverlayView(context: Context) : View(context) {
         top = top.coerceAtMost(screenH - h - dp(2f)).coerceAtLeast(dp(2f))
         val rect = RectF(left, top, left + w, top + h)
 
-        val wipe = if (column) RectF(b.box).apply { inset(-dp(2f), -dp(2f)) } else null
+        // A short translation or a card nudged off a neighbour can leave source
+        // glyphs exposed on either side. Keep the fallback wipe on the source,
+        // bounded like the card itself if an OCR box spans a whole page.
+        val wipe = if (column || (b.coverSource && b.box.width() <= screenW * .92f && b.box.height() <= screenH * .5f)) {
+            RectF(b.box).apply { inset(-dp(2f), -dp(2f)) }
+        } else null
         return lettering(
             layout = chosen,
             x = rect.centerX() - chosen.width / 2f,
@@ -2079,7 +2115,8 @@ class BubbleOverlayView(context: Context) : View(context) {
         if (list === groundsList) return
         val next = HashMap<GroundKey, Ground?>()
         fun ground(p: Placed, card: Boolean): Ground? {
-            val key = GroundKey(card, p.lettering, p.stamp, p.stampDst, p.patch, p.patchDst, if (card) p.dy else 0f)
+            val key = GroundKey(card, p.lettering, p.stamp, p.stampDst, p.source.sourceInkBounds,
+                p.patch, p.patchDst, if (card) p.dy else 0f)
             val g = if (grounds.containsKey(key)) grounds[key] else groundOf(p, card, k, page)
             next[key] = g
             return g
@@ -2106,7 +2143,7 @@ class BubbleOverlayView(context: Context) : View(context) {
             area.set(c)
             area.offset(0f, p.dy)
         } else {
-            if (p.stamp != null && p.stampDst != null) area.union(p.stampDst)
+            if (p.stamp != null && p.stampDst != null) area.union(p.source.sourceInkBounds?.let(::RectF) ?: p.stampDst)
             if (p.patch != null && p.patchDst != null) area.union(RectF(p.patchDst))
             p.lettering.wipe?.let { area.union(it) }
             if (area.isEmpty) return null
@@ -2138,7 +2175,15 @@ class BubbleOverlayView(context: Context) : View(context) {
             val p = list[i]
             if (p.stamp != null && p.stampDst != null) {
                 maskPaint.colorFilter = p.lettering.tint
-                canvas.drawBitmap(p.stamp, null, p.stampDst, maskPaint)
+                val clip = p.source.sourceInkBounds
+                if (clip == null) {
+                    canvas.drawBitmap(p.stamp, null, p.stampDst, maskPaint)
+                } else {
+                    val saved = canvas.save()
+                    canvas.clipRect(clip)
+                    canvas.drawBitmap(p.stamp, null, p.stampDst, maskPaint)
+                    canvas.restoreToCount(saved)
+                }
             }
             if (p.patch != null && p.patchDst != null) {
                 canvas.drawBitmap(p.patch, null, p.patchDst, patchPaint)

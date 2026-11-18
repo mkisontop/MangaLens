@@ -448,7 +448,7 @@ class TranslatePipeline(
         val h = (crop.height() * scale).toInt()
         val src = Bitmap.createBitmap(bitmap, crop.left, crop.top, crop.width(), crop.height())
         val scaled = Bitmap.createScaledBitmap(src, w, h, true)
-        if (scaled !== src) src.recycle()
+        if (scaled !== src && src !== bitmap) src.recycle()
         // Light lettering on a dark box reads far better with the polarity
         // flipped back to what the recognizers expect.
         val input = if (b.inverted) invert(scaled) else scaled
@@ -464,7 +464,7 @@ class TranslatePipeline(
             }
         } finally {
             if (input !== scaled) input.recycle()
-            scaled.recycle()
+            if (scaled !== bitmap) scaled.recycle()
         }
     }
 
@@ -583,12 +583,6 @@ class TranslatePipeline(
                     vision.label, null,
                 )
             }
-        } else {
-            val ns = vision.cacheNamespace.removePrefix("Vision:")
-            val dialogue = bubbles.filter { it.kind == BubbleKind.DIALOGUE }
-            if (dialogue.isNotEmpty() && translation.fullyCached(ns, ocrResult.lang, dialogue.map { it.text })) {
-                return aiTextTranslate(bitmap, bubbles, ocrResult.lang, settings, detected)
-            }
         }
 
         // The answer streams, and every balloon it finishes is painted as it
@@ -648,7 +642,7 @@ class TranslatePipeline(
         val onProgress: (suspend (List<RenderBubble>) -> Unit)? = onPartial?.let { emit ->
             { rendered -> emit(PageResult(UpgradeMerge.merge(fromImage, rendered), vision.label, null)) }
         }
-        val text = aiTextTranslate(bitmap, bubbles, ocrResult.lang, settings, detected, onProgress)
+        val text = aiTextTranslate(bitmap, bubbles, ocrResult.lang, settings, detected, anchorLines, onProgress)
         val shown = UpgradeMerge.merge(fromImage, text.bubbles)
         val failure = imageFailure ?: return text.copy(bubbles = shown)
         return text.copy(
@@ -791,10 +785,18 @@ class TranslatePipeline(
 
         var failure: Exception? = null
         val items: List<PageItem>? = try {
-            read.collect { item ->
+            read.collectAvailable { arrived ->
                 if (firstAt < 0) firstAt = elapsed()
-                streamed.add(item)
                 anchorIfRead()
+                if (streamed.isEmpty() && remembered.isEmpty() && arrived.size > 1 && onPartial != null) {
+                    // Give the reader the first line immediately. If analysis
+                    // or painting fell behind, catch up in one more layout.
+                    streamed.add(arrived.first())
+                    paint()
+                    streamed.addAll(arrived.subList(1, arrived.size))
+                } else {
+                    streamed.addAll(arrived)
+                }
                 paint()
             }
         } catch (e: CancellationException) {
@@ -819,7 +821,7 @@ class TranslatePipeline(
             val lined = withLines()
             val partialShown = resolver.resolve(lettered(streamed))
             val text = try {
-                aiTextTranslate(bitmap, lined.bubbles, lined.ocr.lang, settings, lined.detected)
+                aiTextTranslate(bitmap, lined.bubbles, lined.ocr.lang, settings, lined.detected, lined.anchorLines)
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
@@ -1002,6 +1004,7 @@ class TranslatePipeline(
             val arr = obj.getJSONArray("items")
             (0 until arr.length()).map { i ->
                 val o = arr.getJSONArray(i)
+                if (JunkFilter.isPromptPlaceholder(o.getString(6))) throw IllegalStateException("unanswered cached region")
                 PageItem(
                     box = Rect(
                         (o.getInt(0) + shift.dx) * w / 1000,
@@ -1050,6 +1053,7 @@ class TranslatePipeline(
         lang: SourceLang,
         settings: AppSettings,
         detected: List<Balloon>,
+        ocrLines: List<OcrLine>,
         onProgress: (suspend (List<RenderBubble>) -> Unit)? = null,
     ): PageResult {
         // Text-only requests can say nothing about a balloon OCR could not
@@ -1057,6 +1061,19 @@ class TranslatePipeline(
         val idx = bubbles.indices.filter { bubbles[it].text.isNotBlank() }
         if (idx.isEmpty()) return PageResult(emptyList(), "", null)
 
+        // The geometry, sampled paper and erasure are properties of this
+        // captured frame. A later line in the stream cannot change them.
+        val cards = arrayOfNulls<RenderBubble>(idx.size)
+        fun card(k: Int, answer: String): RenderBubble? {
+            val b = bubbles[idx[k]]
+            val english = JunkFilter.accept(b.text, answer) ?: return null
+            val previous = cards[k]
+            if (previous != null && previous.translated == english) return previous
+            val next = previous?.copy(translated = english)
+                ?: renderBubble(bitmap, b.box, english, b.text, b.vertical, b.kind, detected, ocrLines, cleanOcrText = true)
+            cards[k] = next
+            return next
+        }
         val outcome = translation.translate(
             idx.map { bubbles[it].text }, lang, settings,
             kinds = idx.map { bubbles[it].kind },
@@ -1066,20 +1083,13 @@ class TranslatePipeline(
                 { texts ->
                     emit(
                         texts.entries.sortedBy { it.key }.mapNotNull { (k, en) ->
-                            val b = bubbles[idx[k]]
-                            val gated = JunkFilter.accept(b.text, en) ?: return@mapNotNull null
-                            renderBubble(bitmap, b.box, gated, b.text, b.vertical, b.kind, detected)
+                            card(k, en)
                         }
                     )
                 }
             },
         )
-        val rendered = idx.mapIndexedNotNull { k, i ->
-            val b = bubbles[i]
-            val gated = JunkFilter.accept(b.text, outcome.texts.getOrElse(k) { "" })
-                ?: return@mapIndexedNotNull null
-            renderBubble(bitmap, b.box, gated, b.text, b.vertical, b.kind, detected)
-        }
+        val rendered = idx.indices.mapNotNull { k -> card(k, outcome.texts.getOrElse(k) { "" }) }
         return PageResult(rendered, outcome.engineLabel, null)
     }
 
@@ -1152,6 +1162,7 @@ class TranslatePipeline(
             renderBubble(
                 bitmap, anchor.box, v.en, v.src.ifBlank { anchor.text }, anchor.vertical,
                 if (v.sfx) BubbleKind.SFX else BubbleKind.DIALOGUE, detected,
+                ocrLines, cleanOcrText = anchor.text.isNotBlank(),
             )
         }
 
@@ -1209,6 +1220,7 @@ class TranslatePipeline(
             renderBubble(
                 bitmap, box, v.en, original, vertical,
                 if (v.sfx) BubbleKind.SFX else BubbleKind.DIALOGUE, detected,
+                ocrLines, cleanOcrText = textBox != null,
             )
         }
         return anchored + extras
@@ -1283,7 +1295,9 @@ class TranslatePipeline(
                 val o = arr.getJSONArray(i)
                 // Rows written before the speaker field existed are dropped
                 // rather than read short.
-                if (o.length() != 9) throw IllegalStateException("stale vision cache entry")
+                if (o.length() != 9 || JunkFilter.isPromptPlaceholder(o.getString(6))) {
+                    throw IllegalStateException("stale vision cache entry")
+                }
                 VisionLlmEngine.VisionBubble(
                     o.getInt(0), o.getInt(1), o.getInt(2), o.getInt(3), o.getInt(4),
                     o.getString(5), o.getString(6), o.getInt(7) == 1, o.getString(8),
@@ -1331,17 +1345,41 @@ class TranslatePipeline(
         vertical: Boolean,
         kind: BubbleKind,
         detected: List<Balloon>,
+        ocrLines: List<OcrLine>,
+        cleanOcrText: Boolean = false,
     ): RenderBubble {
         // Art that passed for a balloon — a face, a highlight — is never
         // wiped: only a detection holding nothing but this lettering is.
         // OCR often reads only part of a balloon, so a balloon whose ink is
         // one compact block of lettering around the part it did read is
         // lettering too; a face's ink is spread thin across it.
-        val balloon = balloonFor(box, detected)?.takeIf {
-            BalloonTrust.holdsOnly(bitmap, it, listOf(box)) ||
-                BalloonTrust.letteringBlock(bitmap, it)?.let { block -> Rect.intersects(block, box) } == true
+        val shape = balloonFor(box, detected)
+        val ink = shape?.let { BalloonTrust.letteringBlock(bitmap, it) }?.takeIf { Rect.intersects(it, box) }
+        val balloon = shape?.takeIf { ink != null || BalloonTrust.holdsOnly(bitmap, it, listOf(box)) }
+        // A welded region is the whole balloon. Use its original OCR line
+        // bounds for cleaning and extend them over adjacent strokes OCR missed.
+        val lines = ocrLines.asSequence().map { it.box }
+            .filter { box.contains(it.centerX(), it.centerY()) }.toList()
+        fun combined(rects: List<Rect>) = Rect().apply { rects.forEach { union(it) } }
+        val sourceBox = if (lines.isEmpty()) box else combined(lines)
+        val inkBounds = balloon?.let { shapeToClean ->
+            val block = if (lines.isEmpty()) ink else combined(BalloonTrust.withNeighbours(bitmap, shapeToClean, lines))
+            block?.let { Rect(it).apply {
+                val pad = (minOf(width(), height()) / 20).coerceIn(4, 12)
+                inset(-pad, -pad)
+                intersect(shapeToClean.box)
+            } }
         }
-        val bg = if (balloon != null) PageColors.interiorColor(bitmap, balloon) else PageColors.sampleBackground(bitmap, box)
+        // Dialogue can be perfectly readable even when a page edge or a control
+        // hides the balloon outline. Clean the OCR strokes on their own paper.
+        val erasure = if (cleanOcrText && balloon == null && kind == BubbleKind.DIALOGUE) {
+            TextEraser.erase(bitmap, sourceBox, ItemKind.SPEECH)
+        } else null
+        val bg = when {
+            balloon != null -> PageColors.interiorColor(bitmap, balloon)
+            erasure != null -> erasure.background
+            else -> PageColors.sampleBackground(bitmap, box)
+        }
         val textColor = when {
             balloon?.inverted == true -> 0xFFF2F3F7.toInt()
             PageColors.luminance(bg) < 140 -> Color.WHITE
@@ -1360,6 +1398,10 @@ class TranslatePipeline(
             kind = kind,
             balloon = balloon,
             fill = fill,
+            patch = erasure?.patch,
+            patchRect = erasure?.rect,
+            coverSource = cleanOcrText && kind == BubbleKind.DIALOGUE && balloon == null && erasure == null,
+            sourceInkBounds = inkBounds,
         )
     }
 

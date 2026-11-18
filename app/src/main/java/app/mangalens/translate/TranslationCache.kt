@@ -19,7 +19,9 @@ class TranslationCache(private val maxEntries: Int = 1500) {
     }
 
     companion object {
+        private val whitespace = Regex("\\s+")
+
         fun key(namespace: String, lang: String, text: String) =
-            namespace + "|" + lang + "|" + text.replace(Regex("\\s+"), "")
+            namespace + "|" + lang + "|" + text.trim().replace(whitespace, " ")
     }
 }

@@ -13,6 +13,8 @@ import android.graphics.ColorMatrixColorFilter
 import android.graphics.Paint
 import android.graphics.PixelFormat
 import android.graphics.Rect
+import android.graphics.Region
+import android.graphics.RegionIterator
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.Image
@@ -164,6 +166,19 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
          */
         private const val MASK_GRACE_MS = 300L
 
+        /** Did the controls reveal enough of a previously excluded area for lettering? */
+        internal fun uncoveredTextArea(before: List<Rect>, now: List<Rect>): Boolean {
+            val uncovered = Region()
+            for (rect in before) uncovered.op(rect, Region.Op.UNION)
+            for (rect in now) uncovered.op(rect, Region.Op.DIFFERENCE)
+            val pieces = RegionIterator(uncovered)
+            val piece = Rect()
+            while (pieces.next(piece)) {
+                if (piece.width() >= 12 && piece.height() >= 12) return true
+            }
+            return false
+        }
+
         /**
          * Passes a page change may cancel mid-stream, one after another,
          * before the next pass is left to finish. A region that never stops
@@ -217,6 +232,9 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
             "⚠ AI couldn't ${if (partly) "finish" else "read"} this page — $cause"
 
         val running = MutableStateFlow(false)
+
+        /** Keep a declined or expired grant visible on Home until the reader asks again. */
+        val captureConsentRequired = MutableStateFlow(false)
 
         /**
          * Whether translation is paused, for the home screen: it shows Fuki
@@ -384,6 +402,10 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
      * cumulative comparison has every frame.
      */
     @Volatile private var shownThumb: IntArray? = null
+
+    /** Controls present when an automatic pass found a blank page. Main thread only. */
+    private var blankReadExclusions: List<Rect>? = null
+    private var uncoveredRead: Job? = null
 
     /**
      * The thumb cells our own overlays currently cover: the cards, and the
@@ -620,10 +642,15 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                 val code = intent.getIntExtra(EXTRA_RESULT_CODE, Activity.RESULT_CANCELED)
                 val data = IntentCompat.getParcelableExtra(intent, EXTRA_RESULT_DATA, Intent::class.java)
                 if (code != Activity.RESULT_OK || data == null) {
-                    stopSelf()
+                    stopForCaptureConsent()
                 } else {
-                    startAsForeground()
-                    startProjection(code, data)
+                    captureConsentRequired.value = false
+                    try {
+                        startAsForeground()
+                        startProjection(code, data)
+                    } catch (_: SecurityException) {
+                        stopForCaptureConsent()
+                    }
                 }
             }
             ACTION_STOP -> stopSelf()
@@ -631,6 +658,11 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
             ACTION_TOGGLE_PAUSE -> onTogglePause()
         }
         return START_NOT_STICKY
+    }
+
+    private fun stopForCaptureConsent() {
+        captureConsentRequired.value = true
+        stopSelf()
     }
 
     private fun startAsForeground() {
@@ -651,7 +683,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
             null
         }
         if (mp == null) {
-            stopSelf()
+            stopForCaptureConsent()
             return
         }
         projection = mp
@@ -663,7 +695,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                 scope.launch { stopSelf() }
             }
         }, captureHandler)
-        setupDisplay()
+        if (!setupDisplay()) return
         pipeline.warm(settings)
         // The hyphenation patterns load here, not on the UI thread when the
         // first long word is lettered.
@@ -746,7 +778,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         }
     }
 
-    private fun setupDisplay() {
+    private fun setupDisplay(): Boolean {
         val (w, h, dpi) = displaySize()
         capW = w
         capH = h
@@ -756,23 +788,34 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         val reader = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, 3)
         reader.setOnImageAvailableListener({ r -> onFrame(r) }, captureHandler)
         val vd = virtualDisplay
-        if (vd == null) {
-            virtualDisplay = projection?.createVirtualDisplay(
-                "mangalens",
-                w, h, dpi,
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                reader.surface,
-                null,
-                captureHandler
-            )
-        } else {
-            // Android 14+ allows only one createVirtualDisplay per projection,
-            // so rotations are handled by resizing the existing one.
-            vd.resize(w, h, dpi)
-            vd.surface = reader.surface
+        val display = try {
+            if (vd == null) {
+                projection?.createVirtualDisplay(
+                    "mangalens",
+                    w, h, dpi,
+                    DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                    reader.surface,
+                    null,
+                    captureHandler
+                )
+            } else {
+                // A rotation keeps the existing, already authorized display.
+                vd.resize(w, h, dpi)
+                vd.surface = reader.surface
+                vd
+            }
+        } catch (_: SecurityException) {
+            null
         }
+        if (display == null) {
+            onCaptureThread(captureHandler) { runCatching { reader.close() } }
+            stopForCaptureConsent()
+            return false
+        }
+        virtualDisplay = display
         imageReader?.let { old -> onCaptureThread(captureHandler) { runCatching { old.close() } } }
         imageReader = reader
+        return true
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -782,8 +825,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         if (w != capW || h != capH) {
             takeDown()
             releaseFrameBuffers()
-            setupDisplay()
-            applyShadeSettings()
+            if (setupDisplay()) applyShadeSettings()
         }
     }
 
@@ -1053,6 +1095,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
      */
     private fun takeDown() {
         translateJob?.cancel()
+        forgetBlankRead()
         discardPrepared()
         state = State.SCANNING
         shownThumb = null
@@ -1118,6 +1161,32 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         setOverlayMask(currentOverlayMask())
         // The floating controls sit still while the page moves: the dark gaps must not follow them.
         controller?.let { shade?.setExclusions(it.overlayExclusions()) }
+        retryUncoveredBlank()
+    }
+
+    private fun forgetBlankRead() {
+        blankReadExclusions = null
+        uncoveredRead?.cancel()
+        uncoveredRead = null
+    }
+
+    // A pill or menu can hide the only line on a stationary page. Wait for its pixels
+    // to leave the capture, then read again if the same page is still there.
+    private fun retryUncoveredBlank() {
+        val before = blankReadExclusions ?: return
+        val reference = shownThumb ?: return
+        val controls = controller ?: return
+        if (paused || settings.mode != CaptureMode.AUTO || state != State.SHOWING || uncoveredRead?.isActive == true) return
+        if (!uncoveredTextArea(before, controls.overlayExclusions())) return
+        uncoveredRead = scope.launch {
+            delay(MASK_GRACE_MS)
+            uncoveredRead = null
+            if (!paused && settings.mode == CaptureMode.AUTO && state == State.SHOWING &&
+                shownThumb === reference && blankReadExclusions === before &&
+                uncoveredTextArea(before, controls.overlayExclusions())) {
+                startTranslate(auto = true)
+            }
+        }
     }
 
     /** Pushes the dark-gap settings, and the screen's size, to the shade; and the touch watch that anticipates a scroll. */
@@ -1344,6 +1413,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
 
     private fun startTranslate(auto: Boolean) {
         if (state == State.TRANSLATING || !settingsLoaded) return
+        forgetBlankRead()
         // Translation is the AI's alone. Without a key there is nothing to
         // ask, and a pass would only spin the busy ring to paint nothing,
         // so the reader is told what to add instead — once per stop: a
@@ -1517,6 +1587,10 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                 suppressUntil = SystemClock.uptimeMillis() + 500
                 paintCards(shown, bmp)
                 state = State.SHOWING
+                if (auto && shown.isEmpty() && result.failure == null && analysis.exclusions.isNotEmpty()) {
+                    blankReadExclusions = analysis.exclusions
+                    retryUncoveredBlank()
+                }
                 passes++
                 // A page with dialogue keeps the current work alive and feeds it
                 // the names that identify it; a run of pages without any means

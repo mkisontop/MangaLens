@@ -35,6 +35,62 @@ import kotlin.math.roundToInt
  */
 object PageMarkup {
 
+    internal fun maxPageDimension(dataSaver: Boolean): Int = if (dataSaver) 1000 else 1400
+
+    /**
+     * Wide comic panels often sit between two large, identical dark margins.
+     * Inspect complete pixel rows so an isolated caption or a single painted
+     * pixel stops the crop. Real anchors and a slim border are retained.
+     */
+    internal fun visiblePageBounds(bitmap: Bitmap, anchors: List<Bubble>): Rect {
+        val width = bitmap.width
+        val height = bitmap.height
+        val full = Rect(0, 0, width, height)
+        if (height < 96 || bitmap.config == Bitmap.Config.HARDWARE) return full
+        val color = bitmap.getPixel(0, 0)
+        val red = Color.red(color)
+        val green = Color.green(color)
+        val blue = Color.blue(color)
+        if (Color.alpha(color) != 255 || maxOf(red, green, blue) > 80 ||
+            maxOf(red, green, blue) - minOf(red, green, blue) > 16) return full
+        val minimum = height / 12
+        for (y in intArrayOf(0, minimum, height - minimum - 1, height - 1)) {
+            for (x in intArrayOf(0, width / 2, width - 1)) {
+                if (bitmap.getPixel(x, y) != color) return full
+            }
+        }
+        val rowsPerRead = 24
+        val top = IntArray(width * rowsPerRead)
+        val bottom = IntArray(width * rowsPerRead)
+        val limit = (height - 16) / 2
+        var margin = 0
+        scan@ while (margin < limit) {
+            val rows = minOf(rowsPerRead, limit - margin)
+            bitmap.getPixels(top, 0, width, 0, margin, width, rows)
+            bitmap.getPixels(bottom, 0, width, 0, height - margin - rows, width, rows)
+            for (row in 0 until rows) {
+                for (x in 0 until width) {
+                    if (top[row * width + x] != color || bottom[(rows - row - 1) * width + x] != color) break@scan
+                }
+                margin++
+            }
+        }
+        if (margin == limit || margin - 8 < minimum) return full
+        val bounds = Rect(0, margin - 8, width, height - margin + 8)
+        for (anchor in anchors) {
+            bounds.top = minOf(bounds.top, anchor.box.top.coerceIn(0, height))
+            bounds.bottom = maxOf(bounds.bottom, anchor.box.bottom.coerceIn(0, height))
+        }
+        return bounds
+    }
+
+    /** Maps an extra region from the uploaded image back onto the captured screen, in thousandths. */
+    internal fun fullFrameBox(upload: Rect, width: Int, height: Int, box: Rect): Rect {
+        fun x(value: Int) = ((upload.left * 1000L + value * upload.width().toLong()) / width).toInt()
+        fun y(value: Int) = ((upload.top * 1000L + value * upload.height().toLong()) / height).toInt()
+        return Rect(x(box.left), y(box.top), x(box.right), y(box.bottom))
+    }
+
     /**
      * Scales the page down for upload and marks each anchor on it.
      *
@@ -45,7 +101,7 @@ object PageMarkup {
         anchors: List<Bubble>,
         dataSaver: Boolean,
     ): String {
-        val maxDim = if (dataSaver) 1000 else 1400
+        val maxDim = maxPageDimension(dataSaver)
         val quality = if (dataSaver) 55 else 72
         val scale = (maxDim.toFloat() / max(bitmap.width, bitmap.height)).coerceAtMost(1f)
 
@@ -96,6 +152,7 @@ object PageMarkup {
         anchors: List<Bubble>,
         ids: List<Int>,
         dataSaver: Boolean,
+        omitFlatCrops: Boolean = false,
     ): List<Pair<Int, String>> {
         val maxDim = if (dataSaver) 384 else 768
         val quality = if (dataSaver) 62 else 80
@@ -110,20 +167,38 @@ object PageMarkup {
                 (box.bottom + pad).coerceIn(0, bitmap.height),
             )
             if (crop.width() < 8 || crop.height() < 8) continue
+            if (omitFlatCrops && isFlat(bitmap, crop)) continue
             val scale = (maxDim.toFloat() / max(crop.width(), crop.height())).coerceAtMost(1f)
             val w = (crop.width() * scale).roundToInt().coerceAtLeast(1)
             val h = (crop.height() * scale).roundToInt().coerceAtLeast(1)
             val cut = Bitmap.createBitmap(bitmap, crop.left, crop.top, crop.width(), crop.height())
             val sized = if (scale < 1f) Bitmap.createScaledBitmap(cut, w, h, true) else cut
             val canvasBitmap = if (sized !== bitmap && sized.isMutable) sized else sized.copy(Bitmap.Config.ARGB_8888, true)
-            if (sized !== cut) cut.recycle()
-            if (canvasBitmap !== sized) sized.recycle()
+            // Android may return the caller's immutable frame for a whole-frame crop.
+            if (sized !== cut && cut !== bitmap) cut.recycle()
+            if (canvasBitmap !== sized && sized !== bitmap) sized.recycle()
             if (canvasBitmap == null) continue
             runCatching { drawBadge(canvasBitmap, id) }
             out.add(id to encodeJpeg(canvasBitmap, quality))
             canvasBitmap.recycle()
         }
         return out
+    }
+
+    /** A close-up can aid recognition at native size. Discard it only if it has no detail. */
+    private fun isFlat(bitmap: Bitmap, area: Rect): Boolean {
+        val width = area.width()
+        val rowsPerRead = minOf(8, area.height())
+        val pixels = IntArray(width * rowsPerRead)
+        val colour = bitmap.getPixel(area.left, area.top)
+        var y = area.top
+        while (y < area.bottom) {
+            val rows = minOf(rowsPerRead, area.bottom - y)
+            bitmap.getPixels(pixels, 0, width, area.left, y, width, rows)
+            for (i in 0 until width * rows) if (pixels[i] != colour) return false
+            y += rows
+        }
+        return true
     }
 
     /** The region's badge at a close-up's top-left corner. */

@@ -31,6 +31,70 @@ import org.robolectric.annotation.GraphicsMode
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class PageMarkupTest {
 
+    @Test
+    fun aNativeZoomSkipsOnlyCompletelyFlatCloseups() {
+        val bitmap = Bitmap.createBitmap(360, 240, Bitmap.Config.ARGB_8888)
+        try {
+            bitmap.eraseColor(Color.WHITE)
+            val anchors = listOf(Bubble("", Rect(20, 36, 94, 145), false),
+                Bubble("", Rect(194, 42, 286, 157), false))
+            val ids = listOf(0, 1)
+            assertEquals(ids, PageMarkup.encodeRegionCrops(bitmap, anchors, ids, true).map { it.first })
+            assertTrue(PageMarkup.encodeRegionCrops(bitmap, anchors, ids, true, omitFlatCrops = true).isEmpty())
+            // Even one off-white pixel near the far corner can carry panel context.
+            bitmap.setPixel(283, 154, Color.rgb(254, 255, 255))
+            assertEquals(listOf(1),
+                PageMarkup.encodeRegionCrops(bitmap, anchors, ids, true, omitFlatCrops = true).map { it.first })
+        } finally {
+            bitmap.recycle()
+        }
+    }
+
+    @Test
+    fun aWholeFrameCloseupKeepsTheReadersImmutableCaptureUsable() {
+        for (size in listOf(176, 900)) {
+            val page = Bitmap.createBitmap(IntArray(size * size) { Color.WHITE }, size, size, Bitmap.Config.ARGB_8888)
+            try {
+                assertTrue("The fixture models an immutable captured page", !page.isMutable)
+                val anchor = Bubble("", Rect(0, 0, size, size), false)
+                val closeup = PageMarkup.encodeRegionCrops(page, listOf(anchor), listOf(0), dataSaver = true)
+                assertEquals(1, closeup.size)
+                assertTrue("The capture is still available to OCR and lettering", !page.isRecycled)
+                assertEquals(Color.WHITE, page.getPixel(0, 0))
+            } finally {
+                page.recycle()
+            }
+        }
+    }
+
+    @Test
+    fun darkReaderMarginsCanBeTrimmedWithoutDroppingAnIsolatedPixelOrAnchor() {
+        val bitmap = Bitmap.createBitmap(180, 420, Bitmap.Config.ARGB_8888)
+        try {
+            val canvas = Canvas(bitmap)
+            val border = Color.rgb(39, 42, 47)
+            canvas.drawColor(border)
+            val ink = Paint().apply { color = Color.WHITE }
+            canvas.drawRect(Rect(0, 160, 180, 260), ink)
+            val panel = PageMarkup.visiblePageBounds(bitmap, emptyList())
+            assertEquals(Rect(0, 152, 180, 268), panel)
+            assertEquals(Rect(100, 389, 600, 527),
+                PageMarkup.fullFrameBox(panel, 180, 420, Rect(100, 100, 600, 600)))
+            assertEquals(Rect(0, 36, 180, 268),
+                PageMarkup.visiblePageBounds(bitmap, listOf(Bubble("word", Rect(12, 36, 49, 51), false))))
+            bitmap.setPixel(19, 72, Color.RED)
+            assertEquals(Rect(0, 64, 180, 356), PageMarkup.visiblePageBounds(bitmap, emptyList()))
+            bitmap.setPixel(177, 416, Color.WHITE)
+            assertEquals(Rect(0, 0, 180, 420), PageMarkup.visiblePageBounds(bitmap, emptyList()))
+            canvas.drawColor(Color.WHITE)
+            assertEquals(Rect(0, 0, 180, 420), PageMarkup.visiblePageBounds(bitmap, emptyList()))
+            canvas.drawColor(border)
+            assertEquals(Rect(0, 0, 180, 420), PageMarkup.visiblePageBounds(bitmap, emptyList()))
+        } finally {
+            bitmap.recycle()
+        }
+    }
+
     private val outputDir = File("build/markup-preview").apply { mkdirs() }
 
     /** A stand-in manga page: panel borders, balloons, and bars for lettering. */

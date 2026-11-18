@@ -45,6 +45,34 @@ class LetteringRenderTest {
     private fun view(): BubbleOverlayView =
         BubbleOverlayView(RuntimeEnvironment.getApplication()).apply { layout(0, 0, pageW, pageH) }
 
+    @Test
+    fun aBalloonCleaningPreservesShadedPaperBeyondItsGlyphsAfterScrolling() {
+        val box = Rect(100, 140, 420, 390)
+        val ink = Rect(165, 212, 345, 285)
+        val bubble = RenderBubble(box, "On my way!", "곧 갈게!", Color.WHITE, Color.BLACK, false,
+            balloon = rectBalloon(box), sourceInkBounds = ink)
+        val shade = Color.rgb(244, 248, 251)
+        val overlay = view()
+        for (dy in listOf(0, 121)) {
+            val shifted = bubble.shiftedBy(dy)
+            val block = requireNotNull(shifted.sourceInkBounds)
+            val image = Bitmap.createBitmap(pageW, pageH, Bitmap.Config.ARGB_8888)
+            try {
+                image.eraseColor(shade)
+                val canvas = Canvas(image)
+                canvas.drawRect(block, Paint().apply { color = letteringInk })
+                overlay.setBubbles(listOf(shifted))
+                overlay.drawCleanings(canvas)
+                assertEquals(Color.WHITE, image.getPixel(block.centerX(), block.centerY()))
+                assertEquals(shade, image.getPixel(block.centerX(), block.top - 3))
+                assertEquals(shade, image.getPixel(block.centerX(), block.bottom + 3))
+                assertEquals(shade, image.getPixel(block.right + 3, block.centerY()))
+            } finally {
+                image.recycle()
+            }
+        }
+    }
+
     private fun luminance(c: Int) = (Color.red(c) * 299 + Color.green(c) * 587 + Color.blue(c) * 114) / 1000
 
     private fun isLetteringInk(c: Int) = Color.red(c) >= 140 && Color.green(c) <= 60 && Color.blue(c) <= 60
@@ -164,6 +192,21 @@ class LetteringRenderTest {
         val out = Bitmap.createBitmap(pageW, pageH, Bitmap.Config.ARGB_8888)
         v.draw(Canvas(out))
         return out
+    }
+
+    @Test fun aShortFallbackCardClearsAllTheWideOriginalAndKeepsNearbyArt() {
+        val page = Bitmap.createBitmap(pageW, pageH, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.WHITE) }
+        val box = Rect(125, 410, 590, 468)
+        drawLettering(Canvas(page), box, false, letteringInk)
+        val border = Paint().apply { color = Color.BLUE }
+        Canvas(page).drawRect(118f, 380f, 600f, 388f, border)
+        val v = view()
+        v.setBubbles(listOf(RenderBubble(box, "Go!", "지금 바로 이쪽으로 오세요", Color.WHITE, Color.BLACK, false, coverSource = true)))
+        v.draw(Canvas(page))
+        assertEquals("source glyphs to either side of the English", 0, count(page, box, ::isLetteringInk))
+        assertEquals("panel edge survives", Color.BLUE, page.getPixel(130, 384))
+        assertRectsCoverOverlay(v, "short fallback card")
+        page.recycle()
     }
 
     private fun assertRectsCoverOverlay(v: BubbleOverlayView, what: String) {
@@ -757,6 +800,18 @@ class LetteringRenderTest {
         val out = copy(dirty)
         v2.draw(Canvas(out))
         writePreview("twenty-items.png", out)
+    }
+
+    @Test
+    fun `reusing a mutable source rectangle moves the lettering with the page`() {
+        val view = view()
+        val box = Rect(140, 200, 330, 260)
+        val bubbles = listOf(RenderBubble(box, "Stay here.", "待って。", Color.WHITE, Color.BLACK, false))
+        view.setBubbles(bubbles)
+        val original = view.placedRects().single()
+        box.offset(0, 140)
+        view.setBubbles(bubbles)
+        assertEquals(Rect(original).apply { offset(0, 140) }, view.placedRects().single())
     }
 
     @Test
