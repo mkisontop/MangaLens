@@ -35,6 +35,8 @@ import kotlin.math.roundToInt
  */
 object PageMarkup {
 
+    internal fun maxPageDimension(dataSaver: Boolean): Int = if (dataSaver) 1000 else 1400
+
     /**
      * Wide comic panels often sit between two large, identical dark margins.
      * Inspect complete pixel rows so an isolated caption or a single painted
@@ -99,7 +101,7 @@ object PageMarkup {
         anchors: List<Bubble>,
         dataSaver: Boolean,
     ): String {
-        val maxDim = if (dataSaver) 1000 else 1400
+        val maxDim = maxPageDimension(dataSaver)
         val quality = if (dataSaver) 55 else 72
         val scale = (maxDim.toFloat() / max(bitmap.width, bitmap.height)).coerceAtMost(1f)
 

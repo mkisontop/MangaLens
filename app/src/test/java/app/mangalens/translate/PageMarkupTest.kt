@@ -7,6 +7,7 @@ import android.graphics.Paint
 import android.graphics.Rect
 import android.util.Base64
 import app.mangalens.ocr.Bubble
+import app.mangalens.settings.AppSettings
 import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -30,6 +31,21 @@ import org.robolectric.annotation.GraphicsMode
 @Config(sdk = [34])
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class PageMarkupTest {
+
+    @Test
+    fun nativeSizeZoomAvoidsDuplicateImagesAndKeepsUnresolvedPageDetails() {
+        val reader = VisionLlmEngine(AppSettings())
+        val anchors = listOf(
+            Bubble("", Rect(26, 42, 96, 145), false),
+            Bubble("readable dialogue", Rect(216, 108, 582, 389), false),
+        )
+        val native = Rect(0, 300, 720, 781)
+        val reduced = Rect(0, 0, 720, 1001)
+        assertEquals(emptyList<Int>(), reader.closeupIds(anchors, true, native, 1))
+        assertEquals(listOf(0), reader.closeupIds(anchors, true, reduced, 1))
+        assertEquals(listOf(0), reader.closeupIds(anchors, true, native, null))
+        assertEquals(listOf(0), reader.closeupIds(anchors, false, native, 1))
+    }
 
     @Test
     fun aWholeFrameCloseupKeepsTheReadersImmutableCaptureUsable() {

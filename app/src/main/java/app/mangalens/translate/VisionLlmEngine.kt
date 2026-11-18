@@ -124,7 +124,7 @@ class VisionLlmEngine(
             // Regions on-device OCR could not read go up a second time as
             // enlarged close-ups cut from the full-resolution frame, so the
             // lettering the model must read itself reaches it legible.
-            val closeups = closeupIds(anchors, settings.dataSaver)
+            val closeups = closeupIds(anchors, settings.dataSaver, upload, largeReadableId)
             val crops = if (closeups.isEmpty()) emptyList() else {
                 PageMarkup.encodeRegionCrops(bitmap, anchors, closeups, settings.dataSaver)
             }
@@ -174,7 +174,16 @@ class VisionLlmEngine(
      * largest first, capped so a page of hand-lettering does not turn into
      * a dozen uploads.
      */
-    private fun closeupIds(anchors: List<app.mangalens.ocr.Bubble>, dataSaver: Boolean): List<Int> {
+    internal fun closeupIds(
+        anchors: List<app.mangalens.ocr.Bubble>,
+        dataSaver: Boolean,
+        upload: Rect,
+        largeReadableId: Int?,
+    ): List<Int> {
+        // A zoomed panel already uploaded at native resolution contains every source pixel.
+        // Keep close-ups for downscaled pages, unresolved lettering and full-quality mode.
+        if (dataSaver && largeReadableId != null &&
+            maxOf(upload.width(), upload.height()) <= PageMarkup.maxPageDimension(dataSaver)) return emptyList()
         val cap = if (dataSaver) MAX_CLOSEUPS_DATA_SAVER else MAX_CLOSEUPS
         return anchors.indices
             .filter { i ->
@@ -232,7 +241,7 @@ class VisionLlmEngine(
 
         /** JPEG-encodes the page, downscaled so slow uplinks stay usable. */
         fun encodePage(bitmap: Bitmap, dataSaver: Boolean): String {
-            val maxDim = if (dataSaver) 1000 else 1400
+            val maxDim = PageMarkup.maxPageDimension(dataSaver)
             val quality = if (dataSaver) 55 else 72
             val scale = maxDim.toFloat() / maxOf(bitmap.width, bitmap.height)
             val scaled = if (scale < 1f) {
@@ -254,9 +263,9 @@ class VisionLlmEngine(
         private val SYSTEM_PROMPT = """
 Translate the lettering in this comic image into natural, concise English that can be printed in each balloon. Read the image first. The detected_regions OCR is only a rough hint and can be wrong. The magenta badge is the region id. If a numbered close-up follows the page, read its sharper lettering. Read vertical columns from right to left, top to bottom within each column. Keep a balloon's lines together.
 
-Return a JSON object with an array named "bubbles". For each numbered region give its numeric "id", "src" containing the words you actually read, "en" containing their English translation, "who" identifying the speaker when known, and "kind" set to "dialogue", "sfx" or "skip". Use real words in the values. Answer each id once. Skip already-English lettering, interface labels, watermarks and genuinely unreadable marks. For other visible comic lettering outside every outline, return the same fields with "box" [left, top, width, height] in thousandths of the page image instead of an id. Never duplicate a numbered balloon.
+Return a JSON object with an array named "bubbles". For each numbered region write its numeric "id", then "who" identifying the speaker when known, then "en" as the English words that person would actually say. After writing the dialogue, transcribe the original lettering exactly in "src" and set "kind" to "dialogue", "sfx" or "skip". Keep literal wording in the transcription. Use real words in the values. Answer each id once. Skip already-English lettering, interface labels, watermarks and genuinely unreadable marks. For other visible comic lettering outside every outline, return the same fields with "box" [left, top, width, height] in thousandths of the page image instead of an id. Never duplicate a numbered balloon.
 
-Read all the way to the end of the last line before translating. Preserve the action, its actor and objects, negation, emphasis, emotion and the speaker's register. When several things are named before a final verb, translate the complete clause. An ellipsis is a pause and adds no information. Use the art, balloon tails, dialogue history and series memory to resolve omitted subjects. An object's owner may be different from the person acting. Look at the preceding exchange before choosing a pronoun. If the actor remains unclear, use natural subjectless English. Introduce a recipient only when the dialogue establishes one. Honour the series glossary, pronouns, established names and meaningful honorifics. Keep ordinary personal names in their usual spelling. For an affectionate nickname or pet name that is plainly an everyday noun, use its natural English meaning unless the series has established a different rendering. A Korean name ending in -아 or -야 is often a direct address. Render the affectionate aside that follows as something said to the listener. For example, “눈송이야! 이런 장난꾸러기~” becomes “Snowflake! You little rascal!” A separate object in “이 장난감 좀 봐!” remains “Look at this toy!” Keep a following question or action separate from the aside. Translate the source language visible in the image, even when the language hint differs. Translate sound effects into short English effects in capitals. For matching "run" numbers, read the whole sentence in "part" order, then divide its English across those balloons. Preserve the original tone and intensity. Add no explanations.
+Read all the way to the end of the last line before translating. Preserve the action, its actor and objects, negation, emphasis, emotion and the speaker's register. When several things are named before a final verb, translate the complete clause. An ellipsis is a pause and adds no information. Use the art, balloon tails, dialogue history and series memory to resolve omitted subjects. An object's owner may be different from the person acting. Look at the preceding exchange before choosing a pronoun. If the actor remains unclear, use natural subjectless English. Introduce a recipient only when the dialogue establishes one. Honour the series glossary, pronouns, established names and meaningful honorifics. Keep ordinary personal names in their usual spelling. For an affectionate nickname or pet name that is plainly an everyday noun, use its natural English meaning unless the series has established a different rendering. When a speaker calls a name and then praises their listener, write the compliment as direct speech to that person. A demonstrative points to a separate object only when the scene establishes one. Keep a following question separate from the aside. Translate the source language visible in the image, even when the language hint differs. Translate sound effects into short English effects in capitals. For matching "run" numbers, read the whole sentence in "part" order, then divide its English across those balloons. Preserve the original tone and intensity. Add no explanations.
 
 After "bubbles", include "new_terms" mapping any newly established source names to English, and "characters" mapping newly identified English names to objects with "pronoun", "register" and "note". Use empty objects when there is nothing to add. Output JSON only.
 """.trim()
