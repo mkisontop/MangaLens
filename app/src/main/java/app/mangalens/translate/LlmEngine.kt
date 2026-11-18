@@ -92,7 +92,7 @@ class LlmEngine(
                     val id = o.optInt("id", -1)
                     if (id !in items.indices || o.optString("kind") == "skip") continue
                     val en = o.optString("en", "")
-                    if (en.isNotBlank()) onEntry!!(id, en)
+                    if (en.isNotBlank() && !JunkFilter.isPromptPlaceholder(en)) onEntry!!(id, en)
                 }
             },
         )
@@ -107,7 +107,7 @@ class LlmEngine(
             if (id !in items.indices) continue
             if (o.optString("kind") == "skip") continue
             val en = o.optString("en", "")
-            if (en.isNotBlank()) {
+            if (en.isNotBlank() && !JunkFilter.isPromptPlaceholder(en)) {
                 out[id] = en
                 who[id] = o.optString("who", "").trim().take(24)
             }

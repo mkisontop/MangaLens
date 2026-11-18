@@ -51,6 +51,30 @@ class TranslationServiceTest {
     private fun custom(srv: FakeHttpServer) =
         AppSettings(provider = LlmProvider.CUSTOM, model = "m", customUrl = srv.base + "chat", apiKey = "k")
 
+    @Test
+    fun copiedSchemaValuesAreRetriedAndNeverShownEvenFromAnOlderCache() = runBlocking {
+        var answer = "<English>"
+        val srv = serve { ex ->
+            val bubbles = JSONArray().put(JSONObject().put("id", 0).put("en", answer))
+            val message = JSONObject().put("content", JSONObject().put("bubbles", bubbles).toString())
+            ex.respond(200, JSONObject().put("choices", JSONArray().put(JSONObject().put("message", message))).toString())
+        }
+        val settings = custom(srv)
+        val namespace = LlmEngine(settings).cacheNamespace
+        val source = listOf("괜찮아요")
+        val cache = TranslationCache()
+        val key = TranslationCache.key(namespace, "KO", source.single())
+        cache.put(key, "<English>")
+        val service = TranslationService(cache)
+        assertTrue(!service.fullyCached(namespace, SourceLang.KO, source))
+        assertEquals(listOf(""), service.translate(source, SourceLang.KO, settings).texts)
+        assertEquals(null, JunkFilter.accept(source.single(), "<English>"))
+        answer = "I study English."
+        assertEquals(listOf(answer), service.translate(source, SourceLang.KO, settings).texts)
+        assertEquals(answer, cache.get(key))
+        assertEquals(2, srv.exchanges.size)
+    }
+
     private val lines = listOf("괜찮아.", "내가 지켜줄게.")
 
     @Test

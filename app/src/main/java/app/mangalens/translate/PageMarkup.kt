@@ -36,6 +36,60 @@ import kotlin.math.roundToInt
 object PageMarkup {
 
     /**
+     * Wide comic panels often sit between two large, identical dark margins.
+     * Inspect complete pixel rows so an isolated caption or a single painted
+     * pixel stops the crop. Real anchors and a slim border are retained.
+     */
+    internal fun visiblePageBounds(bitmap: Bitmap, anchors: List<Bubble>): Rect {
+        val width = bitmap.width
+        val height = bitmap.height
+        val full = Rect(0, 0, width, height)
+        if (height < 96 || bitmap.config == Bitmap.Config.HARDWARE) return full
+        val color = bitmap.getPixel(0, 0)
+        val red = Color.red(color)
+        val green = Color.green(color)
+        val blue = Color.blue(color)
+        if (Color.alpha(color) != 255 || maxOf(red, green, blue) > 80 ||
+            maxOf(red, green, blue) - minOf(red, green, blue) > 16) return full
+        val minimum = height / 12
+        for (y in intArrayOf(0, minimum, height - minimum - 1, height - 1)) {
+            for (x in intArrayOf(0, width / 2, width - 1)) {
+                if (bitmap.getPixel(x, y) != color) return full
+            }
+        }
+        val rowsPerRead = 24
+        val top = IntArray(width * rowsPerRead)
+        val bottom = IntArray(width * rowsPerRead)
+        val limit = (height - 16) / 2
+        var margin = 0
+        scan@ while (margin < limit) {
+            val rows = minOf(rowsPerRead, limit - margin)
+            bitmap.getPixels(top, 0, width, 0, margin, width, rows)
+            bitmap.getPixels(bottom, 0, width, 0, height - margin - rows, width, rows)
+            for (row in 0 until rows) {
+                for (x in 0 until width) {
+                    if (top[row * width + x] != color || bottom[(rows - row - 1) * width + x] != color) break@scan
+                }
+                margin++
+            }
+        }
+        if (margin == limit || margin - 8 < minimum) return full
+        val bounds = Rect(0, margin - 8, width, height - margin + 8)
+        for (anchor in anchors) {
+            bounds.top = minOf(bounds.top, anchor.box.top.coerceIn(0, height))
+            bounds.bottom = maxOf(bounds.bottom, anchor.box.bottom.coerceIn(0, height))
+        }
+        return bounds
+    }
+
+    /** Maps an extra region from the uploaded image back onto the captured screen, in thousandths. */
+    internal fun fullFrameBox(upload: Rect, width: Int, height: Int, box: Rect): Rect {
+        fun x(value: Int) = ((upload.left * 1000L + value * upload.width().toLong()) / width).toInt()
+        fun y(value: Int) = ((upload.top * 1000L + value * upload.height().toLong()) / height).toInt()
+        return Rect(x(box.left), y(box.top), x(box.right), y(box.bottom))
+    }
+
+    /**
      * Scales the page down for upload and marks each anchor on it.
      *
      * @return base64 JPEG of the marked page, ready for the provider payload.

@@ -661,7 +661,7 @@ class PageReader internal constructor(
             // One line: a break copied from the source's columns would be set
             // as a hard break in the middle of the English.
             val en = o.optString("en", "").trim().replace(LINE_BREAKS, " ")
-            if (en.isEmpty()) return null
+            if (en.isEmpty() || JunkFilter.isPromptPlaceholder(en)) return null
             val b = o.optJSONArray("box_2d") ?: return null
             if (b.length() < 4) return null
             val v = DoubleArray(4) { b.optDouble(it) }

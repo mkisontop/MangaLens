@@ -33,15 +33,15 @@ unzip -q "$work/engine.zip" -d "$work/engine"
 server=$(find "$work/engine" -type f -name llama-server -print -quit)
 extra=()
 if [[ "${MANGALENS_LIVE_VISION:-0}" == 1 ]]; then
-    model=qwen2.5-vl-3b-instruct-q4_k_m
-    revision=5037fcf163dd95d1e41d1974465f0898ed108ca2
-    base="https://huggingface.co/ggml-org/Qwen2.5-VL-3B-Instruct-GGUF/resolve/$revision"
-    model_file="$work/Qwen2.5-VL-3B-Instruct-Q4_K_M.gguf"
-    projector="$work/mmproj-Qwen2.5-VL-3B-Instruct-Q8_0.gguf"
+    model=qwen2.5-vl-7b-instruct-q4_k_m
+    revision=508edd0afaa66bb9e9f40587acc2184f02daf1f6
+    base="https://huggingface.co/ggml-org/Qwen2.5-VL-7B-Instruct-GGUF/resolve/$revision"
+    model_file="$work/Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf"
+    projector="$work/mmproj-Qwen2.5-VL-7B-Instruct-Q8_0.gguf"
     fetch "$base/$(basename "$model_file")" "$model_file"
     fetch "$base/$(basename "$projector")" "$projector"
-    echo "d02fe9b69ad8cadbbd228e387667af66612c44bed29ffc8eb1e7caf9ac486c12  $model_file" | sha256sum --check
-    echo "980c9b2f78c04e6cff93d277ada09e768394f112d75db3b4e9dea8a69f9fb904  $projector" | sha256sum --check
+    echo "9258bf05b12686d097ff3b6b18d968ab393649780aa2b3cd67fec43d50554392  $model_file" | sha256sum --check
+    echo "2ddb555391bae966e412deab9e07b58afa18bcc06930ba0f1c78a3695ab9e506  $projector" | sha256sum --check
     extra=(--mmproj "$projector")
 else
     model=qwen2.5-7b-instruct-q4_k_m

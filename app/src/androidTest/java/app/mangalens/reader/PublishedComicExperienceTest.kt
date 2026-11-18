@@ -201,7 +201,7 @@ class PublishedComicExperienceTest {
                     }
                 }
                 val settings = AppSettings(provider = LlmProvider.CUSTOM,
-                    model = if (liveEndpoint == null) "fixture" else "qwen2.5-vl-3b-instruct-q4_k_m",
+                    model = if (liveEndpoint == null) "fixture" else requireNotNull(InstrumentationRegistry.getArguments().getString("liveModel")),
                     customUrl = liveEndpoint ?: server.url("/chat").toString(), sourceLang = SourceLang.KO,
                     aiVision = if (liveEndpoint == null) AiVisionMode.OFF else AiVisionMode.ALWAYS,
                     dataSaver = liveEndpoint != null, ignoreTopPct = 0f, ignoreBottomPct = 0f)
@@ -228,6 +228,7 @@ class PublishedComicExperienceTest {
                     }
                     scene.english
                 } else {
+                    assertEquals("The image-reading request must complete", null, result.failure)
                     val answer = cards.single().lowercase()
                     assertTrue("The real translation must preserve the clothing, hat and potion: " + answer,
                         Regex("potion|elixir|concoction").containsMatchIn(answer) &&

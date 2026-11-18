@@ -28,7 +28,7 @@ with urllib.request.urlopen(req, timeout=240) as reply:
     print("Model instructions warmed", json.load(reply).get("usage"))
 PY
 adb logcat -c
-adb shell am instrument -w -r -e build live -e liveEndpoint "$MANGALENS_LIVE_ENDPOINT" \
+adb shell am instrument -w -r -e build live -e liveEndpoint "$MANGALENS_LIVE_ENDPOINT" -e liveModel "$MANGALENS_LIVE_MODEL" \
     -e class 'app.mangalens.reader.PublishedComicExperienceTest#realModelLettersThePublishedKoreanPanelOnTheDevice' \
     "$id.test/androidx.test.runner.AndroidJUnitRunner" | tee "$out/instrumentation.txt"
 adb logcat -d -s MangaLensUX:I > "$out/device.log"

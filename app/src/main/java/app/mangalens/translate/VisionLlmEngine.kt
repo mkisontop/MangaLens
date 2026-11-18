@@ -1,6 +1,7 @@
 package app.mangalens.translate
 
 import android.graphics.Bitmap
+import android.graphics.Rect
 import android.util.Base64
 import app.mangalens.settings.AppSettings
 import app.mangalens.settings.SourceLang
@@ -68,7 +69,17 @@ class VisionLlmEngine(
 
             // The page the model sees carries a numbered badge per region, so
             // "region 7" is visible rather than inferred from coordinates.
-            val jpegB64 = PageMarkup.encodeMarkedPage(bitmap, anchors, settings.dataSaver)
+            val upload = PageMarkup.visiblePageBounds(bitmap, anchors)
+            val cropped = upload.height() != bitmap.height
+            val pageAnchors = if (cropped) anchors.map { bubble ->
+                bubble.copy(box = Rect(bubble.box).apply { offset(-upload.left, -upload.top) })
+            } else anchors
+            val image = if (cropped) Bitmap.createBitmap(bitmap, upload.left, upload.top, upload.width(), upload.height()) else bitmap
+            val jpegB64 = try {
+                PageMarkup.encodeMarkedPage(image, pageAnchors, settings.dataSaver)
+            } finally {
+                if (image !== bitmap) image.recycle()
+            }
             val langHint = when (lang) {
                 SourceLang.KO -> "Korean"
                 SourceLang.JA -> "Japanese"
@@ -80,16 +91,16 @@ class VisionLlmEngine(
             // overlays land pixel-perfect even when the model's own sense of
             // image coordinates drifts.
             val regions = JSONArray()
-            anchors.forEachIndexed { i, b ->
+            pageAnchors.forEachIndexed { i, b ->
                 val o = JSONObject()
                     .put("id", i)
                     .put(
                         "box",
                         JSONArray()
-                            .put(b.box.left * 1000 / bitmap.width)
-                            .put(b.box.top * 1000 / bitmap.height)
-                            .put(b.box.width() * 1000 / bitmap.width)
-                            .put(b.box.height() * 1000 / bitmap.height)
+                            .put(b.box.left * 1000 / upload.width())
+                            .put(b.box.top * 1000 / upload.height())
+                            .put(b.box.width() * 1000 / upload.width())
+                            .put(b.box.height() * 1000 / upload.height())
                     )
                     .put("ocr_text_maybe_garbled", b.text)
                     .put("kind_guess", if (b.kind == app.mangalens.ocr.BubbleKind.SFX) "sfx" else "dialogue")
@@ -124,7 +135,7 @@ class VisionLlmEngine(
                 effort = LlmHttp.effortLevel(settings, vision = true),
                 vision = true,
                 onDelta = if (stream == null) null else { delta ->
-                    for (o in stream.feed(delta)) entry(o, anchors, streamed)?.let { onBubble!!(it) }
+                    for (o in stream.feed(delta)) entry(o, anchors, streamed, upload, bitmap.width, bitmap.height)?.let { onBubble!!(it) }
                 },
             )
             val reply = LlmHttp.extractJsonObject(raw)
@@ -134,7 +145,7 @@ class VisionLlmEngine(
             val arr = reply.optJSONArray("bubbles") ?: JSONArray()
             for (i in 0 until arr.length()) {
                 val o = arr.optJSONObject(i) ?: continue
-                entry(o, anchors, seenIds)?.let { out.add(it) }
+                entry(o, anchors, seenIds, upload, bitmap.width, bitmap.height)?.let { out.add(it) }
             }
             // A reply that lands after the reader moved on to another work (a
             // long pause, "New series") still letters its page, but what it
@@ -172,10 +183,13 @@ class VisionLlmEngine(
         o: JSONObject,
         anchors: List<app.mangalens.ocr.Bubble>,
         seenIds: MutableSet<Int>,
+        upload: Rect,
+        width: Int,
+        height: Int,
     ): VisionBubble? {
         if (o.optString("kind") == "skip") return null
         val en = o.optString("en", "").trim()
-        if (en.isEmpty()) return null
+        if (en.isEmpty() || JunkFilter.isPromptPlaceholder(en)) return null
         val sfx = o.optString("kind") == "sfx"
         val src = o.optString("src", "").trim()
         val who = o.optString("who", "").trim().take(24)
@@ -194,10 +208,11 @@ class VisionLlmEngine(
         val nw = box.optInt(2, 0)
         val nh = box.optInt(3, 0)
         if (nx !in 0..1000 || ny !in 0..1000 || nw <= 0 || nh <= 0) return null
+        val relative = Rect(nx, ny, nx + nw.coerceAtMost(1000 - nx), ny + nh.coerceAtMost(1000 - ny))
+        val full = PageMarkup.fullFrameBox(upload, width, height, relative)
+        if (full.isEmpty) return null
         return VisionBubble(
-            -1, nx, ny,
-            nw.coerceAtMost(1000 - nx),
-            nh.coerceAtMost(1000 - ny),
+            -1, full.left, full.top, full.width(), full.height(),
             src, en, sfx, who,
         )
     }
@@ -230,47 +245,13 @@ class VisionLlmEngine(
         }
 
         private val SYSTEM_PROMPT = """
-You are an elite manga/manhwa/manhua localization translator looking at one raw comic page screenshot. Your output is typeset straight onto the page, so it must be correct the first time.
-The request carries the series memory first ("glossary", "characters"), then the page image, then the page itself ("expected_source_language", "story_so_far", "detected_regions").
+Translate the lettering in this comic image into natural, concise English that can be printed in each balloon. Read the image first. The detected_regions OCR is only a rough hint and can be wrong. The magenta badge is the region id. If a numbered close-up follows the page, read its sharper lettering. Read vertical columns from right to left, top to bottom within each column. Keep a balloon's lines together.
 
-READING THE IMAGE
-Every region is outlined in magenta and labelled with its region id on a magenta badge at the region's top-left corner. For each region, read the original lettering under that outline directly from the art. "ocr_text_maybe_garbled" is a hint only — it is frequently wrong on vertical, stylized, handwritten and overlapping text, and the image always wins. Answer each region by its badge number. Never restate or adjust the given boxes.
-The regions listed in "closeups" are also attached after the page as enlarged close-up images, each carrying its region id on the same magenta badge. Read those regions from their close-up, which is sharper than the page, and still answer them by id — a close-up is never a new region.
-An outline usually marks a whole speech balloon. Everything inside it is ONE character's line, however many columns or lines it is set in — read the columns in order (vertical text runs top-to-bottom, columns right-to-left) and translate the balloon as a single utterance. Do not translate a column or a fragment as if it were a sentence on its own.
-"ocr_text_maybe_garbled" is empty when on-device OCR could not read the region at all. That is normal on vertical and hand-lettered text and does NOT mean the region is empty — read it from the image. Answer with "kind":"skip" only if there is genuinely no readable text there.
-"expected_source_language" is a guess from settings. Aggregator sites often serve raws already translated once — Spanish is common — so if the page's lettering is actually some other language, read that language and translate it into the same natural English. If a region's lettering is already English, answer it with "kind":"skip".
-Answer EVERY region. A region you leave out is left untranslated on the page.
+Return a JSON object with an array named "bubbles". For each numbered region give its numeric "id", "src" containing the words you actually read, "en" containing their English translation, "who" identifying the speaker when known, and "kind" set to "dialogue", "sfx" or "skip". Use real words in the values. Answer each id once. Skip already-English lettering, interface labels, watermarks and genuinely unreadable marks. For other visible comic lettering outside every outline, return the same fields with "box" [left, top, width, height] in thousandths of the page image instead of an id. Never duplicate a numbered balloon.
 
-WHO IS SPEAKING — decide this before you translate
-For every dialogue region, work out which character says it, from balloon tail direction, who is drawn mid-gesture or mouth-open, eye lines, and turn-taking with "story_so_far". Return it as "who" (use the established English name, or a stable short descriptor like "tall boy" when the character is unnamed).
-This matters because Japanese, Korean and Chinese omit the subject constantly. Resolve the omitted subject from the speaker, who they are addressing, and the story so far — then commit to it. If it is genuinely unresolvable, use a subjectless English phrasing ("Not going back." / "Can't do it.") rather than inventing a pronoun.
-Honour "characters" exactly: once a character has a pronoun there, keep it. Never re-decide a character's gender from one page to the next — a consistent pronoun matters more than a freshly-guessed one.
+Preserve every detail, subject, negation, emotion and the speaker's register. Use the art, balloon tails, dialogue history and series memory to resolve omitted subjects. If ambiguous, use a natural subjectless line. Honour established glossary, pronouns, names and meaningful honorifics. Translate the source language visible in the image, even when the language hint differs. Translate sound effects into short English effects in capitals. For matching "run" numbers, read the whole sentence in "part" order, then divide its English across those balloons. Preserve the original tone and intensity. Add no explanations.
 
-SPLIT SENTENCES
-Regions that share a "run" value are ONE sentence broken across balloons, in "part" order. Translate the whole sentence first, then split the English across the parts so each balloon carries its share and they read continuously in sequence. Never translate a part as though it were a complete sentence, and never repeat the whole sentence in every part.
-
-VOICE
-- Write the way real people speak: contractions, and each line's own emotion — shouting, whispering, teasing, panicking.
-- Match each speaker's register from "characters" (blunt/casual/formal/deferential). A character's voice should be recognisable across pages.
-- Keep honorifics that carry nuance (oppa, hyung, noona, unnie, -nim, -ssi, senpai, -san, -sama, -chan, gege, jiejie, shifu).
-- Use "glossary" EXACTLY for known names/terms; romanize new names sensibly.
-- Keep lines as tight as real typeset dialogue. No translator notes, no romanization in "en".
-- Natural, idiomatic English as a skilled native scanlator writes it: carry meaning, intent and tone, not word order; no calques (idioms and sentence particles become what an English speaker would say). Rephrase, never reinterpret: add nothing the source does not say.
-- Faithful and complete: never omit, summarise or soften; match crudeness and heat. Explicit scenes use the plain words of English adult comics, never clinical or anatomical terms.
-- Proofread every line: correct spelling, grammar and punctuation.
-
-SOUND EFFECTS
-Punchy comic onomatopoeia in CAPS (WHAM, BA-DUMP, KRAK) with "kind":"sfx". Japanese SFX cover states as well as sounds — silence (シーン), staring (ジー), nervousness (ドキドキ) — so translate the effect, not a literal noise. Use "kind":"skip" for UI scraps, watermarks, page numbers and decorative or unreadable SFX.
-
-MISSED TEXT
-If real comic text is visible with NO magenta outline, add an entry WITHOUT an id and WITH "box":[x,y,width,height], each value 0-1000 normalized to the FULL image (x and width against image width, y and height against image height). Never add boxes for app or browser UI.
-This is ONLY for text that has no outline of its own. Never add a no-id entry for text inside an outlined region — answer that region by its id, once. In particular, put a long line entirely in its region's own "en"; never continue it into a second entry, and never repeat a line you already gave by id. A duplicate entry is painted as a second card next to the balloon it belongs to.
-
-Respond with ONLY this JSON object, no markdown fences:
-{"bubbles":[{"id":<region id>,"who":"<speaker>","src":"<original>","en":"<English>","kind":"dialogue|sfx|skip"}, ...,{"box":[x,y,w,h],"who":"...","src":"...","en":"...","kind":"dialogue"}],"new_terms":{"<source name/term>":"<English>"},"characters":{"<English name>":{"pronoun":"he|she|they","register":"<how they speak>","note":"<role or relationship>"}}}
-- One entry per detected region id (plus any no-id extras), in reading order.
-- "new_terms": only newly established proper nouns/terms not already in the glossary.
-- "characters": only characters appearing on THIS page whose pronoun or register is not already recorded, or whom you can now describe more precisely.
+After "bubbles", include "new_terms" mapping any newly established source names to English, and "characters" mapping newly identified English names to objects with "pronoun", "register" and "note". Use empty objects when there is nothing to add. Output JSON only.
 """.trim()
     }
 }
