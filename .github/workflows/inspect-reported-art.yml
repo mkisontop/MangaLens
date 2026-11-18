@@ -7,7 +7,7 @@ on:
       revision:
         description: MangaLens commit to check
         type: string
-        default: "e8bbbc18ddd2396cda477d1e402f1af7e53aeefb"
+        default: "d8c51ba74dab6f4819899d22848bbfa5aceaddd3"
 permissions:
   contents: read
 jobs:
@@ -17,7 +17,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ inputs.revision || 'e8bbbc18ddd2396cda477d1e402f1af7e53aeefb' }}
+          ref: ${{ inputs.revision || 'd8c51ba74dab6f4819899d22848bbfa5aceaddd3' }}
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
