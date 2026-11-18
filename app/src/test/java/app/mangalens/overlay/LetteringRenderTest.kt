@@ -760,6 +760,18 @@ class LetteringRenderTest {
     }
 
     @Test
+    fun `reusing a mutable source rectangle moves the lettering with the page`() {
+        val view = view()
+        val box = Rect(140, 200, 330, 260)
+        val bubbles = listOf(RenderBubble(box, "Stay here.", "待って。", Color.WHITE, Color.BLACK, false))
+        view.setBubbles(bubbles)
+        val original = view.placedRects().single()
+        box.offset(0, 140)
+        view.setBubbles(bubbles)
+        assertEquals(Rect(original).apply { offset(0, 140) }, view.placedRects().single())
+    }
+
+    @Test
     fun `the same line in a new panel is set again for that panel`() {
         // At a webtoon stop the card carried from the last stop brings the
         // old frame's panel, cut off at the bottom of that frame; the stop's

@@ -215,53 +215,15 @@ object TextEraser {
         ringCount = 0
         for (i in 0 until n) if (zone[i] == RING) ring[ringCount++] = i
 
-        // Background: a smooth fit to the ring. Pixels far off the ring's
-        // median colour (further than its own spread, so a gradient
-        // stays) are left out first — a dark shape filling a corner of the
-        // ring would otherwise be fitted as paper; then the fit is redone
-        // without the pixels it shows to be lines or stray strokes.
-        val wt = FloatArray(n)
-        for (i in ring) wt[i] = 1f
-        val median = medianColour(px, wt)
-        val res = IntArray(ringCount)
-        val resHist = IntArray(256)
-        for (k in ring.indices) {
-            res[k] = dist(px[ring[k]], median)
-            resHist[res[k]]++
-        }
-        val spread = max(40, percentile(resHist, ringCount, 0.75f) * 3 / 2)
-        for (k in ring.indices) wt[ring[k]] = if (res[k] <= spread) 1f else 0f
-        var fit = PushPull.fill(chan, wt, w, h, FIT_LEVEL) ?: return null
-        resHist.fill(0)
-        for (k in ring.indices) {
-            res[k] = fieldDist(px, fit, ring[k])
-            resHist[res[k]]++
-        }
-        val cut = max(24, 2 * percentile(resHist, ringCount, 0.5f))
-        for (k in ring.indices) wt[ring[k]] = if (res[k] < cut && dist(px[ring[k]], median) <= spread) 1f else 0f
-        fit = PushPull.fill(chan, wt, w, h, FIT_LEVEL) ?: fit
-        resHist.fill(0)
-        var resSum = 0L
-        var robustSum = 0L
-        var robust = 0
-        for (i in ring) {
-            val d = fieldDist(px, fit, i)
-            resHist[d]++
-            resSum += d
-            if (wt[i] > 0f) { robustSum += d; robust++ }
-        }
-        var flatCount = 0
-        for (d in 0 until FLAT_RESIDUAL) flatCount += resHist[d]
-        val flatShare = flatCount.toFloat() / ringCount
-        val texture = resSum.toFloat() / ringCount
-        val robustTexture = if (robust > 0) robustSum.toFloat() / robust else texture
-        val background = medianColour(px, wt)
+        val paper = ringPaper(px, chan, ring, w, h) ?: return null
+        val background = paper.color
+        val texture = paper.texture
         val ringShare = colourShares(px) { zone[it] == RING }
 
         val scene = Scene(px, chan, reg, background, ringShare)
         val grow = if (min(reg.boxR - reg.boxL, reg.boxB - reg.boxT) >= 20 || sfx) 2 else 1
-        val strokes = (if (flatShare < FLAT_SHARE) null else {
-            scene.onPaper(fit, percentile(resHist, ringCount, 0.9f), outlineColor, robustTexture)
+        val strokes = (if (!paper.smooth) null else {
+            scene.onPaper(paper.field, paper.noise, outlineColor, paper.robustTexture)
         })
             ?: scene.onInnerPaper(outlineColor, texture)
             ?: scene.onArt(textColor, outlineColor, grow, texture)
@@ -283,6 +245,80 @@ object TextEraser {
         var busy = strokes.busy
         if (!flat && texture > 6f && retexture(chan, known, mask, zone, w, h, out)) busy *= 0.6f
         return Cleaned(out, mask, flat, background, strokes.fill or OPAQUE, strokes.outline?.or(OPAQUE), busy)
+    }
+
+    private class RingPaper(
+        val field: FloatArray,
+        val color: Int,
+        val smooth: Boolean,
+        val noise: Int,
+        val texture: Float,
+        val robustTexture: Float,
+    )
+
+    /** Estimates the paper from the ring surrounding the source lettering. */
+    private fun ringPaper(px: IntArray, chan: FloatArray, ring: IntArray, w: Int, h: Int): RingPaper? {
+        val n = px.size
+        val first = px[ring[0]] or OPAQUE
+        // An exactly uniform ring fits that same colour at every scale.
+        if (ring.all { (px[it] or OPAQUE) == first }) {
+            val red = (first shr 16 and 0xFF).toFloat()
+            val green = (first shr 8 and 0xFF).toFloat()
+            val blue = (first and 0xFF).toFloat()
+            val field = FloatArray(n * 3)
+            if (red == green && green == blue) {
+                field.fill(red)
+            } else {
+                for (i in field.indices step 3) {
+                    field[i] = red
+                    field[i + 1] = green
+                    field[i + 2] = blue
+                }
+            }
+            return RingPaper(field, first, true, 0, 0f, 0f)
+        }
+        // A smooth fit to the ring. Pixels far off the ring's
+        // median colour (further than its own spread, so a gradient
+        // stays) are left out first — a dark shape filling a corner of the
+        // ring would otherwise be fitted as paper; then the fit is redone
+        // without the pixels it shows to be lines or stray strokes.
+        val wt = FloatArray(n)
+        for (i in ring) wt[i] = 1f
+        val median = medianColour(px, wt)
+        val res = IntArray(ring.size)
+        val resHist = IntArray(256)
+        for (k in ring.indices) {
+            res[k] = dist(px[ring[k]], median)
+            resHist[res[k]]++
+        }
+        val spread = max(40, percentile(resHist, ring.size, 0.75f) * 3 / 2)
+        for (k in ring.indices) wt[ring[k]] = if (res[k] <= spread) 1f else 0f
+        var fit = PushPull.fill(chan, wt, w, h, FIT_LEVEL) ?: return null
+        resHist.fill(0)
+        for (k in ring.indices) {
+            res[k] = fieldDist(px, fit, ring[k])
+            resHist[res[k]]++
+        }
+        val cut = max(24, 2 * percentile(resHist, ring.size, 0.5f))
+        for (k in ring.indices) wt[ring[k]] = if (res[k] < cut && dist(px[ring[k]], median) <= spread) 1f else 0f
+        fit = PushPull.fill(chan, wt, w, h, FIT_LEVEL) ?: fit
+        resHist.fill(0)
+        var resSum = 0L
+        var robustSum = 0L
+        var robust = 0
+        for (i in ring) {
+            val d = fieldDist(px, fit, i)
+            resHist[d]++
+            resSum += d
+            if (wt[i] > 0f) { robustSum += d; robust++ }
+        }
+        var flatCount = 0
+        for (d in 0 until FLAT_RESIDUAL) flatCount += resHist[d]
+        val flatShare = flatCount.toFloat() / ring.size
+        val texture = resSum.toFloat() / ring.size
+        val robustTexture = if (robust > 0) robustSum.toFloat() / robust else texture
+        val background = medianColour(px, wt)
+        return RingPaper(fit, background, flatShare >= FLAT_SHARE, percentile(resHist, ring.size, 0.9f), texture, robustTexture)
     }
 
     /** What was found to be lettering, and which pixels may be trusted to rebuild it from. */

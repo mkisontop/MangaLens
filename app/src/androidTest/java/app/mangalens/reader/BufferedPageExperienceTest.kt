@@ -191,6 +191,23 @@ class BufferedPageExperienceTest {
                 val actual = screen.getPixel(pg.bitmap.width/2 + origin[0], pg.bitmap.height*n/12 + origin[1])
                 for (shift in listOf(16, 8, 0)) art = maxOf(art, kotlin.math.abs((actual shr shift and 255)-(pg.guard shr shift and 255)))
             }
+            if (legible == words.size && remaining < 50 && art <= 4) {
+                // Check every background pixel between the balloons, including
+                // those beside their outlines where a misplaced wipe first shows.
+                val width = pg.bitmap.width
+                val height = pg.bitmap.height
+                val before = IntArray(width * height)
+                val after = IntArray(before.size)
+                pg.bitmap.getPixels(before, 0, width, 0, 0, width, height)
+                screen.getPixels(after, 0, width, origin[0], origin[1], width, height)
+                for (i in before.indices) {
+                    if (before[i] != pg.guard) continue
+                    for (shift in 0..16 step 8) {
+                        val diff = (after[i] shr shift and 255) - (before[i] shr shift and 255)
+                        art = maxOf(art, kotlin.math.abs(diff))
+                    }
+                }
+            }
             val done = legible == words.size && remaining < 50 && art <= 4
             if (done && trial == 1 || !done && SystemClock.elapsedRealtime() >= deadline) {
                 File(output, "dense-" + trial + ".png").outputStream().use { screen.compress(Bitmap.CompressFormat.PNG, 100, it) }

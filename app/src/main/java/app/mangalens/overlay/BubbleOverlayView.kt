@@ -250,6 +250,7 @@ class BubbleOverlayView(context: Context) : View(context) {
     private var setH = -1f
     private var setScale = Float.NaN
     private var setOpacity = Float.NaN
+    private var setAnimated = false
 
     private companion object {
         /** Smallest type, in dp, the text shrinks to. */
@@ -638,7 +639,6 @@ class BubbleOverlayView(context: Context) : View(context) {
      * The view keeps the reference and never alters or frees it.
      */
     fun setBubbles(bubbles: List<RenderBubble>, page: Bitmap? = null) {
-        source = bubbles
         placed = placeAll(bubbles)
         backdrop = page
         invalidate()
@@ -655,17 +655,36 @@ class BubbleOverlayView(context: Context) : View(context) {
      * bubble is unchanged. The caches are rebuilt from this list alone, so
      * they never hold more than the page on screen.
      */
-    private fun placeAll(bubbles: List<RenderBubble>): List<Placed> {
+    private fun placeAll(next: List<RenderBubble>): List<Placed> {
         val screenW = screenWidth()
         val screenH = screenHeight()
-        if (screenW != setW || screenH != setH || textScale != setScale || bgOpacity != setOpacity) {
+        val dimensionsChanged = screenW != setW || screenH != setH || textScale != setScale || bgOpacity != setOpacity
+        val animated = animates()
+        // The final response often repeats the last streamed page. Its art
+        // is updated by setBubbles even when the lettering is already placed.
+        if (!dimensionsChanged && animated == setAnimated && source == next) return placed
+        if (dimensionsChanged) {
             letterings.clear()
             setW = screenW
             setH = screenH
             setScale = textScale
             setOpacity = bgOpacity
         }
-        val now = if (animates()) clock().coerceAtLeast(1L) else 0L
+        setAnimated = animated
+        // Rect is mutable. Snapshot the geometry so a caller moving its
+        // existing box or replacing entries in its list still relays out.
+        val bubbles = next.mapIndexed { index, b ->
+            val previous = source.getOrNull(index)
+            if (previous != null && previous == b) previous else b.copy(
+                box = Rect(b.box),
+                balloon = b.balloon?.let { it.copy(box = Rect(it.box)) },
+                patchRect = b.patchRect?.let(::Rect),
+                panel = b.panel?.let(::Rect),
+                otherPanels = b.otherPanels.map(::Rect),
+            )
+        }
+        source = bubbles
+        val now = if (animated) clock().coerceAtLeast(1L) else 0L
         val nextLetterings = HashMap<Key, Lettering?>(bubbles.size * 2)
         val nextStamps = HashMap<StampKey, Bitmap?>()
         val nextBusy = IdentityHashMap<Bitmap, Boolean>()

@@ -27,6 +27,13 @@ def main(root):
         dense = read(root, build, "buffered.csv")
         scrolls = read(root, build, "scroll.csv")
         uploads = read(root, build, "uploads.csv")
+        erasures = read(root, build, "erasure.csv")
+        require({(r["paper"], int(r["trial"])) for r in erasures} ==
+                {(paper, i) for paper in ("white", "colour", "gradient") for i in range(12)},
+                "Missing reference images or erasure timings: " + build)
+        require(all(int(r["pixels_changed_outside_mask"]) == 0 and int(r["max_channel_error"]) <= 16
+                    and float(r["mean_channel_error"]) < 0.6 for r in erasures),
+                "Erasure changed surrounding art or left lettering behind: " + build)
         require(len(scrolls) == 40 and len({(r["case"], r["trial"]) for r in scrolls}) == 40,
                 "Missing registration cases: " + build)
         require({int(r["scroll_px"]) for r in uploads} == {121, -121} and len(uploads) == 2,
@@ -49,6 +56,10 @@ def main(root):
             "buffered_first_draw_ms": median(dense, "first_draw_ms"),
             "buffered_full_draw_ms": median(dense, "full_draw_ms"),
             "buffered_layouts": median(dense, "partial_layouts"),
+            "erasure_ms": {paper: median([r for r in erasures if r["paper"] == paper and int(r["trial"]) >= 4], "ms")
+                           for paper in ("white", "colour", "gradient")},
+            "erased_image_crc": {paper: sorted({r["crc"] for r in erasures if r["paper"] == paper})
+                                 for paper in ("white", "colour", "gradient")},
             "scroll_cases_correct": sum(r["observed"] == r["expected"] for r in scrolls),
             "scroll_registration_ms": median([r for r in scrolls if int(r["trial"]) > 0], "ms"),
             "gemini_image_bytes": median(uploads, "jpeg_bytes"),
@@ -63,6 +74,8 @@ def main(root):
     print(json.dumps(result, indent=2), flush=True)
     (root / "comparison.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     before, after = result["baseline"], result["candidate"]
+    require(after["erased_image_crc"] == before["erased_image_crc"],
+            "The optimized clean pages differ from the reference build")
     require(after["first_visible_ms"] + 450 < before["first_visible_ms"],
             "Cached lettering did not appear at least 450 ms sooner")
     require(after["pages_with_hit_before_provider_reply"] >= 4, "Cache waited for the provider on multiple turns")

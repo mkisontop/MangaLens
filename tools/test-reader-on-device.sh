@@ -26,6 +26,12 @@ for build in baseline candidate; do
     if ! grep -Eq '^OK \([1-9][0-9]* tests?\)' "$out/$build-instrumentation.txt"; then
         failed=1
         grep -Ei 'MangaLensUX|UnsatisfiedLinkError|FATAL EXCEPTION|dlopen failed|text recognizer.*fail' "$out/$build-device-log.txt" | tail -80 || true
+        # Preserve a view of a failed fixture even in a logs-only CI client.
+        for screen in "$out/$build"/dense-0.png "$out/$build"/page-*-screen.png; do
+            [[ -f "$screen" ]] || continue
+            echo "MangaLensScreenshot $build/$(basename "$screen")"
+            base64 -w 960 "$screen" | sed 's/^/MangaLensFrame /'
+        done
         if [[ -f "$out/$build/windows.xml" ]]; then
             python3 - "$out/$build/windows.xml" <<'PY'
 import sys
