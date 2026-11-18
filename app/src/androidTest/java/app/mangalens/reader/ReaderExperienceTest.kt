@@ -157,7 +157,26 @@ class ReaderExperienceTest {
     @Test fun anExpiredScreenGrantReturnsHomeAndFreshConsentResumesCapture() {
         assumeTrue(Build.VERSION.SDK_INT >= 34 &&
             InstrumentationRegistry.getArguments().getString("build", "candidate") != "baseline")
-        runBlocking { SettingsRepository(app).setMode(CaptureMode.MANUAL) }
+        MockWebServer().use { provider ->
+            provider.start(InetAddress.getByName("127.0.0.1"), 0)
+            provider.dispatcher = object : Dispatcher() {
+                override fun dispatch(request: RecordedRequest) = MockResponse().setResponseCode(200)
+                    .setHeader("Content-Type", "application/json")
+                    .setBody("""{"choices":[{"message":{"content":"Ready"}}]}""")
+            }
+            runBlocking {
+                SettingsRepository(app).apply {
+                    setProvider(LlmProvider.CUSTOM)
+                    setModel(LlmProvider.CUSTOM, "fixture")
+                    setCustomUrl(provider.url("/chat").toString())
+                    setMode(CaptureMode.MANUAL)
+                }
+            }
+            verifyFreshCaptureAfterExpiry()
+        }
+    }
+
+    private fun verifyFreshCaptureAfterExpiry() {
         val service = Intent(app, ScreenCaptureService::class.java)
         ActivityScenario.launch(ComponentActivity::class.java).use { host ->
             try {
@@ -172,8 +191,14 @@ class ReaderExperienceTest {
                 assertFalse(ScreenCaptureService.running.value)
                 ActivityScenario.launch(MainActivity::class.java).use {
                     val device = UiDevice.getInstance(inst)
-                    assertTrue("Home explains that fresh screen sharing is needed",
-                        device.wait(Until.hasObject(By.textContains("I can't read what I can't see")), 10000))
+                    val visible = device.wait(Until.hasObject(By.textContains("Tap GO again and allow screen sharing")), 10000)
+                    if (!visible) {
+                        device.dumpWindowHierarchy(File(output, "capture-home.xml"))
+                        inst.uiAutomation.takeScreenshot()?.let { screen ->
+                            try { save(screen, "capture-home.png") } finally { screen.recycle() }
+                        }
+                    }
+                    assertTrue("Home explains how to renew screen-sharing permission", visible)
                 }
 
                 ContextCompat.startForegroundService(app, captureGrant(host, "fresh-capture"))

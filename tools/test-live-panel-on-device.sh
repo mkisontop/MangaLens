@@ -39,6 +39,7 @@ adb shell am instrument -w -r -e build live -e liveEndpoint http://127.0.0.1:787
     "$id.test/androidx.test.runner.AndroidJUnitRunner" | tee "$out/instrumentation.txt"
 adb logcat -d -s MangaLensUX:I > "$out/device.log"
 cat "$out/device.log"
+cat "$out/model-requests.jsonl"
 adb exec-out run-as "$id" tar -cf - -C files/reader-ux live > "$out/page.tar"
 tar -xf "$out/page.tar" -C "$out"
 rm "$out/page.tar"

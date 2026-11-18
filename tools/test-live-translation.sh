@@ -82,8 +82,10 @@ log = Path(sys.argv[1]).read_text(errors="replace")
 records = [json.loads(row) for row in Path("app/build/reader-live-device/model-requests.jsonl").read_text().splitlines()]
 pages = [r for r in records if r["images"]]
 reviews = [r for r in records if not r["images"]]
-assert len(pages) == 2 and all(r["images"] == 1 and r["completed"] for r in pages), (
-    "Each native-size zoom must send exactly one page image", records)
+assert len(pages) == 2 and all(r["completed"] and r["image_bytes"] > 0 for r in pages), (
+    "Each zoomed panel must receive one completed image request", records)
+assert 1 <= pages[0]["images"] <= 2 and pages[1]["images"] == 1, (
+    "The contextual panel may keep one detailed close-up and the ordinary zoom uses one image", records)
 assert records[0] == pages[0] and records[-1] == pages[1] and len(reviews) <= 1, (
     "The ordinary follow-up balloon must finish with its single image request", records)
 assert all(r["purpose"] == "forms_of_address" and r["review_items"] == 1 and r["completed"] for r in reviews), (

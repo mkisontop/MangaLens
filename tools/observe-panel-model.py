@@ -1,5 +1,6 @@
 """Forward the Android test's private model stream and record which inputs answered the panel."""
 
+import base64
 import http.client
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
@@ -19,11 +20,13 @@ class ModelObserver(BaseHTTPRequestHandler):
             return
         raw = self.rfile.read(int(self.headers["Content-Length"]))
         messages = json.loads(raw)["messages"]
-        images = sum(
-            part.get("type") == "image_url"
+        image_data = [
+            part["image_url"]["url"].split(",", 1)[1]
             for message in messages if isinstance(message["content"], list)
-            for part in message["content"]
-        )
+            for part in message["content"] if part.get("type") == "image_url"
+        ]
+        images = len(image_data)
+        image_bytes = sum(len(base64.b64decode(encoded)) for encoded in image_data)
         regions = []
         history = []
         purpose = "page" if images else "unknown"
@@ -48,7 +51,7 @@ class ModelObserver(BaseHTTPRequestHandler):
                     if isinstance(payload, dict):
                         regions.extend(payload.get("detected_regions", []))
                         history.extend(payload.get("story_so_far", []))
-        record = {"images": images, "regions": len(regions), "story_entries": len(history),
+        record = {"images": images, "image_bytes": image_bytes, "regions": len(regions), "story_entries": len(history),
                   "purpose": purpose, "review_items": review_items,
                   "ocr_hints": sum(bool(region.get("ocr_text_maybe_garbled")) for region in regions),
                   "completed": False}
@@ -60,12 +63,29 @@ class ModelObserver(BaseHTTPRequestHandler):
             self.send_response(reply.status)
             self.send_header("Content-Type", reply.getheader("Content-Type", "application/json"))
             self.end_headers()
+            response = bytearray()
             while chunk := reply.read1(8192):
+                if len(response) < 65536:
+                    response.extend(chunk[:65536 - len(response)])
                 if "first_bytes_ms" not in record:
                     record["first_bytes_ms"] = round((time.monotonic() - start) * 1000)
                 self.wfile.write(chunk)
                 self.wfile.flush()
             record["completed"] = 200 <= reply.status < 300
+            # This observer only runs with credited public panels. Keep the model's
+            # own words so the image reading and any text-only correction can be audited.
+            try:
+                wire = response.decode()
+                if wire.lstrip().startswith("data:"):
+                    parts = (json.loads(line[6:]) for line in wire.splitlines()
+                             if line.startswith("data: ") and line[6:] != "[DONE]")
+                    answer = "".join(p["choices"][0]["delta"].get("content", "") for p in parts if p.get("choices"))
+                else:
+                    answer = json.loads(wire)["choices"][0]["message"]["content"]
+                body = json.loads(answer.strip().removeprefix("```json").removesuffix("```").strip())
+                record["answers"] = body.get("bubbles", body.get("items", []))
+            except (ValueError, KeyError, IndexError, TypeError, AttributeError):
+                pass
         finally:
             backend.close()
             record["elapsed_ms"] = round((time.monotonic() - start) * 1000)

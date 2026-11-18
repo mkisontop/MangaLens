@@ -8,7 +8,7 @@ on:
       - ".github/workflows/live-translation.yml"
       - "tools/test-live-translation.sh"
       - "app/src/test/java/app/mangalens/translate/LiveTranslationQualityTest.kt"
-      - "app/src/androidTest/java/app/mangalens/reader/PublishedComicExperienceTest.kt"
+      - "app/src/androidTest/java/app/mangalens/reader/**"
       - "tools/test-live-panel-on-device.sh"
       - "tools/setup-reader-device.sh"
       - "tools/observe-panel-model.py"

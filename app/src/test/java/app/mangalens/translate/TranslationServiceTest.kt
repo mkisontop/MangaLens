@@ -85,6 +85,25 @@ class TranslationServiceTest {
     }
 
     @Test
+    fun aNamedListenerMissingFromAnEnglishCalloutReceivesAReview() = runBlocking {
+        val source = "밤톨아! 이런 용감한 녀석~ 날 지켜준 거야?"
+        val spoken = "Chestnut! You're so brave! Were you protecting me?"
+        val srv = serve { ex ->
+            val item = JSONObject().put("id", 0).put("referent", "listener").put("en", spoken)
+                .put("names", JSONObject().put("밤톨", "Chestnut"))
+            val msg = JSONObject().put("content", JSONObject().put("items", JSONArray().put(item)).toString())
+            ex.respond(200, JSONObject().put("choices", JSONArray().put(JSONObject().put("message", msg))).toString())
+        }
+        val cards = mutableListOf(VisionLlmEngine.VisionBubble(0, 0, 0, 0, 0, source,
+            "You! This is so brave~ Were you protecting me?", false, ""))
+        val terms = JSONObject()
+        VisionLlmEngine(custom(srv)).reviewFormsOfAddress(cards, "{}", JSONArray(), terms)
+        assertEquals(spoken, cards.single().en)
+        assertEquals("Chestnut", terms.getString("밤톨"))
+        assertEquals(1, srv.exchanges.size)
+    }
+
+    @Test
     fun anUnavailableAddressReviewKeepsTheOriginalImageTranslation() = runBlocking {
         val srv = serve { ex -> ex.respond(503, "unavailable") }
         val original = VisionLlmEngine.VisionBubble(0, 0, 0, 0, 0,

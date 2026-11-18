@@ -126,9 +126,11 @@ class VisionLlmEngine(
             // Regions on-device OCR could not read go up a second time as
             // enlarged close-ups cut from the full-resolution frame, so the
             // lettering the model must read itself reaches it legible.
-            val closeups = closeupIds(anchors, settings.dataSaver, upload, largeReadableId)
+            val closeups = closeupIds(anchors, settings.dataSaver)
+            val omitFlatCrops = settings.dataSaver && largeReadableId != null &&
+                maxOf(upload.width(), upload.height()) <= PageMarkup.maxPageDimension(settings.dataSaver)
             val crops = if (closeups.isEmpty()) emptyList() else {
-                PageMarkup.encodeRegionCrops(bitmap, anchors, closeups, settings.dataSaver)
+                PageMarkup.encodeRegionCrops(bitmap, anchors, closeups, settings.dataSaver, omitFlatCrops)
             }
             val history = JSONArray(StoryContext.snapshot())
             val page = JSONObject()
@@ -176,7 +178,8 @@ class VisionLlmEngine(
         }
 
     private fun VisionBubble.needsAddressReview(): Boolean =
-        !sfx && OBJECT_PHRASE.containsMatchIn(en) && DETACHED_KOREAN_ADDRESS.containsMatchIn(src)
+        !sfx && DETACHED_KOREAN_ADDRESS.containsMatchIn(src) &&
+            (OBJECT_PHRASE.containsMatchIn(en) || GENERIC_CALLOUT.containsMatchIn(en) || POINTED_REMARK.containsMatchIn(en))
 
     /** Re-read disputed addressees from the transcribed words in one small text request. */
     internal suspend fun reviewFormsOfAddress(
@@ -213,9 +216,10 @@ class VisionLlmEngine(
             if (id !in pending || edit.optString("referent") != "listener") continue
             val original = bubbles[id]
             val en = JunkFilter.accept(original.src, edit.optString("en")) ?: continue
-            if (OBJECT_PHRASE.containsMatchIn(en)) continue
+            val corrected = original.copy(en = en)
+            if (corrected.needsAddressReview()) continue
             pending.remove(id)
-            bubbles[id] = original.copy(en = en)
+            bubbles[id] = corrected
             val names = edit.optJSONObject("names") ?: continue
             for (source in names.keys()) {
                 val name = names.optString(source).trim()
@@ -231,16 +235,7 @@ class VisionLlmEngine(
      * largest first, capped so a page of hand-lettering does not turn into
      * a dozen uploads.
      */
-    internal fun closeupIds(
-        anchors: List<app.mangalens.ocr.Bubble>,
-        dataSaver: Boolean,
-        upload: Rect,
-        largeReadableId: Int?,
-    ): List<Int> {
-        // A zoomed panel already uploaded at native resolution contains every source pixel.
-        // Keep close-ups for downscaled pages, unresolved lettering and full-quality mode.
-        if (dataSaver && largeReadableId != null &&
-            maxOf(upload.width(), upload.height()) <= PageMarkup.maxPageDimension(dataSaver)) return emptyList()
+    private fun closeupIds(anchors: List<app.mangalens.ocr.Bubble>, dataSaver: Boolean): List<Int> {
         val cap = if (dataSaver) MAX_CLOSEUPS_DATA_SAVER else MAX_CLOSEUPS
         return anchors.indices
             .filter { i ->
@@ -296,9 +291,12 @@ class VisionLlmEngine(
             """[가-힣]{1,24}[아야]\s*[,，!！~～]\s*(?:이런|요런|저런)\s+[^.!?！？~～\n]{1,38}(?:것|거|녀석|아이|애)\s*[~～!！]"""
         )
         private val OBJECT_PHRASE = Regex("""\b(?:this|that)\s+(?:[a-z'-]+\s+){1,3}thing\b""", RegexOption.IGNORE_CASE)
+        private val GENERIC_CALLOUT = Regex("""^\s*(?:(?:hey|oh)[,\s]+)?you\s*[!！~～]""", RegexOption.IGNORE_CASE)
+        private val POINTED_REMARK = Regex(
+            """(?:^|[!！~～])\s*(?:this|that|it)(?:['’]s|\s+is)\s+(?:so|really|very|such)\b""", RegexOption.IGNORE_CASE)
         private val ADDRESS_REVIEW_PROMPT = """
 You edit Korean comic dialogue for spoken English. Each source starts with a name being called, followed by a detached remark. Decide what the remark refers to from the entire Korean line and the preceding dialogue: "listener" for the addressee, "object" for a separate thing, or "unclear". When it is spoken affectionately to the listener, translate the whole line like someone speaking to them: address them directly with "you" or an endearment. Preserve the rest of the sentence, its action and who does what to whom. Use established names from the glossary. An obvious everyday noun used as a pet name can be translated by its meaning.
-Return JSON with an "items" array, one object per input id. Give "id" and "referent". For "listener" also give "en" containing the complete spoken English and "names" mapping any name you localized from source spelling to English. Output only the JSON.
+Return JSON with an "items" array, one object per input id. Give "id" and "referent". For "listener", first give "names" mapping the called name without its Korean vocative suffix to its English name. Then give "en" containing the complete dialogue, calling that listener by that name and expressing the compliment directly to them. Output only the JSON.
 """.trim()
 
         /** Close-ups per page; each is a small upload and a few hundred tokens. */

@@ -7,7 +7,6 @@ import android.graphics.Paint
 import android.graphics.Rect
 import android.util.Base64
 import app.mangalens.ocr.Bubble
-import app.mangalens.settings.AppSettings
 import java.io.File
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
@@ -33,18 +32,22 @@ import org.robolectric.annotation.GraphicsMode
 class PageMarkupTest {
 
     @Test
-    fun nativeSizeZoomAvoidsDuplicateImagesAndKeepsUnresolvedPageDetails() {
-        val reader = VisionLlmEngine(AppSettings())
-        val anchors = listOf(
-            Bubble("", Rect(26, 42, 96, 145), false),
-            Bubble("readable dialogue", Rect(216, 108, 582, 389), false),
-        )
-        val native = Rect(0, 300, 720, 781)
-        val reduced = Rect(0, 0, 720, 1001)
-        assertEquals(emptyList<Int>(), reader.closeupIds(anchors, true, native, 1))
-        assertEquals(listOf(0), reader.closeupIds(anchors, true, reduced, 1))
-        assertEquals(listOf(0), reader.closeupIds(anchors, true, native, null))
-        assertEquals(listOf(0), reader.closeupIds(anchors, false, native, 1))
+    fun aNativeZoomSkipsOnlyCompletelyFlatCloseups() {
+        val bitmap = Bitmap.createBitmap(360, 240, Bitmap.Config.ARGB_8888)
+        try {
+            bitmap.eraseColor(Color.WHITE)
+            val anchors = listOf(Bubble("", Rect(20, 36, 94, 145), false),
+                Bubble("", Rect(194, 42, 286, 157), false))
+            val ids = listOf(0, 1)
+            assertEquals(ids, PageMarkup.encodeRegionCrops(bitmap, anchors, ids, true).map { it.first })
+            assertTrue(PageMarkup.encodeRegionCrops(bitmap, anchors, ids, true, omitFlatCrops = true).isEmpty())
+            // Even one off-white pixel near the far corner can carry panel context.
+            bitmap.setPixel(283, 154, Color.rgb(254, 255, 255))
+            assertEquals(listOf(1),
+                PageMarkup.encodeRegionCrops(bitmap, anchors, ids, true, omitFlatCrops = true).map { it.first })
+        } finally {
+            bitmap.recycle()
+        }
     }
 
     @Test

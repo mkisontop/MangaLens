@@ -152,6 +152,7 @@ object PageMarkup {
         anchors: List<Bubble>,
         ids: List<Int>,
         dataSaver: Boolean,
+        omitFlatCrops: Boolean = false,
     ): List<Pair<Int, String>> {
         val maxDim = if (dataSaver) 384 else 768
         val quality = if (dataSaver) 62 else 80
@@ -166,6 +167,7 @@ object PageMarkup {
                 (box.bottom + pad).coerceIn(0, bitmap.height),
             )
             if (crop.width() < 8 || crop.height() < 8) continue
+            if (omitFlatCrops && isFlat(bitmap, crop)) continue
             val scale = (maxDim.toFloat() / max(crop.width(), crop.height())).coerceAtMost(1f)
             val w = (crop.width() * scale).roundToInt().coerceAtLeast(1)
             val h = (crop.height() * scale).roundToInt().coerceAtLeast(1)
@@ -181,6 +183,22 @@ object PageMarkup {
             canvasBitmap.recycle()
         }
         return out
+    }
+
+    /** A close-up can aid recognition at native size. Discard it only if it has no detail. */
+    private fun isFlat(bitmap: Bitmap, area: Rect): Boolean {
+        val width = area.width()
+        val rowsPerRead = minOf(8, area.height())
+        val pixels = IntArray(width * rowsPerRead)
+        val colour = bitmap.getPixel(area.left, area.top)
+        var y = area.top
+        while (y < area.bottom) {
+            val rows = minOf(rowsPerRead, area.bottom - y)
+            bitmap.getPixels(pixels, 0, width, area.left, y, width, rows)
+            for (i in 0 until width * rows) if (pixels[i] != colour) return false
+            y += rows
+        }
+        return true
     }
 
     /** The region's badge at a close-up's top-left corner. */
