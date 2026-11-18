@@ -358,11 +358,14 @@ class VisionLlmEngine(
 
         private val SECOND_PERSON = Regex("""\byou(?:r|rs|rself)?\b""", RegexOption.IGNORE_CASE)
         private val CONTINUED_ADDRESS = Regex("""^[\s.…“"']*you\b""", RegexOption.IGNORE_CASE)
+        private val FIRST_PERSON_OBJECT = Regex("""\b(?:me|my|mine|us|our|ours)\b""", RegexOption.IGNORE_CASE)
         private val SELF_IDENTIFICATION = Regex("""\b(?:i am|i['’]m|my name is|this is)\s+""", RegexOption.IGNORE_CASE)
 
-        /** A follow-up still describing "you" does not establish that the person just addressed is speaking. */
+        /** Preserve replies and questions. A continued observation about what "you" did for "me"
+         * or my belongings is weak evidence that the person just addressed took over the dialogue. */
         internal fun speakerAfterAddress(previousLine: String, english: String, speaker: String): String {
-            if (speaker.isBlank() || !CONTINUED_ADDRESS.containsMatchIn(english)) return speaker
+            if (speaker.isBlank() || '?' in english || '？' in english ||
+                !CONTINUED_ADDRESS.containsMatchIn(english) || !FIRST_PERSON_OBJECT.containsMatchIn(english)) return speaker
             val unattributed = previousLine.startsWith("— ")
             val previousSpeaker = if (unattributed) "" else previousLine.substringBefore(": ", "")
             if (previousSpeaker.equals(speaker, ignoreCase = true)) return speaker

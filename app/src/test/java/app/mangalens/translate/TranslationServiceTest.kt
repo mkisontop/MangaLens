@@ -58,6 +58,9 @@ class TranslationServiceTest {
         assertEquals("Rider", VisionLlmEngine.speakerAfterAddress(prior, "You brought my bag, too.", "Rider"))
         assertEquals("Chestnut", VisionLlmEngine.speakerAfterAddress(prior, "Yes, I'm taking you home.", "Chestnut"))
         assertEquals("Chestnut", VisionLlmEngine.speakerAfterAddress(prior, "You called. I'm Chestnut.", "Chestnut"))
+        assertEquals("Chestnut", VisionLlmEngine.speakerAfterAddress(prior, "You want me to carry that bag?", "Chestnut"))
+        assertEquals("Chestnut", VisionLlmEngine.speakerAfterAddress(prior, "You can carry your own bag.", "Chestnut"))
+        assertEquals("Chestnut", VisionLlmEngine.speakerAfterAddress(prior, "You called me. My name is Chestnut.", "Chestnut"))
         assertEquals("Mina", VisionLlmEngine.speakerAfterAddress("— Wait here.", "You need the map.", "Mina"))
         assertEquals("Chestnut", VisionLlmEngine.speakerAfterAddress("— Chestnut is ready!", "You brought a bag.", "Chestnut"))
     }
