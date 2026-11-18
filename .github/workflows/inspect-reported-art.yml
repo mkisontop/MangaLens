@@ -1,57 +1,69 @@
-name: Inspect captured reader pixels
+name: Published reader pages on Android 15
 on:
   push:
     branches: ["test/reader-screenshot-inspection"]
+  workflow_dispatch:
+    inputs:
+      revision:
+        description: MangaLens commit to check
+        type: string
+        default: "b171ed0088c5fd1feda16e3ad3bede0e9e1e6fec"
 permissions:
   contents: read
-  actions: read
 jobs:
-  inspect:
+  read-on-android-15:
     runs-on: ubuntu-24.04
-    timeout-minutes: 6
+    timeout-minutes: 22
     steps:
-      - uses: actions/download-artifact@v4
+      - uses: actions/checkout@v4
         with:
-          run-id: 44303992797
-          github-token: ${{ github.token }}
-          name: reader-experience-candidate-first
-          path: evidence
-      - name: Locate every changed native pixel outside the known speech area
+          ref: ${{ inputs.revision || 'b171ed0088c5fd1feda16e3ad3bede0e9e1e6fec' }}
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+      - name: Build and fetch the published Korean comic
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq python3-pil tesseract-ocr
-          /usr/bin/python3 - <<'PY'
-          from collections import Counter
-          from pathlib import Path
-          from PIL import Image, ImageChops, ImageDraw, ImageOps
-          import subprocess, shutil
-          base = next(Path("evidence").rglob("candidate/published-outfit-original.png"))
-          before = Image.open(base).convert("RGB")
-          after = Image.open(base.with_name("published-outfit-translated.png")).convert("RGB")
-          print("Source",base,"size",before.size)
-          speech = (167,502,683,772)
-          dark = before.getpixel((0,0))
-          content = ImageChops.difference(before,Image.new("RGB",before.size,dark)).getbbox()
-          print("Background",dark,"painted bounding box",content)
-          diff=ImageChops.difference(before,after)
-          colors=Counter(); rows=Counter(); cols=Counter(); coords=[]
-          for y in range(content[1],content[3]):
-              for x in range(content[0],content[2]):
-                  if speech[0]<=x<speech[2] and speech[1]<=y<speech[3]: continue
-                  d=max(diff.getpixel((x,y)))
-                  if d>3:
-                      coords.append((x,y,d))
-                      colors[(before.getpixel((x,y)),after.getpixel((x,y)))]+=1
-                      rows[y]+=1; cols[x]+=1
-          print("Count",len(coords),"strongest",sorted(coords,key=lambda c:-c[2])[:15])
-          print("Rows",rows.most_common(30),"Cols",cols.most_common(30))
-          print("Color pairs",colors.most_common(20))
-          print("Bounds",(min(x for x,y,d in coords),min(y for x,y,d in coords),max(x for x,y,d in coords),max(y for x,y,d in coords)) if coords else None)
-          if shutil.which("tesseract"):
-              for factor in (1,2):
-                  crop=after.crop(speech); crop=crop.resize((crop.width*factor,crop.height*factor))
-                  crop.save("/tmp/speech.png")
-                  for mode in (6,11):
-                      out=subprocess.run(["tesseract","/tmp/speech.png","stdout","--psm",str(mode)],capture_output=True,text=True)
-                      print("Latin OCR",factor,mode,repr(out.stdout))
-          PY
+          ./gradlew -PreaderPreview -PreaderEmulator :app:assembleDebug :app:assembleDebugAndroidTest
+          bash tools/fetch-reader-page.sh
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - name: Read the published balloons on the target Android SDK
+        uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 35
+          target: google_apis
+          arch: x86_64
+          profile: pixel_4
+          ram-size: 2048M
+          script: |
+            mkdir -p app/build/android-15
+            adb shell settings put global hide_error_dialogs 1
+            adb shell am force-stop com.google.android.apps.nexuslauncher
+            adb shell wm size 720x1280
+            adb shell wm density 280
+            adb shell settings put secure immersive_mode_confirmations confirmed
+            adb install -r -g app/build/outputs/apk/debug/app-debug.apk
+            adb install -r -g app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+            bash tools/fetch-reader-page.sh app.mangalens.preview
+            adb shell am start -W -n app.mangalens.preview/app.mangalens.MainActivity | tee app/build/android-15/home-launch.txt
+            grep -Eq '^Status: ok' app/build/android-15/home-launch.txt
+            adb shell am force-stop app.mangalens.preview
+            adb logcat -c
+            adb shell am instrument -w -r -e build candidate -e class 'app.mangalens.reader.PublishedComicExperienceTest#publishedKoreanBalloonsShowReadableEnglishWithinTheirOwnPanels,app.mangalens.reader.PublishedComicExperienceTest#followRealArtworkByTheExactNumberOfScrolledPixels' app.mangalens.preview.test/androidx.test.runner.AndroidJUnitRunner | tee app/build/android-15/instrumentation.txt
+            adb logcat -d -s MangaLensUX:I > app/build/android-15/recognition.txt
+            cat app/build/android-15/recognition.txt
+            adb exec-out run-as app.mangalens.preview tar -cf - -C files/reader-ux candidate > app/build/android-15/screens.tar
+            tar -xf app/build/android-15/screens.tar -C app/build/android-15
+            rm app/build/android-15/screens.tar
+            cat app/build/android-15/candidate/published.csv app/build/android-15/candidate/published-scroll.csv
+            adb logcat -b events -d -s am_anr am_crash > app/build/android-15/process-events.txt
+            ! grep -E 'am_(anr|crash).*[, ]app\.mangalens([.:, ]|$)' app/build/android-15/process-events.txt
+            grep -Eq '^OK \(2 tests\)' app/build/android-15/instrumentation.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: Android-15-published-reader
+          path: app/build/android-15
