@@ -1,135 +1,22 @@
-name: Live translation quality
-
+name: Dialogue role probe
 on:
   workflow_dispatch:
   push:
-    branches: ["perf/reader-latency-and-lettering", "perf/unseen-page-translation", "perf/short-vision-instructions"]
-    paths:
-      - ".github/workflows/live-translation.yml"
-      - "tools/test-live-translation.sh"
-      - "app/src/test/java/app/mangalens/translate/LiveTranslationQualityTest.kt"
-      - "app/src/androidTest/java/app/mangalens/reader/**"
-      - "tools/test-live-panel-on-device.sh"
-      - "tools/setup-reader-device.sh"
-      - "tools/observe-panel-model.py"
-      - "tools/compare-live-panels.py"
-      - "tools/bundle-reader-tests.sh"
-      - "tools/fetch-reader-page.sh"
-      - "app/src/main/java/app/mangalens/translate/**"
-      - "app/src/main/java/app/mangalens/pipeline/**"
-      - "app/src/main/java/app/mangalens/capture/**"
-
+    branches: ["perf/short-vision-instructions"]
 permissions:
   contents: read
-
 jobs:
-  translate:
+  compare:
     runs-on: ubuntu-24.04
-    timeout-minutes: 35
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
-          cache: gradle
-      - name: Translate original Korean, Japanese and Chinese dialogue
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: bash tools/test-live-translation.sh
-      - name: Show the exact translations
-        if: always()
-        run: |
-          if [[ -f app/build/reader-live/translations.json ]]; then cat app/build/reader-live/translations.json; fi
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: live-translations
-          path: app/build/reader-live/translations.json
-
-  reader-builds:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/checkout@v4
-        with:
-          ref: 94764de6c1fbf933d08c4480985df199aac4b692
-          path: previous-reader
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
-          cache: gradle
-      - name: Build the Android reader and fetch the credited comic
-        run: |
-          bash tools/bundle-reader-tests.sh build . -PreaderEmulator -PreaderPreview :app:assembleDebug :app:assembleDebugAndroidTest
-          bash tools/bundle-reader-tests.sh build previous-reader -PreaderEmulator -PreaderPreview :app:assembleDebug
-          bash tools/fetch-reader-page.sh
-          bash tools/bundle-reader-tests.sh pack "$RUNNER_TEMP/reader-builds" \
-            previous-reader/app/build/outputs/apk/debug/app-debug.apk \
-            previous-reader/app/src/main/java/app/mangalens/translate/VisionLlmEngine.kt
-      - uses: actions/upload-artifact@v4
-        with:
-          name: reader-test-builds
-          path: ${{ runner.temp }}/reader-builds
-          compression-level: 0
-          if-no-files-found: error
-
-  published-page-on-android:
-    needs: reader-builds
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
-        order: [candidate-first]
-        instructions: [cold]
-    runs-on: ubuntu-24.04
-    timeout-minutes: 50
+        vision: ["0", "1"]
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          name: reader-test-builds
-          path: ${{ runner.temp }}/reader-builds
-      - name: Verify the exact Android builds and enable emulator acceleration
-        run: |
-          bash tools/bundle-reader-tests.sh unpack "$RUNNER_TEMP/reader-builds"
-          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
-          sudo udevadm control --reload-rules
-          sudo udevadm trigger --name-match=kvm
-      - name: Read Korean panels and a Japanese page on Android with the pinned model
+      - name: Read the actual dialogue corrections from the pinned model
         env:
-          MANGALENS_LIVE_VISION: "1"
-          MANGALENS_LIVE_COMPARE_ORDER: ${{ matrix.order }}
-          MANGALENS_LIVE_INSTRUCTIONS: ${{ matrix.instructions }}
-        uses: reactivecircus/android-emulator-runner@v2
-        with:
-          api-level: 33
-          target: google_apis
-          arch: x86_64
-          profile: pixel_4
-          ram-size: 2048M
-          script: bash tools/test-live-translation.sh bash tools/test-live-panel-on-device.sh
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: live-published-page-${{ matrix.order }}-${{ matrix.instructions }}
-          path: app/build/reader-live-device
-
-  cold-page-comparison:
-    if: github.ref != 'refs/heads/perf/short-vision-instructions'
-    needs: published-page-on-android
-    runs-on: ubuntu-24.04
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
-        with:
-          pattern: live-published-page-*
-          path: results
-      - name: Compare the same fresh model and panel on each emulator
-        run: python3 tools/compare-live-panels.py results
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: live-panel-comparison
-          path: results/comparison.json
+          MANGALENS_LIVE_VISION: ${{ matrix.vision }}
+          MANGALENS_MODEL_PROBE: "1"
+        run: bash tools/test-live-translation.sh python3 tools/probe-dialogue-roles.py

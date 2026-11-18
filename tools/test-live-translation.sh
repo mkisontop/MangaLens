@@ -132,6 +132,6 @@ for arm in "${arms[@]}"; do
     # Fresh model process for each build, so the other arm's images, answers and KV cache cannot leak into it.
     start_model
     run_test "$@"
-    if [[ "${MANGALENS_LIVE_VISION:-0}" == 1 && $# -gt 0 ]]; then check_panel_requests; fi
+    if [[ "${MANGALENS_LIVE_VISION:-0}" == 1 && "${MANGALENS_MODEL_PROBE:-0}" != 1 && $# -gt 0 ]]; then check_panel_requests; fi
     stop_model
 done
