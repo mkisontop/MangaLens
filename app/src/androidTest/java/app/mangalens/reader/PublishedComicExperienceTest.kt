@@ -17,6 +17,7 @@ import androidx.test.ext.junit.runners.AndroidJUnit4
 import androidx.test.platform.app.InstrumentationRegistry
 import app.mangalens.ocr.OcrEngine
 import app.mangalens.overlay.BubbleOverlayView
+import app.mangalens.pipeline.ScrollMatch
 import app.mangalens.pipeline.TranslatePipeline
 import app.mangalens.settings.AiVisionMode
 import app.mangalens.settings.AppSettings
@@ -55,24 +56,56 @@ class PublishedComicExperienceTest {
         val balloon: RectF,
         val markers: List<String>,
         val english: String,
-        val checkWords: List<String>,
     )
 
     // Fractions of the published page. Each crop simulates zooming a panel in a comic reader.
     private val scenes = listOf(
         Scene("contest", RectF(.045f, .009f, .31f, .277f), RectF(.074f, .029f, .311f, .205f),
-            listOf("코리앤더", "열망"), "Coriander wants to win the potion contest.", listOf("potion", "contest")),
+            listOf("코리앤더", "열망"), "Coriander wants to win the potion contest."),
         Scene("podium", RectF(.30f, .012f, .613f, .296f), RectF(.303f, .032f, .565f, .241f),
-            listOf("지난번", "시상대"), "Last time she missed the podium.", listOf("last", "podium")),
+            listOf("지난번", "시상대"), "Last time she missed the podium."),
         Scene("device", RectF(.495f, .29f, .794f, .557f), RectF(.507f, .327f, .733f, .492f),
-            listOf("장치", "물약"), "This device can catch different potions!", listOf("device", "potions")),
+            listOf("장치", "물약"), "This device can catch different potions!"),
     )
+
+    @Test
+    fun followRealArtworkByTheExactNumberOfScrolledPixels() {
+        val source = requireNotNull(BitmapFactory.decodeFile(File(inst.targetContext.filesDir, "potion-contest-page.jpg").path))
+        val strip = Bitmap.createScaledBitmap(source, 720, (720f * source.height / source.width).roundToInt(), true)
+        val height = strip.height / 2
+        val start = (strip.height - height) / 2
+        fun viewport(offset: Int): Bitmap {
+            val view = Bitmap.createBitmap(720, height, Bitmap.Config.ARGB_8888)
+            Canvas(view).apply {
+                drawBitmap(strip, Rect(0, start + offset, 720, start + offset + height), Rect(0, 0, 720, height), null)
+                val bar = Paint().apply { color = Color.rgb(43, 47, 53) }
+                drawRect(0f, 0f, 720f, 26f, bar)
+            }
+            return view
+        }
+        try {
+            val first = viewport(0)
+            val before = try { ScrollMatch.of(first) } finally { first.recycle() }
+            File(output, "published-scroll.csv").bufferedWriter().use { csv ->
+                csv.appendLine("expected,observed")
+                for (offset in listOf(-183, -121, -53, -17, -3, -1, 0, 2, 19, 78, 123, 181)) {
+                    val view = viewport(offset)
+                    val found = try { ScrollMatch.of(view).scrolledFrom(before) } finally { view.recycle() }
+                    if (found != null) assertEquals("A remembered line must land on the same artwork", offset, found)
+                    csv.appendLine(listOf(offset, found).joinToString(","))
+                }
+            }
+        } finally {
+            if (strip !== source) strip.recycle()
+            source.recycle()
+        }
+    }
 
     @Test
     fun publishedKoreanBalloonsShowReadableEnglishWithinTheirOwnPanels() {
         val page = requireNotNull(BitmapFactory.decodeFile(File(inst.targetContext.filesDir, "potion-contest-page.jpg").path))
         val csv = File(output, "published.csv")
-        csv.writeText("scene,matched_source,english_read_back,art_pixels_checked,art_pixels_changed\n")
+        csv.writeText("scene,matched_source,english_read_back,original_marker_visible,art_pixels_checked,art_pixels_changed\n")
         try {
             ActivityScenario.launch(ComponentActivity::class.java).use { activity ->
                 lateinit var host: FrameLayout
@@ -83,14 +116,16 @@ class PublishedComicExperienceTest {
                     it.setContentView(host)
                 }
                 inst.waitForIdleSync()
-                for (scene in scenes) read(page, scene, host, csv)
+                DisplayText().use { english ->
+                    for (scene in scenes) read(page, scene, host, csv, english)
+                }
             }
         } finally {
             page.recycle()
         }
     }
 
-    private fun read(page: Bitmap, scene: Scene, host: FrameLayout, csv: File) {
+    private fun read(page: Bitmap, scene: Scene, host: FrameLayout, csv: File, english: DisplayText) {
         fun source(r: RectF) = Rect((r.left * page.width).roundToInt(), (r.top * page.height).roundToInt(),
             (r.right * page.width).roundToInt(), (r.bottom * page.height).roundToInt())
         val crop = source(scene.crop)
@@ -173,17 +208,22 @@ class PublishedComicExperienceTest {
                     }
                     val box = Bitmap.createBitmap(display, origin[0] + expected.left, origin[1] + expected.top,
                         expected.width(), expected.height())
-                    val recognized = try {
+                    val korean = try {
                         runBlocking { ocr.recognize(box, SourceLang.KO).lines.joinToString(" ") { it.text.lowercase() } }
                     } finally {
                         if (box !== display) box.recycle()
                     }
+                    val screenBox = Rect(expected).apply { offset(origin[0], origin[1]) }
+                    val recognized = english.read(display, screenBox)
+                    val markerVisible = scene.markers.any { it in korean.filter(Char::isLetter) }
                     val art = compareArt(original, display, origin, host.width, host.height, expected, dest)
                     Log.i("MangaLensUX", scene.name + " English=" + recognized + " art=" + art)
-                    assertTrue("English read back from the balloon: " + recognized, scene.checkWords.all { it in recognized })
+                    assertTrue("Complete English read back from the balloon: " + recognized,
+                        DisplayText.letters(recognized).contains(DisplayText.letters(scene.english)))
+                    assertTrue("Korean still visible in the translated balloon: " + korean, !markerVisible)
                     assertTrue("checked painted panel artwork", art.first > 80_000)
                     assertEquals("pixels changed outside the balloon", 0, art.second)
-                    csv.appendText(listOf(scene.name, true, true, art.first, art.second).joinToString(",") + "\n")
+                    csv.appendText(listOf(scene.name, true, true, markerVisible, art.first, art.second).joinToString(",") + "\n")
                 } finally {
                     display.recycle()
                 }

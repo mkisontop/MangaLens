@@ -113,8 +113,10 @@ class ReaderExperienceTest {
                         ?: device.wait(Until.findObject(By.res("android", "button1")), 2000)
                     approve?.click()
                     await("screen capture consent", 10000) { ScreenCaptureService.running.value }
-                    for (index in page.source.indices) {
-                        measurePage(scenario, index, metrics)
+                    DisplayText().use { english ->
+                        for (index in page.source.indices) {
+                            measurePage(scenario, index, metrics, english)
+                        }
                     }
                 } finally {
                     app.stopService(service)
@@ -123,7 +125,7 @@ class ReaderExperienceTest {
         }
     }
 
-    private fun measurePage(scenario: ActivityScenario<ComponentActivity>, index: Int, metrics: File) {
+    private fun measurePage(scenario: ActivityScenario<ComponentActivity>, index: Int, metrics: File, reader: DisplayText) {
         lateinit var raw: Bitmap
         val origin = IntArray(2)
         val start = SystemClock.elapsedRealtime()
@@ -158,12 +160,21 @@ class ReaderExperienceTest {
                 val topVisible = a.source * 10 < topSource && a.english > 80
                 val bottomVisible = index == 0 || b.source * 10 < bottomSource && b.english > 80
                 if (topVisible && first < 0) first = now
-                if (topVisible && bottomVisible && requests.containsKey(page.source[index])) {
+                val request = requests[page.source[index]]
+                if (topVisible && bottomVisible && request != null && start + now >= request + 1800) {
                     full = now
                     sourcePct = 100.0 * (a.source + if (index == 0) 0 else b.source) / (topSource + bottomSource)
                     return@await true
                 }
                 false
+            }
+            val result = requireNotNull(last)
+            val targets = if (index == 0) listOf(screenTop to page.english.first())
+                else listOf(screenTop to page.english.first(), screenBottom to page.english[index])
+            for ((region, expected) in targets) {
+                val read = reader.read(result, region)
+                assertTrue("Wrong or clipped English on page " + index + ": " + read,
+                    DisplayText.letters(read).contains(DisplayText.letters(expected)))
             }
             val requestMs = requests.getValue(page.source[index]) - start
             val row = listOf("media-projection", index, first, full, requestMs, sourcePct, guard).joinToString(",")
@@ -171,10 +182,8 @@ class ReaderExperienceTest {
             Log.i("MangaLensUX", row)
             assertTrue("Source ink stays erased", sourcePct < 10.0)
         } finally {
-            if (index <= 1 || full < 0) {
-                save(raw, "page-" + index + "-raw.png")
-                last?.let { save(it, "page-" + index + "-screen.png") }
-            }
+            save(raw, "page-" + index + "-raw.png")
+            last?.let { save(it, "page-" + index + "-screen.png") }
             if (full < 0) {
                 val ocr = OcrEngine()
                 try {

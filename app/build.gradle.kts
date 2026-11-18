@@ -103,4 +103,9 @@ dependencies {
     androidTestImplementation("androidx.test:runner:1.6.2")
     androidTestImplementation("androidx.test.uiautomator:uiautomator:2.3.0")
     androidTestImplementation("com.squareup.okhttp3:mockwebserver:4.12.0")
+    androidTestImplementation("com.google.mlkit:text-recognition:16.0.1")
+    if (providers.gradleProperty("readerEmulator").isPresent) {
+        // ML Kit discovers the bundled read-back model in the target app.
+        debugImplementation("com.google.mlkit:text-recognition:16.0.1")
+    }
 }

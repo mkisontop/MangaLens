@@ -60,7 +60,8 @@ class LiveTranslationQualityTest {
             require(key.isNotBlank()) { "Live translation needs a model endpoint or a Gemini key" }
             AppSettings(apiKey = key)
         } else {
-            AppSettings(provider = LlmProvider.CUSTOM, model = "reader-fixture", customUrl = endpoint)
+            AppSettings(provider = LlmProvider.CUSTOM, model = requireNotNull(System.getenv("MANGALENS_LIVE_MODEL")),
+                customUrl = endpoint)
         }
         val report = File(reportPath)
         report.parentFile.mkdirs()
@@ -94,6 +95,26 @@ class LiveTranslationQualityTest {
             assertTrue("a streamed translation reached the reader", firstMs != null)
             pagesRead.put(JSONObject().put("language", lang.name).put("first_ms", firstMs)
                 .put("full_ms", fullMs).put("revisit_us", cachedMicros).put("lines", rows))
+            report.writeText(results.toString(2) + "\n")
+        }
+        // The same Hangul characters describe a room or a bag depending on
+        // the word boundary. Read them on different stops with one cache.
+        val service = TranslationService(TranslationCache())
+        val spaced = listOf(
+            "아버지가 방에 들어가신다." to "room",
+            "아버지 가방에 들어가신다." to "bag|suitcase|backpack",
+        )
+        val spacingAnswers = JSONArray()
+        results.put("korean_word_boundaries", spacingAnswers)
+        for ((source, meaning) in spaced) {
+            StoryContext.reset()
+            val inputs = listOf(source)
+            assertTrue("new wording must reach the translator",
+                !service.fullyCached(LlmEngine(settings).cacheNamespace, SourceLang.KO, inputs))
+            val answer = service.translate(inputs, SourceLang.KO, settings).texts.single()
+            val passing = words(answer.lowercase(), meaning)
+            if (!passing) failures += source + " => " + answer
+            spacingAnswers.put(JSONObject().put("source", source).put("english", answer).put("passed", passing))
             report.writeText(results.toString(2) + "\n")
         }
         assertTrue(failures.joinToString("\n"), failures.isEmpty())

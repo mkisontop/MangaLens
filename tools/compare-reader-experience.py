@@ -29,9 +29,12 @@ def main(root):
         uploads = read(root, build, "uploads.csv")
         erasures = read(root, build, "erasure.csv")
         published = read(root, build, "published.csv")
+        artwork_scrolls = read(root, build, "published-scroll.csv")
+        require({int(r["expected"]) for r in artwork_scrolls} == {-183, -121, -53, -17, -3, -1, 0, 2, 19, 78, 123, 181},
+                "Missing real artwork scrolls: " + build)
         require({r["scene"] for r in published} == {"contest", "podium", "device"} and len(published) == 3,
                 "Missing published Korean panels: " + build)
-        require(all(r["english_read_back"] == "true" and int(r["art_pixels_checked"]) > 80000
+        require(all(r["english_read_back"] == "true" and r["original_marker_visible"] == "false" and int(r["art_pixels_checked"]) > 80000
                     and int(r["art_pixels_changed"]) == 0 for r in published),
                 "The reader could not read a published panel or its art was altered: " + build)
         require({(r["paper"], int(r["trial"])) for r in erasures} ==
@@ -69,6 +72,7 @@ def main(root):
             "published_panels_read_back": len(published),
             "published_art_pixels_checked": sum(int(r["art_pixels_checked"]) for r in published),
             "published_art_pixels_changed": sum(int(r["art_pixels_changed"]) for r in published),
+            "published_scrolls_correct": sum(r["expected"] == r["observed"] for r in artwork_scrolls),
             "scroll_cases_correct": sum(r["observed"] == r["expected"] for r in scrolls),
             "scroll_registration_ms": median([r for r in scrolls if int(r["trial"]) > 0], "ms"),
             "gemini_image_bytes": median(uploads, "jpeg_bytes"),
@@ -93,6 +97,7 @@ def main(root):
     require(after["buffered_layouts"] <= 2 and before["buffered_layouts"] == 12,
             "A buffered twelve-line reply still triggered redundant page layouts")
     require(after["scroll_cases_correct"] == 40, "Incorrect scroll registration")
+    require(after["published_scrolls_correct"] == 12, "Incorrect registration on the published artwork")
     require(after["scrolls_using_only_strip"] == 2 and after["gemini_image_bytes"] < before["gemini_image_bytes"] * .8,
             "The app reread the full frame where only a new strip was visible")
     require(after["buffered_first_draw_ms"] <= before["buffered_first_draw_ms"] * 1.20 + 18,

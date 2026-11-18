@@ -237,10 +237,15 @@ object TextEraser {
         val known = strokes.known
         if (count(known) == 0) return null
 
-        val filled = PushPull.fill(chan, weights(known), w, h) ?: return null
         val out = IntArray(n)
-        for (i in 0 until n) {
-            if (mask[i]) out[i] = rgb(filled[3 * i], filled[3 * i + 1], filled[3 * i + 2])
+        if (flat && paper.noise == 0 && known.indices.all { !known[it] || (px[it] or OPAQUE) == background }) {
+            // Interpolating identical known pixels can only reproduce their colour.
+            for (i in mask.indices) if (mask[i]) out[i] = background
+        } else {
+            val filled = PushPull.fill(chan, weights(known), w, h) ?: return null
+            for (i in mask.indices) {
+                if (mask[i]) out[i] = rgb(filled[3 * i], filled[3 * i + 1], filled[3 * i + 2])
+            }
         }
         var busy = strokes.busy
         if (!flat && texture > 6f && retexture(chan, known, mask, zone, w, h, out)) busy *= 0.6f

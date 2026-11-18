@@ -7,7 +7,9 @@ adb shell wm size 720x1280
 adb shell wm density 280
 adb shell settings put secure immersive_mode_confirmations confirmed
 failed=0
-for build in baseline candidate; do
+builds=(baseline candidate)
+if [[ "${READER_ORDER:-baseline-first}" == candidate-first ]]; then builds=(candidate baseline); fi
+for build in "${builds[@]}"; do
     apk=app/build/outputs/apk/debug/app-debug.apk
     if [[ "$build" == baseline ]]; then apk=app/build/reader-baseline/baseline.apk; fi
     adb install -r -g "$apk"
@@ -25,6 +27,9 @@ for build in baseline candidate; do
         tar -xf "$out/$build.tar" -C "$out"
         rm "$out/$build.tar"
     fi
+    for csv in "$out/$build"/*.csv; do
+        [[ -f "$csv" ]] && sed "s/^/$build $(basename "$csv") /" "$csv"
+    done
     if ! grep -Eq '^OK \([1-9][0-9]* tests?\)' "$out/$build-instrumentation.txt"; then
         failed=1
         grep -Ei 'MangaLensUX|UnsatisfiedLinkError|FATAL EXCEPTION|dlopen failed|text recognizer.*fail' "$out/$build-device-log.txt" | tail -80 || true

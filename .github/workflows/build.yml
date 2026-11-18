@@ -9,6 +9,12 @@ on:
       - "**.md"
   pull_request:
   workflow_dispatch:
+    inputs:
+      reader_order:
+        description: Order for the two Android builds on the same emulator
+        type: choice
+        default: baseline-first
+        options: [baseline-first, candidate-first]
 
 permissions:
   contents: read
@@ -66,6 +72,8 @@ jobs:
         run: bash tools/fetch-reader-page.sh
       - name: Read fixture pages on an Android screen
         uses: reactivecircus/android-emulator-runner@v2
+        env:
+          READER_ORDER: ${{ inputs.reader_order || 'baseline-first' }}
         with:
           api-level: 33
           target: google_apis

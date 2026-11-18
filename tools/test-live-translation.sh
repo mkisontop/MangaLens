@@ -39,7 +39,7 @@ SUMS
 )
 server=$(find "$work/engine" -type f -name llama-server -print -quit)
 model_file="$work/$model-00001-of-00002.gguf"
-LD_LIBRARY_PATH="$(dirname "$server")" "$server" -m "$model_file" --alias reader-fixture -c 8192 -t 4 \
+LD_LIBRARY_PATH="$(dirname "$server")" "$server" -m "$model_file" --alias "$model" -c 8192 -t 4 \
     --host 127.0.0.1 --port 7878 > "$work/server.log" 2>&1 &
 server_pid=$!
 for ((attempt=0; attempt<90; attempt++)); do
@@ -49,4 +49,5 @@ for ((attempt=0; attempt<90; attempt++)); do
 done
 curl -fsS http://127.0.0.1:7878/health
 export MANGALENS_LIVE_ENDPOINT=http://127.0.0.1:7878/v1/chat/completions
+export MANGALENS_LIVE_MODEL="$model"
 run_test
