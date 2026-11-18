@@ -18,9 +18,11 @@ fi
 # Run a real, deterministic model on the CI CPU when no provider key is configured.
 work=$(mktemp -d)
 server_pid=
+text_observer=
 cleanup() {
     local status=$?
     if ((status != 0)) && [[ -f "$work/server.log" ]]; then tail -50 "$work/server.log"; fi
+    if [[ -n "$text_observer" ]]; then kill "$text_observer" 2>/dev/null || true; fi
     if [[ -n "$server_pid" ]]; then kill "$server_pid" 2>/dev/null || true; fi
     rm -rf "$work"
 }
@@ -166,7 +168,19 @@ for arm in "${arms[@]}"; do
     fi
     # Fresh model process for each build, so the other arm's images, answers and KV cache cannot leak into it.
     start_model
-    run_test "$@"
+    if [[ "${MANGALENS_LIVE_VISION:-0}" != 1 && $# == 0 ]]; then
+        mkdir -p app/build/reader-live
+        python3 tools/observe-panel-model.py app/build/reader-live/model-requests.jsonl &
+        text_observer=$!
+        for attempt in {1..25}; do
+            if curl -fsS http://127.0.0.1:7879/health > /dev/null 2>&1; then break; fi
+            sleep .2
+        done
+        curl -fsS http://127.0.0.1:7879/health > /dev/null
+        MANGALENS_LIVE_ENDPOINT=http://127.0.0.1:7879/v1/chat/completions run_test
+    else
+        run_test "$@"
+    fi
     if [[ "${MANGALENS_LIVE_VISION:-0}" == 1 && $# -gt 0 ]]; then check_panel_requests; fi
     stop_model
 done

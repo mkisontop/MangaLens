@@ -41,11 +41,14 @@ jobs:
         if: always()
         run: |
           if [[ -f app/build/reader-live/translations.json ]]; then cat app/build/reader-live/translations.json; fi
+          if [[ -f app/build/reader-live/model-requests.jsonl ]]; then cat app/build/reader-live/model-requests.jsonl; fi
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: live-translations
-          path: app/build/reader-live/translations.json
+          path: |
+            app/build/reader-live/translations.json
+            app/build/reader-live/model-requests.jsonl
 
   reader-builds:
     runs-on: ubuntu-24.04

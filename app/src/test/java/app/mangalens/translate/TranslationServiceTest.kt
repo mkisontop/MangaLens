@@ -145,8 +145,9 @@ class TranslationServiceTest {
         val explicit = line("내 가방은 내가 가져왔네.", "I brought my bag.")
         val observer = line(wrong.src, "I see you brought my bag, too.")
         val srv = serve { ex ->
-            val edits = JSONArray().put(JSONObject().put("id", 0).put("actor", "other").put("en", correct))
-            val msg = JSONObject().put("content", JSONObject().put("items", edits).toString())
+            val edits = JSONArray().put(JSONObject().put("id", 0).put("actor", "listener").put("en", wrong.en))
+            val partlyMalformed = "{\"items\":" + edits + "-lnd\nuser\n{\"items\":[{\"id\":0,\"actor\":\"speaker\"}]}"
+            val msg = JSONObject().put("content", partlyMalformed)
             ex.respond(200, JSONObject().put("choices", JSONArray().put(JSONObject().put("message", msg))).toString())
         }
         val reader = VisionLlmEngine(custom(srv))
@@ -161,7 +162,49 @@ class TranslationServiceTest {
         val items = JSONObject(message.substringAfter("\n\n")).getJSONArray("items")
         assertEquals(1, items.length())
         assertEquals(prior, items.getJSONObject(0).getString("previous_line"))
-        assertEquals("actor_and_owner", items.getJSONObject(0).getString("issue"))
+        assertEquals(false, items.getJSONObject(0).has("draft"))
+        assertEquals("dialogue_roles", JSONObject(message.substringAfter("\n\n")).getString("review"))
+        assertEquals("You’ve already packed my books, too.",
+            VisionLlmEngine.listenerHandledPossessions("I’ve already packed my books, too."))
+        assertEquals("…You brought our bags.", VisionLlmEngine.listenerHandledPossessions("…We brought our bags."))
+        assertEquals(observer.en, VisionLlmEngine.listenerHandledPossessions(observer.en))
+    }
+
+    @Test
+    fun aConfirmedSpeakerOrNamedThirdPartyDoesNotBecomeTheListener() = runBlocking {
+        val own = VisionLlmEngine.VisionBubble(0, 0, 0, 0, 0, "내 사진도 챙겨 왔네.", "I've packed my photos, too.", false)
+        val third = VisionLlmEngine.VisionBubble(1, 0, 0, 0, 0, "내 우산이랑 지도까지 민지가 가져왔네.",
+            "I brought my umbrella and even my map.", false)
+        val correct = "Minji brought my umbrella and even my map."
+        val srv = serve { ex ->
+            val edits = JSONArray().put(JSONObject().put("id", 0).put("actor", "speaker"))
+                .put(JSONObject().put("id", 1).put("actor", "third_person").put("en", correct))
+            val msg = JSONObject().put("content", JSONObject().put("items", edits).toString())
+            ex.respond(200, JSONObject().put("choices", JSONArray().put(JSONObject().put("message", msg))).toString())
+        }
+        val cards = mutableListOf(own, third)
+        VisionLlmEngine(custom(srv)).reviewDialogueRoles(cards, "{}",
+            JSONArray().put("Guide: Ash, are you taking me to camp?"))
+        assertEquals(listOf(own.en, correct), cards.map { it.en })
+        assertEquals(1, srv.exchanges.size)
+    }
+
+    @Test
+    fun aListOfExtraPossessionsKeepsTheEstablishedHelperAndTheOriginalOwner() = runBlocking {
+        val source = "내 지도랑 등불까지 챙겨 왔네."
+        val draft = "I packed my map and even the lamp..."
+        val prior = "Guide: Star! Are you carrying me to the station?"
+        val line = VisionLlmEngine.VisionBubble(0, 0, 0, 0, 0, source, draft, false)
+        val srv = serve { it.respond(503, "No text review for a continuing list or an explicit speaker.") }
+        val reader = VisionLlmEngine(custom(srv))
+        val list = mutableListOf(line)
+        reader.reviewDialogueRoles(list, "{}", JSONArray().put(prior))
+        assertEquals("You packed my map and even the lamp...", list.single().en)
+        val explicit = mutableListOf(line.copy(src = "내 지도랑 등불까지 내가 챙겨 왔네."))
+        reader.reviewDialogueRoles(explicit, "{}", JSONArray().put(prior))
+        assertEquals(draft, explicit.single().en)
+        reader.reviewDialogueRoles(mutableListOf(line), "{}", JSONArray().put("Guide: I packed my own luggage."))
+        assertTrue(srv.exchanges.isEmpty())
     }
 
     @Test

@@ -113,8 +113,8 @@ class ModelObserver(BaseHTTPRequestHandler):
                         payload = json.loads(message["content"].rsplit("\n\n", 1)[-1])
                     except (ValueError, TypeError):
                         continue
-                    if isinstance(payload, dict) and payload.get("review") == "forms_of_address":
-                        purpose = "forms_of_address"
+                    if isinstance(payload, dict) and payload.get("review") in ("forms_of_address", "japanese_requests", "dialogue_roles"):
+                        purpose = payload["review"]
                         review_items = len(payload.get("items", []))
                 continue
             for part in message["content"]:
