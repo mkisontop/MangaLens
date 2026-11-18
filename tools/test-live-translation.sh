@@ -82,6 +82,30 @@ stop_model() {
     server_pid=
 }
 
+calibrate_android_host() {
+    # A newly booted emulator can compete for the CPU while its background services start.
+    # Give both installations identical unrelated work, record its speed, then discard this
+    # model process and its entire prompt cache before the timed reader ever connects.
+    mkdir -p "$MANGALENS_LIVE_DEVICE_OUT"
+    start_model
+    python3 - "$MANGALENS_LIVE_DEVICE_OUT/host-calibration.json" <<'PY'
+import json, os, sys, time, urllib.request
+from pathlib import Path
+body = {"model": os.environ["MANGALENS_LIVE_MODEL"], "temperature": 0, "max_tokens": 64,
+        "messages": [{"role": "user", "content": "Write each integer from 1 to 500 in order, separated by commas."}]}
+req = urllib.request.Request(os.environ["MANGALENS_LIVE_ENDPOINT"], data=json.dumps(body).encode(),
+                             headers={"Content-Type": "application/json"})
+start = time.monotonic()
+with urllib.request.urlopen(req, timeout=240) as reply:
+    response = json.load(reply)
+record = {"elapsed_ms": round((time.monotonic() - start) * 1000),
+          "usage": response["usage"], "timings": response.get("timings", {})}
+Path(sys.argv[1]).write_text(json.dumps(record, indent=2) + "\n")
+print("Unrelated CPU calibration", record)
+PY
+    stop_model
+}
+
 check_panel_requests() {
     python3 - "$work/server.log" "$MANGALENS_LIVE_DEVICE_OUT" <<'PY'
 import json, os, re, sys
@@ -128,6 +152,7 @@ for arm in "${arms[@]}"; do
         else
             export MANGALENS_READER_SOURCE=.
         fi
+        if [[ "${MANGALENS_LIVE_VISION:-0}" == 1 && $# -gt 0 ]]; then calibrate_android_host; fi
     fi
     # Fresh model process for each build, so the other arm's images, answers and KV cache cannot leak into it.
     start_model

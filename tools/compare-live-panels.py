@@ -100,6 +100,10 @@ def compare(root):
         projection[order] = screen
     result = {"pairs": pairs, "summary": summary, "anchored_dense_pages": dense,
               "additional_potion_panel": holdouts, "live_japanese_projection": projection}
+    result["unrelated_cpu_calibration"] = {
+        run: {arm: json.loads((root / ("live-published-page-" + run) / arm / "host-calibration.json").read_text())
+              for arm in ("baseline", "candidate")} for run in RUNS
+    }
     (root / "comparison.json").write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n")
     print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
     assert all(order["candidate"] < order["baseline"] for order in dense["median_by_order"].values())

@@ -53,6 +53,7 @@ internal class JapaneseDialoguePage(context: Context) : View(context) {
     fun checkArt(before: Bitmap, after: Bitmap, origin: IntArray, controls: Rect): Pair<Int, Int> {
         val panel = Rect((width * .01f).toInt(), (height * .23f).toInt(),
             (width * .99f).toInt(), (height * .80f).toInt()).apply { offset(origin[0], origin[1]) }
+        check(!Rect.intersects(controls, panel)) { "Control $controls overlaps audited panel $panel" }
         val balloon = letteringArea().apply {
             inset(-(width * .052f).toInt() - 1, -(height * .015f).toInt() - 1)
             offset(origin[0], origin[1])
@@ -65,7 +66,7 @@ internal class JapaneseDialoguePage(context: Context) : View(context) {
         var changed = 0
         val mismatch = Rect()
         for (y in panel.top until panel.bottom) for (x in panel.left until panel.right) {
-            if (balloon.contains(x, y) || controls.contains(x, y)) continue
+            if (balloon.contains(x, y)) continue
             checked++
             val i = (y - panel.top) * panel.width() + x - panel.left
             if ((0..16 step 8).any { shift ->

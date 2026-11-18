@@ -61,6 +61,12 @@ jobs:
         run: |
           ./gradlew --no-daemon -PreaderPreview :app:assembleDebug
           cp app/build/outputs/apk/debug/app-debug.apk app/build/MangaLens-Preview.apk
+          signer=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
+          "$signer" verify app/build/MangaLens-Preview.apk
+          "$(dirname "$signer")/aapt" dump badging app/build/MangaLens-Preview.apk > "$RUNNER_TEMP/preview-badging"
+          grep -E "^package: name='app\.mangalens\.preview'" "$RUNNER_TEMP/preview-badging"
+          grep -E "^native-code: 'arm64-v8a' *$" "$RUNNER_TEMP/preview-badging"
+          sha256sum app/build/MangaLens-Preview.apk
       - uses: actions/upload-artifact@v4
         if: github.event_name != 'push' || github.ref == 'refs/heads/perf/reader-latency-and-lettering'
         with:

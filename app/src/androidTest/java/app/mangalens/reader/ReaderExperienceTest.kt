@@ -179,6 +179,18 @@ class ReaderExperienceTest {
                 val start = SystemClock.elapsedRealtime()
                 ContextCompat.startForegroundService(app, grant)
                 await("real Android screen sharing", 15000) { ScreenCaptureService.running.value }
+                val device = UiDevice.getInstance(inst)
+                val selector = By.descContains("tap to pause")
+                val initialButton = requireNotNull(device.wait(Until.findObject(selector), 10000)).visibleBounds
+                // Move the real control into the upper margin. Its transient message shares the
+                // same row and can disappear between capturing a frame and reading its English.
+                val marginY = origin[1] + (comic.height * .09f).toInt()
+                assertTrue("A reader can drag the capture control", device.swipe(initialButton.centerX(),
+                    initialButton.centerY(), initialButton.centerX(), marginY, 20))
+                await("floating control above the painted panel", 6000) {
+                    val bounds = device.findObject(selector)?.visibleBounds
+                    bounds != null && bounds.bottom < origin[1] + comic.height * .22f
+                }
                 var observed = ""
                 var complete = false
                 DisplayText().use { latin ->
@@ -196,15 +208,14 @@ class ReaderExperienceTest {
                                     save(screen, "projection-japanese-translated.png")
                                     assertTrue("The speaker asks the listener to stay instead of describing their own plans. Read back " + observed,
                                         isRequestToDelayDeparture(words))
-                                    val button = requireNotNull(UiDevice.getInstance(inst).findObject(
-                                        By.descContains("tap to pause"))) { "The capture control must be visible" }
+                                    val button = requireNotNull(device.findObject(selector)) { "The capture control must be visible" }
                                     val buttonBounds = button.visibleBounds
                                     val row = button.parent?.visibleBounds?.takeIf {
                                         it.contains(buttonBounds) && it.height() <= buttonBounds.height() * 3 / 2
                                     } ?: buttonBounds
                                     val controls = Rect(row).apply { inset(-1, -1) }
                                     val art = comic.checkArt(before, screen, origin, controls)
-                                    assertTrue("Check over two hundred thousand visible scene pixels", art.first > 200000)
+                                    assertTrue("Check over three hundred thousand scene pixels", art.first > 300000)
                                     assertEquals("Visible art beyond the balloon must preserve its veiled colors", 0, art.second)
                                     val result = JSONObject().put("display_ocr", observed).put("visible_ms", elapsed)
                                         .put("source_ink_pixels", source).put("residual_ink_pixels", remaining)
