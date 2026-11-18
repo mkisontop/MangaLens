@@ -25,6 +25,7 @@ class ModelObserver(BaseHTTPRequestHandler):
             for part in message["content"]
         )
         regions = []
+        history = []
         for message in messages:
             if not isinstance(message["content"], list):
                 continue
@@ -36,7 +37,8 @@ class ModelObserver(BaseHTTPRequestHandler):
                         continue
                     if isinstance(payload, dict):
                         regions.extend(payload.get("detected_regions", []))
-        record = {"images": images, "regions": len(regions),
+                        history.extend(payload.get("story_so_far", []))
+        record = {"images": images, "regions": len(regions), "story_entries": len(history),
                   "ocr_hints": sum(bool(region.get("ocr_text_maybe_garbled")) for region in regions),
                   "completed": False}
         start = time.monotonic()

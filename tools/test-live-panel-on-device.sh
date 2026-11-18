@@ -57,5 +57,6 @@ done
 adb logcat -b events -d -s am_anr am_crash > "$out/process-events.txt"
 if grep -E 'am_(anr|crash).*[, ]app\.mangalens([.:, ]|$)' "$out/process-events.txt"; then exit 1; fi
 grep -Eq '^OK \(1 test\)' "$out/instrumentation.txt"
+test -s "$out/live/live-contest.json"
 test -s "$out/live/live-panel.json"
-cat "$out/live/live-panel.json"
+cat "$out/live/live-contest.json" "$out/live/live-panel.json"

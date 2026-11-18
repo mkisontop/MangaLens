@@ -110,8 +110,13 @@ class PublishedComicExperienceTest {
     fun realModelLettersThePublishedKoreanPanelOnTheDevice() {
         val endpoint = InstrumentationRegistry.getArguments().getString("liveEndpoint")
         assumeTrue("Run the live Android reader job with a model endpoint", !endpoint.isNullOrBlank())
-        val scene = scenes.single { it.name == "outfit" }
-        readScenes(listOf(scene), "live-published.csv", requireNotNull(endpoint))
+        app.mangalens.translate.StoryContext.reset()
+        try {
+            readScenes(scenes.filter { it.name == "contest" || it.name == "outfit" },
+                "live-published.csv", requireNotNull(endpoint))
+        } finally {
+            app.mangalens.translate.StoryContext.reset()
+        }
     }
 
     private fun readScenes(selected: List<Scene>, csvName: String, liveEndpoint: String? = null) {
@@ -235,16 +240,7 @@ class PublishedComicExperienceTest {
                     scene.english
                 } else {
                     assertEquals("The image-reading request must complete", null, result.failure)
-                    val answer = cards.single().lowercase()
-                    assertTrue("The real translation must preserve the clothing, hat and potion: " + answer,
-                        Regex("potion|elixir|concoction").containsMatchIn(answer) &&
-                            Regex("clothes|clothing|outfit|garments|dress|costume").containsMatchIn(answer) &&
-                            Regex("\\b(hat|cap)s?\\b").containsMatchIn(answer))
-                    assertTrue("The speaker recognizes their belongings being brought: " + answer,
-                        Regex("\\b(brought|bring|bringing|carried|packed|fetched|got|took along|came with)\\b").containsMatchIn(answer) &&
-                            Regex("\\bmy\\b").containsMatchIn(answer))
-                    assertTrue("The translation added items absent from the panel: " + answer,
-                        !Regex("\\beverything else\\b|\\ball the rest\\b").containsMatchIn(answer))
+                    assertPanelMeaning(scene.name, cards.single())
                     cards.single()
                 }
                 inst.runOnMainSync { overlay.setBubbles(result.bubbles, frame) }
@@ -296,7 +292,8 @@ class PublishedComicExperienceTest {
                             .put("image_transcription", result.bubbles.single().original).put("english", expectedEnglish)
                             .put("display_ocr", recognized).put("ocr_and_translation_ms", elapsed)
                             .put("art_pixels_checked", art.first).put("art_pixels_changed", art.second)
-                        File(output, "live-panel.json").writeText(record.toString(2) + "\n")
+                        val name = if (scene.name == "outfit") "live-panel.json" else "live-contest.json"
+                        File(output, name).writeText(record.toString(2) + "\n")
                     }
                 } finally {
                     display.recycle()
@@ -308,6 +305,28 @@ class PublishedComicExperienceTest {
             ocr.close()
             frame.recycle()
         }
+    }
+
+    private fun assertPanelMeaning(scene: String, translated: String) {
+        val answer = translated.lowercase()
+        if (scene == "contest") {
+            assertTrue("The speaker asks their companion about taking them to the contest: " + answer,
+                Regex("""\b(contest|competition|tournament|venue)\b""").containsMatchIn(answer) &&
+                    Regex("""\b(take|takes|taking|bring|bringing|escort|escorting|carry|carrying|lead|leading|transport|driving|drop|dropping)\b""").containsMatchIn(answer) &&
+                    Regex("""\bme\b""").containsMatchIn(answer))
+            return
+        }
+        assertTrue("Clothing, hat and potion must all be present: " + answer,
+            Regex("potion|elixir|concoction").containsMatchIn(answer) &&
+                Regex("clothes|clothing|outfit|garments|dress|costume|attire|robes").containsMatchIn(answer) &&
+                Regex("""\b(hat|cap)s?\b""").containsMatchIn(answer))
+        assertTrue("The speaker recognizes their belongings being brought: " + answer,
+            Regex("""\b(brought|bring|bringing|carried|packed|fetched|got|took along|came with|came along)\b""").containsMatchIn(answer) &&
+                Regex("""\bmy\b""").containsMatchIn(answer))
+        val reversed = Regex("""\b(?:i|we)(?:['’]ve| have| had)?\s+(?:(?:even|also|just|already|really)\s+)*(?:brought|bring|carried|packed|fetched|took|came with)\b""")
+        assertTrue("The companion brought the speaker's belongings: " + answer, !reversed.containsMatchIn(answer))
+        assertTrue("The translation added items absent from the panel: " + answer,
+            !Regex("""\beverything else\b|\ball the rest\b""").containsMatchIn(answer))
     }
 
     /** The left and right halves are actual screenshots from before and after lettering. */
