@@ -46,6 +46,8 @@ class VisionLlmEngine(
         val sfx: Boolean,
         /** Character the line was attributed to; blank when unattributed. */
         val who: String = "",
+        /** The photographed scene identifies a separate object being described. */
+        val refersToObject: Boolean = false,
     )
 
     val label: String get() = LlmHttp.providerLabel(settings)
@@ -178,7 +180,7 @@ class VisionLlmEngine(
         }
 
     private fun VisionBubble.needsAddressReview(): Boolean =
-        !sfx && DETACHED_KOREAN_ADDRESS.containsMatchIn(src) &&
+        !sfx && !refersToObject && DETACHED_KOREAN_ADDRESS.containsMatchIn(src) &&
             (OBJECT_PHRASE.containsMatchIn(en) || GENERIC_CALLOUT.containsMatchIn(en) || POINTED_REMARK.containsMatchIn(en))
 
     /** Re-read disputed addressees from the transcribed words in one small text request. */
@@ -193,7 +195,8 @@ class VisionLlmEngine(
         val items = JSONArray()
         for (id in pending) {
             val b = bubbles[id]
-            items.put(JSONObject().put("id", id).put("source", b.src).put("speaker", b.who))
+            items.put(JSONObject().put("id", id).put("source", b.src).put("speaker", b.who)
+                .put("rewrite", !ENGLISH_ASIDE.containsMatchIn(b.en) && !GENERIC_CALLOUT.containsMatchIn(b.en)))
         }
         val request = JSONObject().put("review", "forms_of_address")
             .put("story_so_far", history).put("items", items).toString()
@@ -215,18 +218,15 @@ class VisionLlmEngine(
             val id = edit.optInt("id", -1)
             if (id !in pending || edit.optString("referent") != "listener") continue
             val original = bubbles[id]
-            val en = JunkFilter.accept(original.src, edit.optString("en")) ?: continue
+            val name = edit.optString("name", "").trim()
+            val proposed = edit.optString("en", "").ifBlank { original.en }
+            val en = JunkFilter.accept(original.src, spokenAddress(original.src, proposed, "listener", name)) ?: continue
             val corrected = original.copy(en = en)
             if (corrected.needsAddressReview()) continue
             pending.remove(id)
             bubbles[id] = corrected
-            val names = edit.optJSONObject("names") ?: continue
-            for (source in names.keys()) {
-                val name = names.optString(source).trim()
-                if (source.isNotBlank() && name.isNotBlank() && source in original.src && en.contains(name, true)) {
-                    terms.put(source, name)
-                }
-            }
+            val sourceName = DETACHED_KOREAN_ADDRESS.find(original.src)?.groupValues?.get(1)
+            if (sourceName != null && validName(name) && en.contains(name, true)) terms.put(sourceName, name)
         }
     }
 
@@ -256,16 +256,18 @@ class VisionLlmEngine(
         height: Int,
     ): VisionBubble? {
         if (o.optString("kind") == "skip") return null
-        val en = o.optString("en", "").trim()
-        if (en.isEmpty() || JunkFilter.isPromptPlaceholder(en)) return null
+        val draft = o.optString("en", "").trim()
+        if (draft.isEmpty() || JunkFilter.isPromptPlaceholder(draft)) return null
         val sfx = o.optString("kind") == "sfx"
         val src = o.optString("src", "").trim()
         val who = o.optString("who", "").trim().take(24)
+        val referent = o.optString("aside_to", "")
+        val en = if (sfx) draft else spokenAddress(src, draft, referent, o.optString("listener_name", ""))
 
         val id = o.optInt("id", -1)
         if (id in anchors.indices) {
             if (!seenIds.add(id)) return null
-            return VisionBubble(id, 0, 0, 0, 0, src, en, sfx, who)
+            return VisionBubble(id, 0, 0, 0, 0, src, en, sfx, who, referent == "object")
         }
         // Extra text the on-device OCR missed — here (and only here)
         // the model's own box is used.
@@ -281,22 +283,66 @@ class VisionLlmEngine(
         if (full.isEmpty) return null
         return VisionBubble(
             -1, full.left, full.top, full.width(), full.height(),
-            src, en, sfx, who,
+            src, en, sfx, who, referent == "object",
         )
     }
 
     companion object {
 
         private val DETACHED_KOREAN_ADDRESS = Regex(
-            """[가-힣]{1,24}[아야]\s*[,，!！~～]\s*(?:이런|요런|저런)\s+[^.!?！？~～\n]{1,38}(?:것|거|녀석|아이|애)\s*[~～!！]"""
+            """([가-힣]{1,24})[아야]\s*[,，!！~～]\s*(?:이런|요런|저런)\s+[^.!?！？~～\n]{1,38}(?:것|거|녀석|아이|애)\s*[~～!！]"""
         )
         private val OBJECT_PHRASE = Regex("""\b(?:this|that)\s+(?:[a-z'-]+\s+){1,3}thing\b""", RegexOption.IGNORE_CASE)
         private val GENERIC_CALLOUT = Regex("""^\s*(?:(?:hey|oh)[,\s]+)?you\s*[!！~～]""", RegexOption.IGNORE_CASE)
         private val POINTED_REMARK = Regex(
             """(?:^|[!！~～])\s*(?:this|that|it)(?:['’]s|\s+is)\s+(?:so|really|very|such)\b""", RegexOption.IGNORE_CASE)
+        private val ENGLISH_ASIDE = Regex(
+            """^(\s*[\p{L}'’-]+(?:[ \t]+[\p{L}'’-]+){0,3}[!！,，~～]\s*)(?:(?:this|that)\s+([a-z'’-]+(?:\s+[a-z'’-]+){0,2})\s+thing|(?:this|that|it)(?:['’]s|\s+is)\s+((?:so|really|very|such)\s+[a-z'’-]+(?:\s+[a-z'’-]+){0,2}))([!！~～.…]+)(?=\s|$)""",
+            RegexOption.IGNORE_CASE)
+        private val SPEAKER_OBJECT = Regex("""(?:^|\s)(?:나를|날|저를|절)(?:\s|$)""")
+        private val ACTION_TOWARDS_SPEAKER = Regex(
+            """^\s*(?:(?:are|were)\s+you\s+[a-z'-]+ing|you(?:['’]re|\s+are)\s+[a-z'-]+ing|(?:did|will|would|can|could)\s+you\s+[a-z'-]+)\s+me\b""",
+            RegexOption.IGNORE_CASE)
+        private val SEPARATE_OBJECT = Regex("""\b(?:it|this|that|them|these|those|one)\b""", RegexOption.IGNORE_CASE)
+        private val ENGLISH_NAME = Regex("""\p{L}[\p{L}\p{M}'’-]*(?:[ \t]+[\p{L}\p{M}'’-]+){0,2}""")
+
+        private val GENERIC_NAMES = setOf("you", "listener", "unknown", "unclear")
+
+        private fun validName(name: String): Boolean = name.length <= 40 && ENGLISH_NAME.matches(name) &&
+            app.mangalens.ocr.Script.cjkCount(name) == 0 && name.lowercase() !in GENERIC_NAMES
+
+        /** Adjust only a detached compliment; retain the speaker's action and every following word. */
+        internal fun spokenAddress(source: String, english: String, referent: String, name: String): String {
+            val called = DETACHED_KOREAN_ADDRESS.find(source) ?: return english
+            val aside = ENGLISH_ASIDE.find(english)
+            val rest = aside?.let { english.substring(it.range.last + 1) }.orEmpty()
+            val followingSource = source.substring(called.range.last + 1)
+            // Some providers omit the optional label. Both sentences must then agree that
+            // "you" act directly on "me", with no reference back to a separate thing.
+            val supported = referent == "listener" || (referent.isBlank() && aside != null &&
+                SPEAKER_OBJECT.containsMatchIn(followingSource) && ACTION_TOWARDS_SPEAKER.containsMatchIn(rest) &&
+                !SEPARATE_OBJECT.containsMatchIn(rest))
+            if (!supported) return english
+            var spoken = english
+            if (aside != null) {
+                val description = aside.groupValues[2].trim()
+                val wording = when {
+                    description.isEmpty() -> "You're " + aside.groupValues[3]
+                    ' ' in description -> "You " + description + " thing"
+                    else -> "You're so " + description
+                }
+                spoken = aside.groupValues[1] + wording + aside.groupValues[4] + rest
+            }
+            val anonymous = GENERIC_CALLOUT.find(spoken)
+            val localized = name.trim()
+            if (anonymous != null && validName(localized)) {
+                spoken = spoken.replaceRange(anonymous.range, localized + "!")
+            }
+            return spoken
+        }
+
         private val ADDRESS_REVIEW_PROMPT = """
-You edit Korean comic dialogue for spoken English. Each source starts with a name being called, followed by a detached remark. Decide what the remark refers to from the entire Korean line and the preceding dialogue: "listener" for the addressee, "object" for a separate thing, or "unclear". When it is spoken affectionately to the listener, translate the whole line like someone speaking to them: address them directly with "you" or an endearment. Preserve the rest of the sentence, its action and who does what to whom. Use established names from the glossary. An obvious everyday noun used as a pet name can be translated by its meaning.
-Return JSON with an "items" array, one object per input id. Give "id" and "referent". For "listener", first give "names" mapping the called name without its Korean vocative suffix to its English name. Then give "en" containing the complete dialogue, calling that listener by that name and expressing the compliment directly to them. Output only the JSON.
+Identify whom each detached Korean remark describes. Use the called name, grammar, preceding dialogue and series glossary. Return JSON {"items":[...]} with numeric "id" and "referent" ("listener", "object" or "unclear"). For a listener also give "name", the called name in English. Render a transparent pet nickname by its meaning if the series has no established alternative. Only when the input says "rewrite":true, also give "en" containing the whole spoken translation. Otherwise omit "en". No explanation.
 """.trim()
 
         /** Close-ups per page; each is a small upload and a few hundred tokens. */
@@ -327,7 +373,7 @@ Return JSON with an "items" array, one object per input id. Give "id" and "refer
         private val SYSTEM_PROMPT = """
 Translate the lettering in this comic image into natural, concise English that can be printed in each balloon. Read the image first. The detected_regions OCR is only a rough hint and can be wrong. The magenta badge is the region id. If a numbered close-up follows the page, read its sharper lettering. Read vertical columns from right to left, top to bottom within each column. Keep a balloon's lines together.
 
-Return a JSON object with an array named "bubbles". For each numbered region give its numeric "id", "src" containing the words you actually read, "en" containing their English translation, "who" identifying the speaker when known, and "kind" set to "dialogue", "sfx" or "skip". Use real words in the values. Answer each id once. Skip already-English lettering, interface labels, watermarks and genuinely unreadable marks. For other visible comic lettering outside every outline, return the same fields with "box" [left, top, width, height] in thousandths of the page image instead of an id. Never duplicate a numbered balloon.
+Return a JSON object with an array named "bubbles". For each numbered region give its numeric "id", "src" containing the words you actually read, "en" containing their English translation, "who" identifying the speaker when known, and "kind" set to "dialogue", "sfx" or "skip". If a name is called and followed by a separate remark, identify what the remark describes before writing the English. Put "aside_to" ("listener", "object" or "unclear") after "src". For "listener", also give "listener_name" as the called name in English. Omit these fields for ordinary lines. Use real words in the values. Answer each id once. Skip already-English lettering, interface labels, watermarks and genuinely unreadable marks. For other visible comic lettering outside every outline, return the same fields with "box" [left, top, width, height] in thousandths of the page image instead of an id. Never duplicate a numbered balloon.
 
 Read all the way to the end of the last line before translating. Preserve the action, its actor and objects, negation, emphasis, emotion and the speaker's register. When several things are named before a final verb, translate the complete clause. An ellipsis is a pause and adds no information. Use the art, balloon tails, dialogue history and series memory to resolve omitted subjects. An object's owner may be different from the person acting. Look at the preceding exchange before choosing a pronoun. If the actor remains unclear, use natural subjectless English. Introduce a recipient only when the dialogue establishes one. Honour the series glossary, pronouns, established names and meaningful honorifics. Keep ordinary personal names in their usual spelling. For an affectionate nickname or pet name that is plainly an everyday noun, use its natural English meaning unless the series has established a different rendering. When a speaker calls a name and then praises their listener, write the compliment as direct speech to that person. A demonstrative points to a separate object only when the scene establishes one. Keep a following question separate from the aside. Translate the source language visible in the image, even when the language hint differs. Translate sound effects into short English effects in capitals. For matching "run" numbers, read the whole sentence in "part" order, then divide its English across those balloons. Preserve the original tone and intensity. Add no explanations.
 

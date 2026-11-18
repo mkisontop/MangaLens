@@ -62,7 +62,7 @@ class TranslationServiceTest {
         val srv = serve { ex ->
             val edits = JSONArray()
                 .put(JSONObject().put("id", 0).put("referent", "listener").put("en", direct.en)
-                    .put("names", JSONObject().put("봄이", "Spring").put("엉뚱", "Spring")))
+                    .put("name", "Spring"))
                 .put(JSONObject().put("id", 1).put("referent", "object"))
                 .put(JSONObject().put("id", 2).put("referent", "listener").put("en", "Unrequested change"))
             val body = JSONObject().put("items", edits)
@@ -85,12 +85,30 @@ class TranslationServiceTest {
     }
 
     @Test
+    fun localVocativeLetteringRequiresAgreementAndPreservesSeparateObjects() {
+        val source = "별아! 이런 용감한 녀석~ 나를 도와주는 거야?"
+        val praise = "Star! This brave thing~ Are you helping me home?"
+        val expected = "Star! You're so brave~ Are you helping me home?"
+        assertEquals(expected, VisionLlmEngine.spokenAddress(source, praise, "", ""))
+        assertEquals(praise, VisionLlmEngine.spokenAddress(source, praise, "object", "Star"))
+        assertEquals(praise, VisionLlmEngine.spokenAddress(source, praise, "unclear", ""))
+        val doll = "Star! This brave thing~ Are you taking me to see it?"
+        assertEquals(doll, VisionLlmEngine.spokenAddress(source, doll, "", ""))
+        val separate = "Star! This brave thing is the toy you bought me."
+        assertEquals(separate, VisionLlmEngine.spokenAddress(source, separate, "listener", "Star"))
+        assertEquals("Chestnut! You're really brave! Did you stay?",
+            VisionLlmEngine.spokenAddress("밤톨아! 이런 용감한 아이~ 남았어?",
+                "You! This is really brave! Did you stay?", "listener", "Chestnut"))
+        val natural = "Star! You little rascal! Are you waiting for me?"
+        assertEquals(natural, VisionLlmEngine.spokenAddress(source, natural, "listener", ""))
+    }
+
+    @Test
     fun aNamedListenerMissingFromAnEnglishCalloutReceivesAReview() = runBlocking {
         val source = "밤톨아! 이런 용감한 녀석~ 날 지켜준 거야?"
-        val spoken = "Chestnut! You're so brave! Were you protecting me?"
+        val spoken = "Chestnut! You're so brave~ Were you protecting me?"
         val srv = serve { ex ->
-            val item = JSONObject().put("id", 0).put("referent", "listener").put("en", spoken)
-                .put("names", JSONObject().put("밤톨", "Chestnut"))
+            val item = JSONObject().put("id", 0).put("referent", "listener").put("name", "Chestnut")
             val msg = JSONObject().put("content", JSONObject().put("items", JSONArray().put(item)).toString())
             ex.respond(200, JSONObject().put("choices", JSONArray().put(JSONObject().put("message", msg))).toString())
         }
@@ -100,7 +118,8 @@ class TranslationServiceTest {
         VisionLlmEngine(custom(srv)).reviewFormsOfAddress(cards, "{}", JSONArray(), terms)
         assertEquals(spoken, cards.single().en)
         assertEquals("Chestnut", terms.getString("밤톨"))
-        assertEquals(1, srv.exchanges.size)
+        val content = JSONObject(srv.exchanges.single().body).getJSONArray("messages").getJSONObject(1).getString("content")
+        assertEquals(false, JSONObject(content.substringAfter("\n\n")).getJSONArray("items").getJSONObject(0).getBoolean("rewrite"))
     }
 
     @Test

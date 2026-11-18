@@ -55,6 +55,7 @@ class ModelObserver(BaseHTTPRequestHandler):
                   "purpose": purpose, "review_items": review_items,
                   "ocr_hints": sum(bool(region.get("ocr_text_maybe_garbled")) for region in regions),
                   "completed": False}
+        print(f"Android model input: {purpose}, {images} images, {image_bytes} bytes, {review_items} review items", flush=True)
         start = time.monotonic()
         backend = http.client.HTTPConnection("127.0.0.1", 7878, timeout=240)
         try:
@@ -65,8 +66,8 @@ class ModelObserver(BaseHTTPRequestHandler):
             self.end_headers()
             response = bytearray()
             while chunk := reply.read1(8192):
-                if len(response) < 65536:
-                    response.extend(chunk[:65536 - len(response)])
+                if len(response) < 524288:
+                    response.extend(chunk[:524288 - len(response)])
                 if "first_bytes_ms" not in record:
                     record["first_bytes_ms"] = round((time.monotonic() - start) * 1000)
                 self.wfile.write(chunk)
@@ -76,7 +77,7 @@ class ModelObserver(BaseHTTPRequestHandler):
             # own words so the image reading and any text-only correction can be audited.
             try:
                 wire = response.decode()
-                if wire.lstrip().startswith("data:"):
+                if "event-stream" in reply.getheader("Content-Type", "") or wire.lstrip().startswith("data:"):
                     parts = (json.loads(line[6:]) for line in wire.splitlines()
                              if line.startswith("data: ") and line[6:] != "[DONE]")
                     answer = "".join(p["choices"][0]["delta"].get("content", "") for p in parts if p.get("choices"))
