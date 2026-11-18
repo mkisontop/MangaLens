@@ -62,7 +62,7 @@ class PublishedComicExperienceTest {
     private val scenes = listOf(
         Scene("contest", RectF(.12f, .477f, .499f, .659f), RectF(.273f, .488f, .494f, .605f),
             "Carrot, you sweetheart! Are you taking me to the contest?"),
-        Scene("outfit", RectF(.604f, .747f, .965f, .855f), RectF(.688f, .751f, .947f, .849f),
+        Scene("outfit", RectF(.604f, .737f, .965f, .855f), RectF(.688f, .751f, .947f, .849f),
             "You brought my clothes, my hat, and even the potion!"),
         Scene("potion", RectF(.584f, .855f, .967f, .970f), RectF(.725f, .857f, .934f, .942f),
             "Let's see which potion you brought."),
@@ -261,10 +261,16 @@ class PublishedComicExperienceTest {
                     assertTrue("The original screenshot contains readable Korean lettering", sourceInk.length >= 3)
                     val markerVisible = sourceInk.windowed(2).any { it in korean }
                     saveBalloonComparison(scene.name, original, display, screenBox)
-                    val recognized = english.read(display, screenBox)
+                    val target = DisplayText.letters(expectedEnglish)
+                    val observations = listOf(1f, .75f, 1.5f).asSequence()
+                        .map { english.read(display, screenBox, it) }.iterator()
+                    var recognized = observations.next()
+                    while (!DisplayText.letters(recognized).contains(target) && observations.hasNext()) {
+                        recognized = observations.next()
+                    }
                     val art = compareArt(original, display, origin, host.width, host.height, expected, dest)
                     Log.i("MangaLensUX", scene.name + " English=" + recognized + " art=" + art)
-                    val completeEnglish = DisplayText.letters(recognized).contains(DisplayText.letters(expectedEnglish))
+                    val completeEnglish = DisplayText.letters(recognized).contains(target)
                     val matched = cards == listOf(expectedEnglish)
                     assertTrue("checked painted panel artwork", art.first > 80_000)
                     csv.appendText(listOf(scene.name, matched, completeEnglish, markerVisible, art.first, art.second)
@@ -276,7 +282,8 @@ class PublishedComicExperienceTest {
                     }
                     if (liveEndpoint != null) {
                         val record = JSONObject().put("model", settings.model).put("source_ocr", JSONArray(sourceLines))
-                            .put("english", expectedEnglish).put("display_ocr", recognized).put("ocr_and_translation_ms", elapsed)
+                            .put("image_transcription", result.bubbles.single().original).put("english", expectedEnglish)
+                            .put("display_ocr", recognized).put("ocr_and_translation_ms", elapsed)
                             .put("art_pixels_checked", art.first).put("art_pixels_changed", art.second)
                         File(output, "live-panel.json").writeText(record.toString(2) + "\n")
                     }

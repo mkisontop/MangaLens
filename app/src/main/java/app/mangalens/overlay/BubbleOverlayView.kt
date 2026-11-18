@@ -106,6 +106,8 @@ data class RenderBubble(
     val panel: Rect? = null,
     /** An OCR source box whose strokes still need a fixed fallback wipe. */
     val coverSource: Boolean = false,
+    /** Verified source lettering within a detected balloon, in capture coordinates. */
+    val sourceInkBounds: Rect? = null,
 ) {
     /** This card for the page moved [dy] rows down: everything it places moves with it. */
     fun shiftedBy(dy: Int): RenderBubble {
@@ -114,6 +116,7 @@ data class RenderBubble(
             box = moved(box),
             balloon = balloon?.let { it.copy(box = moved(it.box)) },
             patchRect = patchRect?.let(::moved),
+            sourceInkBounds = sourceInkBounds?.let(::moved),
             art = art?.shifted(dy),
             otherPanels = otherPanels.map(::moved),
             panel = panel?.let(::moved),
@@ -537,6 +540,7 @@ class BubbleOverlayView(context: Context) : View(context) {
         val lettering: Lettering,
         val stamp: Bitmap?,
         val stampDst: RectF?,
+        val sourceInkBounds: Rect?,
         val patch: Bitmap?,
         val patchDst: Rect?,
         val dy: Float,
@@ -682,6 +686,7 @@ class BubbleOverlayView(context: Context) : View(context) {
                 box = Rect(b.box),
                 balloon = b.balloon?.let { it.copy(box = Rect(it.box)) },
                 patchRect = b.patchRect?.let(::Rect),
+                sourceInkBounds = b.sourceInkBounds?.let(::Rect),
                 panel = b.panel?.let(::Rect),
                 otherPanels = b.otherPanels.map(::Rect),
             )
@@ -2110,7 +2115,8 @@ class BubbleOverlayView(context: Context) : View(context) {
         if (list === groundsList) return
         val next = HashMap<GroundKey, Ground?>()
         fun ground(p: Placed, card: Boolean): Ground? {
-            val key = GroundKey(card, p.lettering, p.stamp, p.stampDst, p.patch, p.patchDst, if (card) p.dy else 0f)
+            val key = GroundKey(card, p.lettering, p.stamp, p.stampDst, p.source.sourceInkBounds,
+                p.patch, p.patchDst, if (card) p.dy else 0f)
             val g = if (grounds.containsKey(key)) grounds[key] else groundOf(p, card, k, page)
             next[key] = g
             return g
@@ -2137,7 +2143,7 @@ class BubbleOverlayView(context: Context) : View(context) {
             area.set(c)
             area.offset(0f, p.dy)
         } else {
-            if (p.stamp != null && p.stampDst != null) area.union(p.stampDst)
+            if (p.stamp != null && p.stampDst != null) area.union(p.source.sourceInkBounds?.let(::RectF) ?: p.stampDst)
             if (p.patch != null && p.patchDst != null) area.union(RectF(p.patchDst))
             p.lettering.wipe?.let { area.union(it) }
             if (area.isEmpty) return null
@@ -2169,7 +2175,15 @@ class BubbleOverlayView(context: Context) : View(context) {
             val p = list[i]
             if (p.stamp != null && p.stampDst != null) {
                 maskPaint.colorFilter = p.lettering.tint
-                canvas.drawBitmap(p.stamp, null, p.stampDst, maskPaint)
+                val clip = p.source.sourceInkBounds
+                if (clip == null) {
+                    canvas.drawBitmap(p.stamp, null, p.stampDst, maskPaint)
+                } else {
+                    val saved = canvas.save()
+                    canvas.clipRect(clip)
+                    canvas.drawBitmap(p.stamp, null, p.stampDst, maskPaint)
+                    canvas.restoreToCount(saved)
+                }
             }
             if (p.patch != null && p.patchDst != null) {
                 canvas.drawBitmap(p.patch, null, p.patchDst, patchPaint)

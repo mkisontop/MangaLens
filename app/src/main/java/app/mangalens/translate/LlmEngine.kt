@@ -160,11 +160,8 @@ This text came from on-device OCR and may contain recognition errors, scrambled 
 SOUND EFFECTS
 Bubbles with "kind":"sfx" are sound effects: render as punchy comic onomatopoeia in CAPS (WHAM, BA-DUMP, KRAK). Japanese SFX cover states as well as sounds — silence (シーン), staring (ジー), nervousness (ドキドキ) — so translate the effect, not a literal noise. If an sfx fragment is meaningless, skip it.
 
-Respond with ONLY this JSON object, no markdown fences:
-{"bubbles":[{"id":0,"who":"<speaker>","en":"<English>","kind":"dialogue|sfx|skip"}...],"new_terms":{"<source name/term>":"<English>"},"characters":{"<English name>":{"pronoun":"he|she|they","register":"<how they speak>","note":"<role or relationship>"}}}
-- One entry per input bubble, same ids. Use "kind":"skip" (en may be empty) to drop a bubble.
-- "new_terms": ONLY newly established proper nouns / recurring terms not already in the glossary. Empty object if none.
-- "characters": ONLY characters on this page whose pronoun or register is not already recorded, or whom you can now describe more precisely. Empty object if none.
+Return JSON only. In the "bubbles" array, give each input bubble its original numeric "id", the speaker's name in "who" when known, its actual English translation in "en", and "kind" set to "dialogue", "sfx" or "skip". For a skipped bubble, leave "en" empty.
+The "new_terms" object maps newly established source names or recurring terms to their English equivalents. The "characters" object maps newly identified English names to objects containing "pronoun", "register" and "note". Supply empty objects when nothing was learned.
 """.trim()
     }
 }

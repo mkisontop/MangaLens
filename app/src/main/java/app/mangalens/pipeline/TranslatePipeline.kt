@@ -1004,6 +1004,7 @@ class TranslatePipeline(
             val arr = obj.getJSONArray("items")
             (0 until arr.length()).map { i ->
                 val o = arr.getJSONArray(i)
+                if (JunkFilter.isPromptPlaceholder(o.getString(6))) throw IllegalStateException("unanswered cached region")
                 PageItem(
                     box = Rect(
                         (o.getInt(0) + shift.dx) * w / 1000,
@@ -1160,6 +1161,7 @@ class TranslatePipeline(
             renderBubble(
                 bitmap, anchor.box, v.en, v.src.ifBlank { anchor.text }, anchor.vertical,
                 if (v.sfx) BubbleKind.SFX else BubbleKind.DIALOGUE, detected,
+                cleanOcrText = anchor.text.isNotBlank(),
             )
         }
 
@@ -1217,6 +1219,7 @@ class TranslatePipeline(
             renderBubble(
                 bitmap, box, v.en, original, vertical,
                 if (v.sfx) BubbleKind.SFX else BubbleKind.DIALOGUE, detected,
+                cleanOcrText = textBox != null,
             )
         }
         return anchored + extras
@@ -1291,7 +1294,9 @@ class TranslatePipeline(
                 val o = arr.getJSONArray(i)
                 // Rows written before the speaker field existed are dropped
                 // rather than read short.
-                if (o.length() != 9) throw IllegalStateException("stale vision cache entry")
+                if (o.length() != 9 || JunkFilter.isPromptPlaceholder(o.getString(6))) {
+                    throw IllegalStateException("stale vision cache entry")
+                }
                 VisionLlmEngine.VisionBubble(
                     o.getInt(0), o.getInt(1), o.getInt(2), o.getInt(3), o.getInt(4),
                     o.getString(5), o.getString(6), o.getInt(7) == 1, o.getString(8),
@@ -1346,10 +1351,16 @@ class TranslatePipeline(
         // OCR often reads only part of a balloon, so a balloon whose ink is
         // one compact block of lettering around the part it did read is
         // lettering too; a face's ink is spread thin across it.
-        val balloon = balloonFor(box, detected)?.takeIf {
-            BalloonTrust.holdsOnly(bitmap, it, listOf(box)) ||
-                BalloonTrust.letteringBlock(bitmap, it)?.let { block -> Rect.intersects(block, box) } == true
-        }
+        val shape = balloonFor(box, detected)
+        val ink = shape?.let { BalloonTrust.letteringBlock(bitmap, it) }?.takeIf { Rect.intersects(it, box) }
+        val balloon = shape?.takeIf { ink != null || BalloonTrust.holdsOnly(bitmap, it, listOf(box)) }
+        // Keep the detected shape for typesetting. Cleaning the source glyphs
+        // needs only their measured block, not the shaded outline or balloon tail.
+        val inkBounds = if (ink != null && balloon != null) Rect(ink).apply {
+            val pad = (minOf(width(), height()) / 20).coerceIn(4, 12)
+            inset(-pad, -pad)
+            intersect(balloon.box)
+        } else null
         // Dialogue can be perfectly readable even when a page edge or a control
         // hides the balloon outline. Clean the OCR strokes on their own paper.
         val erasure = if (cleanOcrText && balloon == null && kind == BubbleKind.DIALOGUE) {
@@ -1381,6 +1392,7 @@ class TranslatePipeline(
             patch = erasure?.patch,
             patchRect = erasure?.rect,
             coverSource = cleanOcrText && kind == BubbleKind.DIALOGUE && balloon == null && erasure == null,
+            sourceInkBounds = inkBounds,
         )
     }
 

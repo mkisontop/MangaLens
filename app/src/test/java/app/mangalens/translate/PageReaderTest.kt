@@ -143,6 +143,35 @@ class PageReaderTest {
         retryMs: Long = 10_000,
     ) = PageReader(s, null, null, transport, race, hedgeMs, staggerMs, uploadGraceMs, retryMs)
 
+    @Test
+    fun letterboxedPagesUploadOnlyVisibleRowsAndLandOnTheOriginalDisplay() = runBlocking {
+        val frame = page(180, 420).apply { eraseColor(Color.rgb(39, 42, 47)) }
+        try {
+            android.graphics.Canvas(frame).drawRect(Rect(0, 160, 180, 260),
+                android.graphics.Paint().apply { color = Color.WHITE })
+            val answer = reply(item(listOf(0, 100, 1000, 600), "speech", "", "안녕", "Hi!"))
+            val transport = FakeTransport { _, _, write -> write(answer); answer }
+            val reader = reader(transport, race = 1)
+            for ((unread, expected) in listOf(null to Rect(18, 152, 108, 268),
+                intArrayOf(0, 1000) to Rect(18, 0, 108, 420))) {
+                val items = reader.start(this, frame, SourceLang.KO, unread).collect(null)
+                assertEquals(expected, items.single().box)
+                val parts = transport.calls.last().second.getJSONArray("contents").getJSONObject(0).getJSONArray("parts")
+                val bytes = Base64.decode(parts.getJSONObject(1).getJSONObject("inlineData").getString("data"), Base64.NO_WRAP)
+                val image = BitmapFactory.decodeByteArray(bytes, 0, bytes.size)
+                try {
+                    assertEquals(180, image.width)
+                    assertEquals(expected.height(), image.height)
+                } finally {
+                    image.recycle()
+                }
+            }
+            assertFalse(frame.isRecycled)
+        } finally {
+            frame.recycle()
+        }
+    }
+
     // ---- streaming and parsing ----
 
     @Test

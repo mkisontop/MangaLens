@@ -93,7 +93,18 @@ class PageReader internal constructor(
      */
     fun start(scope: CoroutineScope, bitmap: Bitmap, lang: SourceLang, unread: IntArray? = null): PendingRead {
         val started = System.nanoTime()
-        val page = PageRequest(bitmap.width, bitmap.height, encode(bitmap, settings.dataSaver), lang, unread)
+        // A strip's unread band already uses strip coordinates. Only a full page
+        // with two proven empty margins can be cropped a second time.
+        val bounds = if (unread == null) PageMarkup.visiblePageBounds(bitmap, emptyList())
+            else Rect(0, 0, bitmap.width, bitmap.height)
+        val image = if (bounds.height() == bitmap.height) bitmap else
+            Bitmap.createBitmap(bitmap, bounds.left, bounds.top, bounds.width(), bounds.height())
+        val encoded = try {
+            encode(image, settings.dataSaver)
+        } finally {
+            if (image !== bitmap) image.recycle()
+        }
+        val page = PageRequest(bounds, encoded, lang, unread)
         val read = Read(started, elapsedMs(started))
         val job = scope.launch(Dispatchers.Default) {
             try {
@@ -368,7 +379,7 @@ class PageReader internal constructor(
      * when the page was captured, and the page's own size for mapping the
      * model's boxes back.
      */
-    private inner class PageRequest(val width: Int, val height: Int, val jpeg: String, lang: SourceLang, unread: IntArray? = null) {
+    private inner class PageRequest(val bounds: Rect, val jpeg: String, lang: SourceLang, unread: IntArray? = null) {
 
         /** The work the memory below was taken from; read first, so a reset part-way through only drops the learning. */
         val generation = StoryContext.generation
@@ -405,7 +416,9 @@ class PageReader internal constructor(
             return body
         }
 
-        fun item(o: JSONObject): PageItem? = toItem(o, width, height)
+        fun item(o: JSONObject): PageItem? = toItem(o, bounds.width(), bounds.height())?.also {
+            it.box.offset(bounds.left, bounds.top)
+        }
     }
 
     /** A read in flight: the items so far, and how it ended once it has. */

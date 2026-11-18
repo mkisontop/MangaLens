@@ -66,3 +66,17 @@ curl -fsS http://127.0.0.1:7878/health
 export MANGALENS_LIVE_ENDPOINT=http://127.0.0.1:7878/v1/chat/completions
 export MANGALENS_LIVE_MODEL="$model"
 run_test "$@"
+if [[ "${MANGALENS_LIVE_VISION:-0}" == 1 && $# -gt 0 ]]; then
+    python3 - "$work/server.log" <<'PY'
+import json, re, sys
+from pathlib import Path
+log = Path(sys.argv[1]).read_text(errors="replace")
+requests = len(re.findall(r"request: POST /v1/chat/completions .*? 200", log))
+images = [int(value) for value in re.findall(r"image processed in (\d+) ms", log)]
+report = {"chat_requests_including_prompt_warmup": requests, "image_processing_ms": images}
+out = Path("app/build/reader-live-device/model-timing.json")
+out.write_text(json.dumps(report, indent=2) + "\n")
+print(report)
+assert requests == 2 and images, "The panel must come from the image request without a text retry"
+PY
+fi

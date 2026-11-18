@@ -45,6 +45,34 @@ class LetteringRenderTest {
     private fun view(): BubbleOverlayView =
         BubbleOverlayView(RuntimeEnvironment.getApplication()).apply { layout(0, 0, pageW, pageH) }
 
+    @Test
+    fun aBalloonCleaningPreservesShadedPaperBeyondItsGlyphsAfterScrolling() {
+        val box = Rect(100, 140, 420, 390)
+        val ink = Rect(165, 212, 345, 285)
+        val bubble = RenderBubble(box, "On my way!", "곧 갈게!", Color.WHITE, Color.BLACK, false,
+            balloon = rectBalloon(box), sourceInkBounds = ink)
+        val shade = Color.rgb(244, 248, 251)
+        val overlay = view()
+        for (dy in listOf(0, 121)) {
+            val shifted = bubble.shiftedBy(dy)
+            val block = requireNotNull(shifted.sourceInkBounds)
+            val image = Bitmap.createBitmap(pageW, pageH, Bitmap.Config.ARGB_8888)
+            try {
+                image.eraseColor(shade)
+                val canvas = Canvas(image)
+                canvas.drawRect(block, Paint().apply { color = letteringInk })
+                overlay.setBubbles(listOf(shifted))
+                overlay.drawCleanings(canvas)
+                assertEquals(Color.WHITE, image.getPixel(block.centerX(), block.centerY()))
+                assertEquals(shade, image.getPixel(block.centerX(), block.top - 3))
+                assertEquals(shade, image.getPixel(block.centerX(), block.bottom + 3))
+                assertEquals(shade, image.getPixel(block.right + 3, block.centerY()))
+            } finally {
+                image.recycle()
+            }
+        }
+    }
+
     private fun luminance(c: Int) = (Color.red(c) * 299 + Color.green(c) * 587 + Color.blue(c) * 114) / 1000
 
     private fun isLetteringInk(c: Int) = Color.red(c) >= 140 && Color.green(c) <= 60 && Color.blue(c) <= 60
