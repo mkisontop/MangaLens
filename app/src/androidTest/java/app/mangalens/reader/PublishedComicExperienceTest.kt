@@ -358,6 +358,10 @@ class PublishedComicExperienceTest {
             assertTrue("The affectionate aside should not become a means of travel: " + answer,
                 Regex("""cute|cutie|adorable|sweet|darling|dear|lovely|precious""").containsMatchIn(answer) &&
                     !Regex("""\b(with|using|on|by) (this|that|a|the|your) (cute|adorable|sweet|lovely)\b""").containsMatchIn(answer))
+            assertTrue("The companion's meaningful name should survive translation: " + answer,
+                Regex("""\bcarrot\b""").containsMatchIn(answer))
+            assertTrue("An affectionate address should read naturally in English: " + answer,
+                !Regex("""\b(this|that|the) (cute|adorable|sweet|lovely) (thing|object)\b""").containsMatchIn(answer))
             return
         }
         assertTrue("Clothing, hat and potion must all be present: " + answer,
