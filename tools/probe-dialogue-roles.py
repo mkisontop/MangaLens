@@ -28,6 +28,8 @@ for name, prompt, (src, draft, prior), issue, compact in [
         ("combined-ja",combined,ja,"listener_request",False),("proven-ja",japanese,ja,"listener_request",True),
         ("combined-ko",combined,ko,"actor_and_owner",False),("specialized-ko",korean,ko,"actor_and_owner",True),
         ("specialized-panel",korean,panel,"actor_and_owner",True)]:
+    if os.environ.get("MANGALENS_CLASSIFY_ONLY") == "1":
+        break
     item = {"id":0,"source":src,"draft":draft}
     if not compact:
         item.update(issue=issue,previous_line=prior)
@@ -41,6 +43,25 @@ for name, prompt, (src, draft, prior), issue, compact in [
     req = urllib.request.Request(os.environ["MANGALENS_LIVE_ENDPOINT"],data=json.dumps(body).encode(),
                                 headers={"Content-Type":"application/json"})
     with urllib.request.urlopen(req,timeout=240) as reply:
+        response=json.load(reply)
+    print("Role probe "+json.dumps({"case":name,"output":response["choices"][0]["message"]["content"],
+        "tokens":response["usage"],"timings":response.get("timings",{})},ensure_ascii=False),flush=True)
+
+actor_prompt = ("Identify who performed the final verb in each Korean utterance. The noun after 내 or 제 belongs to the speaker. "
+    "Ownership alone does not identify the actor. Use explicit subjects or the preceding exchange. "
+    "A noticing ending -네 can describe what the companion just addressed did. Return JSON with an items array. "
+    "For each input id give actor as listener, speaker, third_person or unclear. For listener or speaker give "
+    "only id and actor. For third_person or unclear also give en with the full natural English line, "
+    "keeping every possession and action. Leave a genuinely unknown actor implicit. No explanation.")
+for name, src, prior in [("classify-bag",ko[0],ko[2]),("classify-outfit",panel[0],panel[2]),
+        ("classify-self","내 가방은 내가 가져왔네.",ko[2]),
+        ("classify-third","내 우산은 민지가 가져왔네.",ko[2])]:
+    page={"review":"dialogue_roles","story_so_far":[prior],"items":[{"id":0,"source":src,"previous_line":prior}]}
+    body={"model":os.environ["MANGALENS_LIVE_MODEL"],"temperature":0,"max_tokens":512,"messages":[
+        {"role":"system","content":actor_prompt},{"role":"user","content":"{}\n\n"+json.dumps(page,ensure_ascii=False,separators=(",",":"))}]}
+    req=urllib.request.Request(os.environ["MANGALENS_LIVE_ENDPOINT"],data=json.dumps(body).encode(),
+                               headers={"Content-Type":"application/json"})
+    with urllib.request.urlopen(req, timeout=240) as reply:
         response=json.load(reply)
     print("Role probe "+json.dumps({"case":name,"output":response["choices"][0]["message"]["content"],
         "tokens":response["usage"],"timings":response.get("timings",{})},ensure_ascii=False),flush=True)

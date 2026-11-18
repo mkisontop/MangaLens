@@ -19,4 +19,5 @@ jobs:
         env:
           MANGALENS_LIVE_VISION: ${{ matrix.vision }}
           MANGALENS_MODEL_PROBE: "1"
+          MANGALENS_CLASSIFY_ONLY: "1"
         run: bash tools/test-live-translation.sh python3 tools/probe-dialogue-roles.py
