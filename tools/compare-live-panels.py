@@ -8,16 +8,26 @@ import sys
 
 SCENES = {"contest": "live-contest.json", "outfit": "live-panel.json"}
 ORDERS = ("baseline-first", "candidate-first")
+INSTRUCTIONS = ("warm", "cold")
+RUNS = [f"{order}-{instructions}" for order in ORDERS for instructions in INSTRUCTIONS]
 
 
-def read_panel(root, order, arm, scene, index):
-    directory = root / ("live-published-page-" + order) / arm
+def read_panel(root, run, arm, scene, index):
+    directory = root / ("live-published-page-" + run) / arm
     result = json.loads((directory / "live" / SCENES[scene]).read_text())
     requests = [json.loads(row) for row in (directory / "model-requests.jsonl").read_text().splitlines()]
     pages = [item for item in requests if item["images"]]
     assert len(pages) == len(SCENES) + int(arm == "candidate")
     page = pages[index]
     assert page["completed"] and page["ocr_hints"] == 0
+    timings = page["provider_timings"]
+    cached_tokens = timings.get("cache_n", 0)
+    if index == 0:
+        # Verify the server actually honored the cold/warm condition for this first-ever page.
+        if run.endswith("-cold"):
+            assert cached_tokens < 8, f"Fresh model unexpectedly reused a prompt: {timings}"
+        else:
+            assert cached_tokens > 100, f"The stable instructions were never warmed: {timings}"
     assert result["art_pixels_changed"] == 0 and result["art_pixels_checked"] > 80000
     assert result["display_ocr"] and result["first_display_ocr"] and result["image_transcription"]
     assert 0 < result["first_visible_ms"] <= result["complete_visible_ms"]
@@ -25,6 +35,9 @@ def read_panel(root, order, arm, scene, index):
         "first_visible_ms": result["first_visible_ms"],
         "complete_visible_ms": result["complete_visible_ms"],
         "model_ms": page["elapsed_ms"],
+        "uncached_prompt_tokens": timings["prompt_n"],
+        "cached_prompt_tokens": cached_tokens,
+        "first_model_content_ms": page["first_content_ms"],
         "upload_bytes": page["image_bytes"],
         "upload_pixels": sum(w * h for w, h in page["image_dimensions"]),
         "english": result["english"],
@@ -36,7 +49,7 @@ def read_panel(root, order, arm, scene, index):
 def dense_pages(root):
     values = {"baseline": [], "candidate": []}
     by_order = {}
-    for order in ORDERS:
+    for order in RUNS:
         by_order[order] = {}
         for arm in values:
             path = root / ("live-published-page-" + order) / arm / "anchored.csv"
@@ -56,9 +69,11 @@ def dense_pages(root):
 def compare(root):
     pairs = []
     for order in ORDERS:
-        for index, scene in enumerate(SCENES):
-            pairs.append({"order": order, "scene": scene,
-                          **{arm: read_panel(root, order, arm, scene, index) for arm in ("baseline", "candidate")}})
+        for instructions in INSTRUCTIONS:
+            run = f"{order}-{instructions}"
+            for index, scene in enumerate(SCENES):
+                pairs.append({"order": order, "instructions": instructions, "run": run, "scene": scene,
+                              **{arm: read_panel(root, run, arm, scene, index) for arm in ("baseline", "candidate")}})
     metrics = ("first_visible_ms", "complete_visible_ms", "model_ms", "upload_bytes", "upload_pixels")
     ratio = lambda pair, name: pair["candidate"][name] / pair["baseline"][name]
     summary = {metric: {"baseline_median": statistics.median(p["baseline"][metric] for p in pairs),
@@ -67,13 +82,13 @@ def compare(root):
                for metric in metrics}
     dense = dense_pages(root)
     holdouts = {}
-    for order in ORDERS:
+    for order in RUNS:
         directory = root / ("live-published-page-" + order) / "candidate" / "live"
         held = json.loads((directory / "live-potion.json").read_text())
         assert held["first_display_ocr"] and held["display_ocr"] and held["art_pixels_changed"] == 0
         holdouts[order] = held
     projection = {}
-    for order in ORDERS:
+    for order in RUNS:
         directory = root / ("live-published-page-" + order) / "candidate"
         screen = json.loads((directory / "projection/projection-japanese.json").read_text())
         observed = [json.loads(row) for row in (directory / "projection-requests.jsonl").read_text().splitlines()]
@@ -86,8 +101,8 @@ def compare(root):
     print(json.dumps(result, ensure_ascii=False, indent=2), flush=True)
     assert all(order["candidate"] < order["baseline"] for order in dense["median_by_order"].values())
     assert all(p["candidate"]["upload_pixels"] < p["baseline"]["upload_pixels"] for p in pairs)
-    assert all(statistics.mean(ratio(p, "first_visible_ms") for p in pairs if p["order"] == order) < 1
-               for order in ORDERS), "Both installation orders must show the first correct line sooner"
+    assert all(statistics.mean(ratio(p, "first_visible_ms") for p in pairs if p["run"] == run) < 1
+               for run in RUNS), "Every matched emulator must show its two pages faster on average"
     for metric in ("first_visible_ms", "complete_visible_ms"):
         assert summary[metric]["median_paired_ratio"] <= .95, f"Expected at least 5% paired reduction in {metric}"
 

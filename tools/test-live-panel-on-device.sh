@@ -27,6 +27,7 @@ curl -fsS http://127.0.0.1:7879/health > /dev/null
 adb reverse tcp:7879 tcp:7879
 # A CPU runner pays a substantial one-time prompt prefill. Warm only the
 # app's fixed instructions; the comic image and its words arrive from Android.
+if [[ "${MANGALENS_LIVE_INSTRUCTIONS:-warm}" == warm ]]; then
 python3 - "$reader_source" <<'PY'
 import json, os, re, sys, textwrap, urllib.request
 from pathlib import Path
@@ -40,6 +41,7 @@ req = urllib.request.Request(os.environ["MANGALENS_LIVE_ENDPOINT"], data=json.du
 with urllib.request.urlopen(req, timeout=240) as reply:
     print("Model instructions warmed", json.load(reply).get("usage"))
 PY
+fi
 holdout=0
 if [[ "${MANGALENS_READER_SOURCE:-.}" == "." ]]; then holdout=1; fi
 adb logcat -c
@@ -96,6 +98,7 @@ if [[ "$holdout" == 1 && -n "${MANGALENS_LIVE_COMPARE_ORDER:-}" ]]; then
         -e class 'app.mangalens.reader.ReaderExperienceTest#liveScreenSharingReplacesUnseenJapaneseDialogue' \
         "$id.test/androidx.test.runner.AndroidJUnitRunner" | tee "$out/projection-instrumentation.txt"
     adb logcat -d > "$out/projection-device.log"
+    grep -F "Projection controls=" "$out/projection-device.log" || true
     adb logcat -b events -d -s am_anr am_crash > "$out/projection-events.txt"
     adb exec-out run-as "$id" tar -cf - -C files/reader-ux projection | tar -xf - -C "$out"
     cat "$out/projection-requests.jsonl"

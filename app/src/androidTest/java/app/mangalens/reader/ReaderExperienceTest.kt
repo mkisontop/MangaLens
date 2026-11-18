@@ -194,12 +194,20 @@ class ReaderExperienceTest {
                                 val morning = Regex("""\b(morning|dawn|daybreak|sunrise)\b""").containsMatchIn(words)
                                 if (negated && wait && morning && "here" in words) {
                                     val elapsed = SystemClock.elapsedRealtime() - start
-                                    val art = comic.checkArt(before, screen, origin)
-                                    assertTrue("Sample at least fifty thousand scene pixels", art.first > 50000)
-                                    assertEquals("Art beyond the balloon must preserve its veiled colors", 0, art.second)
                                     save(screen, "projection-japanese-translated.png")
+                                    val button = requireNotNull(UiDevice.getInstance(inst).findObject(
+                                        By.descContains("tap to pause"))) { "The capture control must be visible" }
+                                    val buttonBounds = button.visibleBounds
+                                    val row = button.parent?.visibleBounds?.takeIf {
+                                        it.contains(buttonBounds) && it.height() <= buttonBounds.height() * 3 / 2
+                                    } ?: buttonBounds
+                                    val controls = Rect(row).apply { inset(-1, -1) }
+                                    val art = comic.checkArt(before, screen, origin, controls)
+                                    assertTrue("Check over two hundred thousand visible scene pixels", art.first > 200000)
+                                    assertEquals("Visible art beyond the balloon must preserve its veiled colors", 0, art.second)
                                     val result = JSONObject().put("display_ocr", observed).put("visible_ms", elapsed)
                                         .put("source_ink_pixels", source).put("residual_ink_pixels", remaining)
+                                        .put("control_bounds", controls.toShortString())
                                         .put("art_pixels_checked", art.first).put("art_pixels_changed", art.second)
                                     File(output, "projection-japanese.json").writeText(result.toString(2) + "\n")
                                     complete = true

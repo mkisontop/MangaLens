@@ -37,7 +37,8 @@ class PageMarkupTest {
         val upload = Rect(0, 380, 720, 896)
         val dialogue = Bubble("한글", Rect(145, 447, 692, 780), false)
         val title = Bubble("", Rect(10, 450, 82, 544), false)
-        val normal = listOf(OcrLine("한글", Rect(222, 500, 370, 550), false))
+        val normal = listOf(OcrLine("한글", Rect(222, 500, 370, 550), false),
+            OcrLine("다음 줄", Rect(222, 565, 380, 615), false))
         fun dimension(lines: List<OcrLine> = normal, cropped: Boolean = true,
                       dataSaver: Boolean = true, anchors: List<Bubble> = listOf(dialogue, title), id: Int? = 0) =
             PageMarkup.zoomPageDimension(upload, cropped, anchors, id, lines, dataSaver)
@@ -47,6 +48,7 @@ class PageMarkupTest {
         assertEquals(1000, dimension(lines = normal + normal[0].copy(box = Rect(220, 601, 363, 611))))
         assertEquals(1000, dimension(lines = normal + normal[0].copy(box = Rect(10, 450, 72, 490))))
         assertEquals(1000, dimension(lines = listOf(normal[0].copy(vertical = true))))
+        assertEquals(1000, dimension(lines = normal.take(1)))
         assertEquals(1000, dimension(lines = emptyList()))
         assertEquals(1000, dimension(cropped = false))
         assertEquals(1000, dimension(id = null))

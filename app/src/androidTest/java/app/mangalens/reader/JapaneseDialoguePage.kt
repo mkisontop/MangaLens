@@ -50,19 +50,33 @@ internal class JapaneseDialoguePage(context: Context) : View(context) {
     }
 
     /** The reader's Android 12+ anti-ghosting veil scales untouched art to 80% brightness. */
-    fun checkArt(before: Bitmap, after: Bitmap, origin: IntArray): Pair<Int, Int> {
-        val band = Rect((width * .1f).toInt(), (height * .27f).toInt(),
-            (width * .9f).toInt(), (height * .37f).toInt()).apply { offset(origin[0], origin[1]) }
-        val original = IntArray(band.width() * band.height())
+    fun checkArt(before: Bitmap, after: Bitmap, origin: IntArray, controls: Rect): Pair<Int, Int> {
+        val panel = Rect((width * .01f).toInt(), (height * .23f).toInt(),
+            (width * .99f).toInt(), (height * .80f).toInt()).apply { offset(origin[0], origin[1]) }
+        val balloon = letteringArea().apply {
+            inset(-(width * .052f).toInt() - 1, -(height * .015f).toInt() - 1)
+            offset(origin[0], origin[1])
+        }
+        val original = IntArray(panel.width() * panel.height())
         val actual = IntArray(original.size)
-        before.getPixels(original, 0, band.width(), band.left, band.top, band.width(), band.height())
-        after.getPixels(actual, 0, band.width(), band.left, band.top, band.width(), band.height())
-        val changed = original.indices.count { i ->
-            (0..16 step 8).any { shift ->
-                val expect = ((original[i] ushr shift and 255) * .8f).toInt()
-                abs((actual[i] ushr shift and 255) - expect) > 5
+        before.getPixels(original, 0, panel.width(), panel.left, panel.top, panel.width(), panel.height())
+        after.getPixels(actual, 0, panel.width(), panel.left, panel.top, panel.width(), panel.height())
+        var checked = 0
+        var changed = 0
+        val mismatch = Rect()
+        for (y in panel.top until panel.bottom) for (x in panel.left until panel.right) {
+            if (balloon.contains(x, y) || controls.contains(x, y)) continue
+            checked++
+            val i = (y - panel.top) * panel.width() + x - panel.left
+            if ((0..16 step 8).any { shift ->
+                    val expect = ((original[i] ushr shift and 255) * .8f).toInt()
+                    abs((actual[i] ushr shift and 255) - expect) > 5
+                }) {
+                changed++
+                mismatch.union(x, y, x + 1, y + 1)
             }
         }
-        return original.size to changed
+        android.util.Log.i("MangaLensUX", "Projection controls=$controls, checked=$checked, changed=$changed, mismatch=$mismatch")
+        return checked to changed
     }
 }

@@ -50,6 +50,7 @@ jobs:
       fail-fast: false
       matrix:
         order: [baseline-first, candidate-first]
+        instructions: [warm, cold]
     runs-on: ubuntu-24.04
     timeout-minutes: 50
     steps:
@@ -71,10 +72,11 @@ jobs:
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
-      - name: Read a Korean comic panel with the pinned model and the Android compositor
+      - name: Read Korean panels and a Japanese page on Android with the pinned model
         env:
           MANGALENS_LIVE_VISION: "1"
           MANGALENS_LIVE_COMPARE_ORDER: ${{ matrix.order }}
+          MANGALENS_LIVE_INSTRUCTIONS: ${{ matrix.instructions }}
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 33
@@ -86,9 +88,8 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: live-published-page-${{ matrix.order }}
+          name: live-published-page-${{ matrix.order }}-${{ matrix.instructions }}
           path: app/build/reader-live-device
-
 
   cold-page-comparison:
     needs: published-page-on-android

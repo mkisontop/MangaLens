@@ -43,7 +43,8 @@ object PageMarkup {
     /**
      * Zoomed horizontal panels can carry phone-sized lettering in an enlarged screenshot.
      * Retain at least 28 input pixels per detected line, together with the entire scene.
-     * Smaller print, other detected lines, vertical text and full pages keep the usual size.
+     * With just one OCR line, a missed neighboring line could be finer. Keep the usual size
+     * for those panels, smaller print, other detected lines, vertical text and full pages.
      */
     internal fun zoomPageDimension(
         upload: Rect, cropped: Boolean, anchors: List<Bubble>, readableId: Int?,
@@ -52,7 +53,7 @@ object PageMarkup {
         val normal = maxPageDimension(dataSaver)
         val main = readableId?.let { anchors.getOrNull(it) } ?: return normal
         if (!dataSaver || !cropped || upload.width() <= upload.height() || main.vertical ||
-            main.kind != BubbleKind.DIALOGUE || lines.isEmpty() || anchors.size > 4) return normal
+            main.kind != BubbleKind.DIALOGUE || lines.size < 2 || anchors.size > 4) return normal
         if (lines.any { it.vertical || it.box.isEmpty || !main.box.contains(it.box.centerX(), it.box.centerY()) }) return normal
         val longSide = max(upload.width(), upload.height())
         val smallest = lines.minOf { it.box.height() }
