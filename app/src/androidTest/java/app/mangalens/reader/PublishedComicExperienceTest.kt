@@ -245,8 +245,7 @@ class PublishedComicExperienceTest {
                 }
                 inst.runOnMainSync { overlay.setBubbles(result.bubbles, frame) }
                 inst.waitForIdleSync()
-                SystemClock.sleep(250)
-                val display = requireNotNull(inst.uiAutomation.takeScreenshot())
+                val display = settledBalloonScreenshot(original, screenBox, cards.isNotEmpty())
                 try {
                     for ((name, ref) in listOf("original" to original, "translated" to display)) {
                         File(output, "published-" + scene.name + "-" + name + ".png").outputStream().use {
@@ -304,6 +303,48 @@ class PublishedComicExperienceTest {
             original.recycle()
             ocr.close()
             frame.recycle()
+        }
+    }
+
+    /**
+     * A main-thread layout can finish while SurfaceFlinger still exposes the
+     * previous frame. Wait for two matching OS captures that actually differ
+     * from the original lettering. A stuck overlay still fails the visual checks.
+     */
+    private fun settledBalloonScreenshot(original: Bitmap, area: Rect, hasTranslation: Boolean): Bitmap {
+        val width = area.width()
+        val height = area.height()
+        val stride = 4
+        fun sample(frame: Bitmap): IntArray {
+            val pixels = IntArray(width * height)
+            frame.getPixels(pixels, 0, width, area.left, area.top, width, height)
+            val values = IntArray(((width + stride - 1) / stride) * ((height + stride - 1) / stride))
+            var i = 0
+            for (y in 0 until height step stride) for (x in 0 until width step stride) {
+                values[i++] = pixels[y * width + x]
+            }
+            return values
+        }
+        val before = sample(original)
+        var previous: IntArray? = null
+        val deadline = SystemClock.elapsedRealtime() + 6000
+        while (true) {
+            val screen = requireNotNull(inst.uiAutomation.takeScreenshot())
+            if (!hasTranslation) return screen
+            val actual = sample(screen)
+            var changed = 0
+            for (i in actual.indices) {
+                val from = before[i]
+                val to = actual[i]
+                if (abs((from shr 16 and 255) - (to shr 16 and 255)) > 32 ||
+                    abs((from shr 8 and 255) - (to shr 8 and 255)) > 32 ||
+                    abs((from and 255) - (to and 255)) > 32) changed++
+            }
+            if (changed >= 24 && previous?.contentEquals(actual) == true) return screen
+            if (SystemClock.elapsedRealtime() >= deadline) return screen
+            previous = actual
+            screen.recycle()
+            SystemClock.sleep(60)
         }
     }
 
