@@ -84,24 +84,25 @@ stop_model() {
 
 check_panel_requests() {
     python3 - "$work/server.log" "$MANGALENS_LIVE_DEVICE_OUT" <<'PY'
-import json, re, sys
+import json, os, re, sys
 from pathlib import Path
 log = Path(sys.argv[1]).read_text(errors="replace")
 out_dir = Path(sys.argv[2])
 records = [json.loads(row) for row in (out_dir / "model-requests.jsonl").read_text().splitlines()]
 pages = [r for r in records if r["images"]]
 reviews = [r for r in records if not r["images"]]
-assert len(pages) == 2 and all(r["completed"] and r["image_bytes"] > 0 for r in pages), (
+expected_pages = 3 if os.environ.get("MANGALENS_READER_SOURCE", ".") == "." else 2
+assert len(pages) == expected_pages and all(r["completed"] and r["image_bytes"] > 0 for r in pages), (
     "Each zoomed panel must receive one completed image request", records)
 assert 1 <= pages[0]["images"] <= 2 and pages[1]["images"] == 1, (
     "The contextual panel may keep one detailed close-up and the ordinary zoom uses one image", records)
-assert records[0] == pages[0] and records[-1] == pages[1] and len(reviews) <= 1, (
+assert records[0] == pages[0] and records[-1] == pages[-1] and len(reviews) <= 1, (
     "The ordinary follow-up balloon must finish with its single image request", records)
 assert all(r["purpose"] == "forms_of_address" and r["review_items"] == 1 and r["completed"] for r in reviews), (
     "Only the ambiguous address may receive a small text-only review", records)
-assert all(r["regions"] >= 1 and r["ocr_hints"] == 0 for r in pages), (
+assert all(r["regions"] >= 1 and r["ocr_hints"] == 0 for r in pages[:2]), (
     "These zoomed balloons must be read from the lettering in the images", records)
-assert pages[0]["story_entries"] == 0 and pages[1]["story_entries"] > 0, (
+assert pages[0]["story_entries"] == 0 and all(page["story_entries"] > 0 for page in pages[1:]), (
     "The second frame must use the model's own preceding dialogue", records)
 images = [int(value) for value in re.findall(r"image (?:processed|slice encoded) in (\d+) ms", log)]
 report = {"android_requests": records, "image_processing_ms": images}

@@ -35,8 +35,10 @@ req = urllib.request.Request(os.environ["MANGALENS_LIVE_ENDPOINT"], data=json.du
 with urllib.request.urlopen(req, timeout=240) as reply:
     print("Model instructions warmed", json.load(reply).get("usage"))
 PY
+holdout=0
+if [[ "${MANGALENS_READER_SOURCE:-.}" == "." ]]; then holdout=1; fi
 adb logcat -c
-adb shell am instrument -w -r -e build live -e liveEndpoint http://127.0.0.1:7879/v1/chat/completions -e liveModel "$MANGALENS_LIVE_MODEL" \
+adb shell am instrument -w -r -e build live -e liveHoldout "$holdout" -e liveEndpoint http://127.0.0.1:7879/v1/chat/completions -e liveModel "$MANGALENS_LIVE_MODEL" \
     -e class 'app.mangalens.reader.PublishedComicExperienceTest#realModelLettersThePublishedKoreanPanelOnTheDevice' \
     "$id.test/androidx.test.runner.AndroidJUnitRunner" | tee "$out/instrumentation.txt"
 adb logcat -d -s MangaLensUX:I > "$out/device.log"
@@ -57,3 +59,15 @@ grep -Eq '^OK \(1 test\)' "$out/instrumentation.txt"
 test -s "$out/live/live-contest.json"
 test -s "$out/live/live-panel.json"
 cat "$out/live/live-contest.json" "$out/live/live-panel.json"
+if [[ "$holdout" == 1 ]]; then cat "$out/live/live-potion.json"; fi
+
+if [[ -n "${MANGALENS_LIVE_COMPARE_ORDER:-}" ]]; then
+    adb shell am instrument -w -r -e build vision -e compareVision 1 \
+        -e class 'app.mangalens.reader.BufferedPageExperienceTest#anchoredVisionStreamsTwelveLinesOntoTheirOwnBalloons' \
+        "$id.test/androidx.test.runner.AndroidJUnitRunner" | tee "$out/anchored-instrumentation.txt"
+    adb exec-out run-as "$id" cat files/reader-ux/vision/anchored.csv > "$out/anchored.csv"
+    cat "$out/anchored.csv"
+    grep -Eq '^OK \(1 test\)' "$out/anchored-instrumentation.txt"
+    adb logcat -b events -d -s am_anr am_crash > "$out/process-events.txt"
+    if grep -E 'am_(anr|crash).*[, ]app\.mangalens([.:, ]|$)' "$out/process-events.txt"; then exit 1; fi
+fi

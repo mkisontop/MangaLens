@@ -112,8 +112,8 @@ class PublishedComicExperienceTest {
         assumeTrue("Run the live Android reader job with a model endpoint", !endpoint.isNullOrBlank())
         app.mangalens.translate.StoryContext.reset()
         try {
-            readScenes(scenes.filter { it.name == "contest" || it.name == "outfit" },
-                "live-published.csv", requireNotNull(endpoint))
+            val holdout = InstrumentationRegistry.getArguments().getString("liveHoldout") == "1"
+            readScenes(if (holdout) scenes else scenes.take(2), "live-published.csv", requireNotNull(endpoint))
         } finally {
             app.mangalens.translate.StoryContext.reset()
         }
@@ -319,7 +319,7 @@ class PublishedComicExperienceTest {
                             .put("first_display_ocr", firstObserved).put("first_visible_ms", if (firstScreen == null) completeVisibleMs else firstVisibleMs)
                             .put("complete_visible_ms", completeVisibleMs).put("streamed_first", firstScreen != null)
                             .put("art_pixels_checked", art.first).put("art_pixels_changed", art.second)
-                        val name = if (scene.name == "outfit") "live-panel.json" else "live-contest.json"
+                        val name = if (scene.name == "outfit") "live-panel.json" else "live-" + scene.name + ".json"
                         File(output, name).writeText(record.toString(2) + "\n")
                     }
                 } finally {
@@ -391,6 +391,16 @@ class PublishedComicExperienceTest {
                 Regex("""\bcarrot\b""").containsMatchIn(answer))
             assertTrue("An affectionate address should read naturally in English: " + answer,
                 !Regex("""\b(this|that|the) (cute|adorable|sweet|lovely) (thing|object)\b""").containsMatchIn(answer))
+            return
+        }
+        if (scene == "potion") {
+            assertTrue("The speaker wants to find out which potion the companion brought: " + answer,
+                Regex("""\b(which|what)\b""").containsMatchIn(answer) &&
+                    Regex("""\b(potion|elixir|medicine|concoction)s?\b""").containsMatchIn(answer) &&
+                    Regex("""\b(see|look|check|find out|wonder)\b""").containsMatchIn(answer) &&
+                    Regex("""\b(brought|bring|bringing|carried|packed|fetched|got)\b""").containsMatchIn(answer))
+            assertTrue("The speaker must not claim to have brought the potion: " + answer,
+                !Regex("""\b(?:i|we)(?:['’]ve| have| had)?\s+(?:brought|bring|carried|packed)\b""").containsMatchIn(answer))
             return
         }
         assertTrue("Clothing, hat and potion must all be present: " + answer,

@@ -119,6 +119,7 @@ object PageMarkup {
      *
      * @return base64 JPEG of the marked page, ready for the provider payload.
      */
+    @JvmOverloads
     fun encodeMarkedPage(
         bitmap: Bitmap,
         anchors: List<Bubble>,

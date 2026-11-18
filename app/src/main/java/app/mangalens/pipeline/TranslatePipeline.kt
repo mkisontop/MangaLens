@@ -593,11 +593,14 @@ class TranslatePipeline(
         if (useVision) {
             try {
                 val streamed = ArrayList<VisionLlmEngine.VisionBubble>()
+                // Each new model delta still resolves conflicts against the full page. Only
+                // the expensive source-pixel analysis for an unchanged anchored line is reused.
+                val anchoredCards = arrayOfNulls<RenderBubble>(bubbles.size)
                 val onBubble: (suspend (VisionLlmEngine.VisionBubble) -> Unit)? = onPartial?.let { emit ->
                     { vb ->
                         streamed.add(vb)
                         fromImage = toRender(
-                            bitmap, streamed.toList(), bubbles, anchorLines, ignoreTop, ignoreBottom, exclusions, detected,
+                            bitmap, streamed, bubbles, anchorLines, ignoreTop, ignoreBottom, exclusions, detected, anchoredCards,
                         )
                         emit(PageResult(fromImage, vision.label, null))
                     }
@@ -621,7 +624,7 @@ class TranslatePipeline(
                         pageKey?.let { visionCachePut(it, bubbles, complete, bitmap.width, bitmap.height) }
                     }
                     return PageResult(
-                        toRender(bitmap, complete, bubbles, anchorLines, ignoreTop, ignoreBottom, exclusions, detected),
+                        toRender(bitmap, complete, bubbles, anchorLines, ignoreTop, ignoreBottom, exclusions, detected, anchoredCards),
                         vision.label, null,
                         failure = gap.failure?.let(AiFailure::cause),
                         alert = gap.failure?.takeIf(AiFailure::keyRejected)?.let { vision.label + " rejected the API key — check it in MangaLens" },
@@ -1145,6 +1148,7 @@ class TranslatePipeline(
         ignoreBottom: Int,
         exclusions: List<Rect>,
         detected: List<Balloon>,
+        anchoredCards: Array<RenderBubble?>? = null,
     ): List<RenderBubble> {
         val w = bitmap.width
         val h = bitmap.height
@@ -1159,11 +1163,16 @@ class TranslatePipeline(
             if (!unclaimed.remove(anchor)) return@mapNotNull null
             takenBoxes.add(anchor.box)
             takenText.add(fingerprint(v.en))
-            renderBubble(
-                bitmap, anchor.box, v.en, v.src.ifBlank { anchor.text }, anchor.vertical,
-                if (v.sfx) BubbleKind.SFX else BubbleKind.DIALOGUE, detected,
-                ocrLines, cleanOcrText = anchor.text.isNotBlank(),
-            )
+            val original = v.src.ifBlank { anchor.text }
+            val kind = if (v.sfx) BubbleKind.SFX else BubbleKind.DIALOGUE
+            val previous = anchoredCards?.get(v.id)
+            if (previous != null && previous.kind == kind && previous.original == original && previous.translated == v.en) {
+                return@mapNotNull previous
+            }
+            val card = renderBubble(bitmap, anchor.box, v.en, original, anchor.vertical, kind, detected,
+                ocrLines, cleanOcrText = anchor.text.isNotBlank())
+            anchoredCards?.set(v.id, card)
+            card
         }
 
         // Extras — answers with no region id. The model's own box is the
