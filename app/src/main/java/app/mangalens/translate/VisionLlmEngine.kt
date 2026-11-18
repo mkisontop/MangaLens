@@ -358,11 +358,14 @@ class VisionLlmEngine(
 
         private val SECOND_PERSON = Regex("""\byou(?:r|rs|rself)?\b""", RegexOption.IGNORE_CASE)
         private val CONTINUED_ADDRESS = Regex("""^[\s.…“"']*you\b""", RegexOption.IGNORE_CASE)
+        private val FIRST_PERSON_OBJECT = Regex("""\b(?:me|my|mine|us|our|ours)\b""", RegexOption.IGNORE_CASE)
         private val SELF_IDENTIFICATION = Regex("""\b(?:i am|i['’]m|my name is|this is)\s+""", RegexOption.IGNORE_CASE)
 
-        /** A follow-up still describing "you" does not establish that the person just addressed is speaking. */
+        /** Preserve replies and questions. A continued observation about what "you" did for "me"
+         * or my belongings is weak evidence that the person just addressed took over the dialogue. */
         internal fun speakerAfterAddress(previousLine: String, english: String, speaker: String): String {
-            if (speaker.isBlank() || !CONTINUED_ADDRESS.containsMatchIn(english)) return speaker
+            if (speaker.isBlank() || '?' in english || '？' in english ||
+                !CONTINUED_ADDRESS.containsMatchIn(english) || !FIRST_PERSON_OBJECT.containsMatchIn(english)) return speaker
             val unattributed = previousLine.startsWith("— ")
             val previousSpeaker = if (unattributed) "" else previousLine.substringBefore(": ", "")
             if (previousSpeaker.equals(speaker, ignoreCase = true)) return speaker
@@ -437,15 +440,13 @@ Identify whom each detached Korean remark describes. Use the called name, gramma
         }
 
         private val SYSTEM_PROMPT = """
-Read the comic lettering from the image and numbered close-ups. Magenta badges match detected_regions. OCR and language hints can be wrong. Read vertical columns right to left, top to bottom. Keep each balloon’s lines together.
+Translate this comic image into concise printable English. Read the image and numbered close-ups. Magenta badges match detected_regions. OCR and language hints can be wrong. Keep each balloon’s lines together. Read vertical columns right to left, each top to bottom.
 
-Return compact JSON with "bubbles" first. For each numbered balloon write "id", "src" (the complete source), then "en" (natural, concise, printable English). Sound effects take "kind":"sfx" and short uppercase English. Put skips last as id and "kind":"skip" for English lettering, UI, watermarks or unreadable marks. For other comic text outside all outlines, use "box" [left,top,width,height] in thousandths of the page instead of id. Answer each region once.
+Return compact JSON, "bubbles" first. Write "id", "src" (all source words), then "en". Include "who" only if artwork and established cast, a label or self-identification independently identify the speaker. A called name identifies the listener. For a separate remark after a called name put "aside_to" ("listener", "object" or "unclear") after "src" and "listener_name" for a listener. Use "kind":"sfx" for effects. Answer each numbered region once, in reading order. Put unlettered, unreadable, English, interface or watermark regions last as "id" and "kind":"skip". For other comic lettering outside all outlines use "box" [left,top,width,height] in thousandths instead of an id.
 
-Read through the final verb. Preserve the actor, action, every object and modifier, ownership, negation, tone and the purpose of a place. Use the art, balloon tails, story and cast for omitted subjects. Leave uncertain subjects implicit. Add recipients only when established. Ellipses add no information. Respect names, glossary and meaningful honorifics. Translate a pet nickname by its ordinary meaning unless another name is established. Read a shared "run" in "part" order, then divide its sentence across the balloons.
+Read all the way to the end of the last line before translating. Preserve the action, its actor and objects, negation, emphasis, emotion and the speaker's register. Keep the source's meaningful modifiers. When it gives the purpose of a place or the type of an object, state that purpose or type in English. When several things are named before a final verb, translate the complete clause. An ellipsis is a pause and adds no information. Use the art, balloon tails, dialogue history and series memory to resolve omitted subjects. An object's owner may be different from the person acting. Look at the preceding exchange before choosing a pronoun. If the actor remains unclear, use natural subjectless English. Introduce a recipient only when the dialogue establishes one. Honour the series glossary, pronouns, established names and meaningful honorifics. Keep ordinary personal names in their usual spelling. For an affectionate nickname or pet name that is plainly an everyday noun, use its natural English meaning unless the series has established a different rendering. When a speaker calls a name and then praises their listener, write the compliment as direct speech to that person. A demonstrative points to a separate object only when the scene establishes one. Keep a following question separate from the aside. Translate the source language visible in the image, even when the language hint differs. Translate sound effects into short English effects in capitals. For matching "run" numbers, read the whole sentence in "part" order, then divide its English across those balloons. Preserve the original tone and intensity.
 
-A called name identifies a listener. For a separate remark after it, put "aside_to" ("listener", "object" or "unclear") immediately after "src" and give "listener_name" for the listener. Address praise directly and keep a following question separate. Include "who" only for a speaker independently identified by a label, introduction or known cast visible in the art.
-
-After the bubbles, include newly established name mappings in "new_terms" and evidenced cast details in "characters" with "pronoun", "register" or "note". Omit empty fields and sections. Output JSON only.
+After the bubbles, include newly established source-to-English names in "new_terms" and evidenced cast details in "characters" with "pronoun", "register" or "note". Omit empty fields and sections. JSON only.
 """.trim()
     }
 }

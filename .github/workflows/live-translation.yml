@@ -13,6 +13,8 @@ on:
       - "tools/setup-reader-device.sh"
       - "tools/observe-panel-model.py"
       - "tools/compare-live-panels.py"
+      - "tools/bundle-reader-tests.sh"
+      - "tools/fetch-reader-page.sh"
       - "app/src/main/java/app/mangalens/translate/**"
       - "app/src/main/java/app/mangalens/pipeline/**"
       - "app/src/main/java/app/mangalens/capture/**"
@@ -45,14 +47,9 @@ jobs:
           name: live-translations
           path: app/build/reader-live/translations.json
 
-  published-page-on-android:
-    strategy:
-      fail-fast: false
-      matrix:
-        order: [baseline-first, candidate-first]
-        instructions: [warm, cold]
+  reader-builds:
     runs-on: ubuntu-24.04
-    timeout-minutes: 50
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - uses: actions/checkout@v4
@@ -66,9 +63,37 @@ jobs:
           cache: gradle
       - name: Build the Android reader and fetch the credited comic
         run: |
-          ./gradlew -PreaderEmulator -PreaderPreview :app:assembleDebug :app:assembleDebugAndroidTest
-          (cd previous-reader && ./gradlew -PreaderEmulator -PreaderPreview :app:assembleDebug)
+          bash tools/bundle-reader-tests.sh build . -PreaderEmulator -PreaderPreview :app:assembleDebug :app:assembleDebugAndroidTest
+          bash tools/bundle-reader-tests.sh build previous-reader -PreaderEmulator -PreaderPreview :app:assembleDebug
           bash tools/fetch-reader-page.sh
+          bash tools/bundle-reader-tests.sh pack "$RUNNER_TEMP/reader-builds" \
+            previous-reader/app/build/outputs/apk/debug/app-debug.apk \
+            previous-reader/app/src/main/java/app/mangalens/translate/VisionLlmEngine.kt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: reader-test-builds
+          path: ${{ runner.temp }}/reader-builds
+          compression-level: 0
+          if-no-files-found: error
+
+  published-page-on-android:
+    needs: reader-builds
+    strategy:
+      fail-fast: false
+      matrix:
+        order: [candidate-first]
+        instructions: [cold]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 50
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: reader-test-builds
+          path: ${{ runner.temp }}/reader-builds
+      - name: Verify the exact Android builds and enable emulator acceleration
+        run: |
+          bash tools/bundle-reader-tests.sh unpack "$RUNNER_TEMP/reader-builds"
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
@@ -92,6 +117,7 @@ jobs:
           path: app/build/reader-live-device
 
   cold-page-comparison:
+    if: github.ref != 'refs/heads/perf/short-vision-instructions'
     needs: published-page-on-android
     runs-on: ubuntu-24.04
     steps:
