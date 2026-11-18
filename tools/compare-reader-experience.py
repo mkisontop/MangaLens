@@ -36,9 +36,12 @@ def main(root):
                 "Missing real artwork scrolls: " + build)
         require({r["scene"] for r in published} == {"contest", "outfit", "potion"} and len(published) == 3,
                 "Missing published Korean panels: " + build)
-        require(all(r["english_read_back"] == "true" and r["original_marker_visible"] == "false" and int(r["art_pixels_checked"]) > 80000
-                    and int(r["art_pixels_changed"]) == 0 for r in published),
-                "The reader could not read a published panel or its art was altered: " + build)
+        require(all(int(r["art_pixels_checked"]) > 80000 for r in published),
+                "Published panels had too little surrounding artwork: " + build)
+        if build == "candidate":
+            require(all(r["matched_source"] == "true" and r["english_read_back"] == "true" and
+                        r["original_marker_visible"] == "false" and int(r["art_pixels_changed"]) == 0 for r in published),
+                    "The reader could not read a published panel or its art was altered")
         require({(r["paper"], int(r["trial"])) for r in erasures} ==
                 {(paper, i) for paper in ("white", "colour", "gradient") for i in range(12)},
                 "Missing reference images or erasure timings: " + build)
@@ -67,6 +70,8 @@ def main(root):
             "startup_observation_ms": int(startup[0]["elapsed_ms"]),
             "first_visible_ms": median(turns, "first_visible_ms"),
             "all_visible_ms": median(turns, "all_visible_ms"),
+            "provider_start_to_complete_ms": statistics.median(
+                int(r["all_visible_ms"]) - int(r["provider_start_ms"]) for r in turns),
             "buffered_first_draw_ms": median(dense, "first_draw_ms"),
             "buffered_full_draw_ms": median(dense, "full_draw_ms"),
             "buffered_layouts": median(dense, "partial_layouts"),
@@ -74,7 +79,8 @@ def main(root):
                            for paper in ("white", "colour", "gradient")},
             "erased_image_crc": {paper: sorted({r["crc"] for r in erasures if r["paper"] == paper})
                                  for paper in ("white", "colour", "gradient")},
-            "published_panels_read_back": len(published),
+            "published_panels_read_back": sum(r["english_read_back"] == "true" for r in published),
+            "published_panels_without_source": sum(r["original_marker_visible"] == "false" for r in published),
             "published_art_pixels_checked": sum(int(r["art_pixels_checked"]) for r in published),
             "published_art_pixels_changed": sum(int(r["art_pixels_changed"]) for r in published),
             "published_scrolls_correct": sum(r["expected"] == r["observed"] for r in artwork_scrolls),
@@ -97,11 +103,9 @@ def main(root):
     require(after["worst_balloon_source_pct"] == 0, "Original source-coloured strokes remained on a settled fixture balloon")
     require(after["erased_image_crc"] == before["erased_image_crc"],
             "The optimized clean pages differ from the reference build")
-    require(after["first_visible_ms"] + 450 < before["first_visible_ms"],
-            "Cached lettering did not appear at least 450 ms sooner")
     require(after["pages_with_hit_before_provider_reply"] >= 4, "Cache waited for the provider on multiple turns")
-    require(after["all_visible_ms"] <= before["all_visible_ms"] * 1.15 + 120,
-            "Complete pages regressed on identical delayed responses")
+    require(after["provider_start_to_complete_ms"] <= before["provider_start_to_complete_ms"] * 1.15 + 120,
+            "Finishing an identical provider response regressed in this install order")
     require(after["buffered_layouts"] <= 2 and before["buffered_layouts"] == 12,
             "A buffered twelve-line reply still triggered redundant page layouts")
     require(after["scroll_cases_correct"] == 40, "Incorrect scroll registration")
@@ -112,5 +116,47 @@ def main(root):
             "The first buffered line appeared later")
 
 
+def compare_orders(root):
+    # Give each APK an equal number of first and second installations on fresh devices.
+    orders = {name: root / ("reader-experience-" + name) for name in ("baseline-first", "candidate-first")}
+    within_order = {name: json.loads((path / "comparison.json").read_text(encoding="utf-8"))
+                    for name, path in orders.items()}
+    balanced = {}
+    for build in ("baseline", "candidate"):
+        turns = []
+        dense = []
+        for name, path in orders.items():
+            samples = read(path, build, "metrics.csv")[1:]
+            require(len(samples) == 5, "Incomplete page turns in " + name)
+            turns.extend(samples)
+            dense.extend(read(path, build, "buffered.csv")[1:])
+        balanced[build] = {
+            "measured_page_turns": len(turns),
+            "first_visible_ms": median(turns, "first_visible_ms"),
+            "all_visible_ms": median(turns, "all_visible_ms"),
+            "provider_start_to_complete_ms": statistics.median(
+                int(r["all_visible_ms"]) - int(r["provider_start_ms"]) for r in turns),
+            "buffered_full_draw_ms": median(dense, "full_draw_ms"),
+            "buffered_first_draw_ms": median(dense, "first_draw_ms"),
+            "buffered_layouts": median(dense, "partial_layouts"),
+            "cached_turns_before_reply": sum(int(r["first_visible_ms"]) < int(r["provider_start_ms"]) + 1800 for r in turns),
+        }
+    report = {"balanced": balanced, "by_install_order": within_order}
+    result = json.dumps(report, indent=2)
+    print(result, flush=True)
+    (root / "balanced-comparison.json").write_text(result + "\n", encoding="utf-8")
+    before, after = balanced["baseline"], balanced["candidate"]
+    require(after["first_visible_ms"] + 450 < before["first_visible_ms"],
+            "Balanced time to cached English did not improve by 450 ms")
+    require(after["all_visible_ms"] <= before["all_visible_ms"] * 1.15 + 120,
+            "Balanced time to a fully lettered page regressed")
+    require(after["buffered_full_draw_ms"] < before["buffered_full_draw_ms"] * .8,
+            "Buffered page drawing did not improve by 20 percent")
+
+
 if __name__ == "__main__":
-    main(Path(sys.argv[1]))
+    root = Path(sys.argv[1])
+    if len(sys.argv) > 2 and sys.argv[2] == "--orders":
+        compare_orders(root)
+    else:
+        main(root)

@@ -119,3 +119,21 @@ jobs:
           name: reader-experience-${{ matrix.order }}
           path: app/build/reader-experience
           if-no-files-found: warn
+
+  reader-comparison:
+    needs: reader-experience
+    if: inputs.reader_order == '' || inputs.reader_order == 'both'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: reader-experience-*
+          path: app/build/reader-orders
+      - name: Compare equally weighted Android installation orders
+        run: python3 tools/compare-reader-experience.py app/build/reader-orders --orders
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: reader-comparison
+          path: app/build/reader-orders/balanced-comparison.json

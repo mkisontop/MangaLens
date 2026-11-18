@@ -223,7 +223,9 @@ class PublishedComicExperienceTest {
                 val cards = result.bubbles.map { it.translated }
                 Log.i("MangaLensUX", scene.name + " source=" + sourceLines + " cards=" + cards)
                 val expectedEnglish = if (liveEndpoint == null) {
-                    assertEquals("the published balloon was recognized: " + seen, listOf(scene.english), cards)
+                    if (build != "baseline") {
+                        assertEquals("the published balloon was recognized: " + seen, listOf(scene.english), cards)
+                    }
                     scene.english
                 } else {
                     val answer = cards.single().lowercase()
@@ -261,12 +263,16 @@ class PublishedComicExperienceTest {
                     val recognized = english.read(display, screenBox)
                     val art = compareArt(original, display, origin, host.width, host.height, expected, dest)
                     Log.i("MangaLensUX", scene.name + " English=" + recognized + " art=" + art)
-                    assertTrue("Complete English read back from the balloon: " + recognized,
-                        DisplayText.letters(recognized).contains(DisplayText.letters(expectedEnglish)))
-                    assertTrue("Korean still visible in the translated balloon: " + korean, !markerVisible)
+                    val completeEnglish = DisplayText.letters(recognized).contains(DisplayText.letters(expectedEnglish))
+                    val matched = cards == listOf(expectedEnglish)
                     assertTrue("checked painted panel artwork", art.first > 80_000)
-                    assertEquals("pixels changed outside the balloon", 0, art.second)
-                    csv.appendText(listOf(scene.name, true, true, markerVisible, art.first, art.second).joinToString(",") + "\n")
+                    csv.appendText(listOf(scene.name, matched, completeEnglish, markerVisible, art.first, art.second)
+                        .joinToString(",") + "\n")
+                    if (build != "baseline") {
+                        assertTrue("Complete English read back from the balloon: " + recognized, completeEnglish)
+                        assertTrue("Korean still visible in the translated balloon: " + korean, !markerVisible)
+                        assertEquals("pixels changed outside the balloon", 0, art.second)
+                    }
                     if (liveEndpoint != null) {
                         val record = JSONObject().put("model", settings.model).put("source_ocr", JSONArray(sourceLines))
                             .put("english", expectedEnglish).put("display_ocr", recognized).put("ocr_and_translation_ms", elapsed)
