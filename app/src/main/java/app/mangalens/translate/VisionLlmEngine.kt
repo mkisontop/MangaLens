@@ -154,6 +154,11 @@ class VisionLlmEngine(
                 .put("story_so_far", history)
                 .put("detected_regions", regions)
                 .put("closeups", JSONArray(crops.map { it.first }))
+                .apply {
+                    if (lang == SourceLang.JA) put("reading_note",
+                        "In Japanese, a sentence ending in ～ないで or ～ないでください asks the listener not to act. " +
+                            "Translate that request to the listener. Within a longer clause ～ないで can mean without doing.")
+                }
                 .toString()
 
             val stream = if (onBubble == null) null else BubbleStream()
@@ -166,7 +171,7 @@ class VisionLlmEngine(
                 onDelta = if (stream == null) null else { delta ->
                     for (o in stream.feed(delta)) {
                         val bubble = entry(o, anchors, streamed, upload, bitmap.width, bitmap.height) ?: continue
-                        if (!bubble.needsAddressReview()) {
+                        if (!bubble.needsAddressReview() && !bubble.reversesJapaneseRequest()) {
                             val ready = bubble.afterAddress(streamedPreviousLine)
                             onBubble!!(ready)
                             if (!ready.sfx) streamedPreviousLine = StoryContext.scriptLine(ready.en, ready.who)
@@ -185,6 +190,7 @@ class VisionLlmEngine(
             }
             val terms = reply.optJSONObject("new_terms") ?: JSONObject()
             reviewFormsOfAddress(out, stable, history, terms)
+            reviewJapaneseRequests(out, stable, history)
             var previousLine = previousDialogue.lastOrNull().orEmpty()
             for (i in out.indices) {
                 val bubble = out[i]
@@ -215,6 +221,35 @@ class VisionLlmEngine(
         !sfx && !refersToObject && DETACHED_KOREAN_ADDRESS.containsMatchIn(src) &&
             (OBJECT_PHRASE.containsMatchIn(en) || GENERIC_CALLOUT.containsMatchIn(en) || POINTED_REMARK.containsMatchIn(en))
 
+    private fun VisionBubble.reversesJapaneseRequest(): Boolean =
+        !sfx && FIRST_PERSON_REFUSAL.containsMatchIn(en) && JAPANESE_NEGATIVE_REQUEST.containsMatchIn(src)
+
+    /** Keep a request to the listener off screen if the image reply turned it into the speaker's own refusal. */
+    internal suspend fun reviewJapaneseRequests(bubbles: MutableList<VisionBubble>, stable: String, history: JSONArray) {
+        val pending = bubbles.indices.filterTo(mutableSetOf()) { bubbles[it].reversesJapaneseRequest() }
+        if (pending.isEmpty()) return
+        val items = JSONArray()
+        for (id in pending) {
+            val bubble = bubbles[id]
+            items.put(JSONObject().put("id", id).put("source", bubble.src).put("draft", bubble.en))
+        }
+        val request = JSONObject().put("review", "japanese_requests").put("story_so_far", history).put("items", items)
+        val edits = requestEdits(JAPANESE_REQUEST_REVIEW_PROMPT, stable, request) ?: JSONArray()
+        for (i in 0 until edits.length()) {
+            val edit = edits.optJSONObject(i) ?: continue
+            val id = edit.optInt("id", -1)
+            if (id !in pending) continue
+            val original = bubbles[id]
+            val english = JunkFilter.accept(original.src, edit.optString("en")) ?: continue
+            val corrected = original.copy(en = english)
+            if (corrected.reversesJapaneseRequest()) continue
+            bubbles[id] = corrected
+            pending.remove(id)
+        }
+        // The pipeline can fill any unresolved region through its ordinary text path.
+        for (id in pending.sortedDescending()) bubbles.removeAt(id)
+    }
+
     /** Re-read disputed addressees from the transcribed words in one small text request. */
     internal suspend fun reviewFormsOfAddress(
         bubbles: MutableList<VisionBubble>,
@@ -230,21 +265,8 @@ class VisionLlmEngine(
             items.put(JSONObject().put("id", id).put("source", b.src).put("speaker", b.who)
                 .put("rewrite", !ENGLISH_ASIDE.containsMatchIn(b.en) && !GENERIC_CALLOUT.containsMatchIn(b.en)))
         }
-        val request = JSONObject().put("review", "forms_of_address")
-            .put("story_so_far", history).put("items", items).toString()
-        // The image already supplied a usable line. An unavailable editor must not
-        // suppress it, and cancellation when the reader moves on still stops both calls.
-        val edits = try {
-            withTimeoutOrNull(30_000) {
-                val raw = LlmHttp.complete(settings, ADDRESS_REVIEW_PROMPT, stable, emptyList(), request,
-                    effort = "low", vision = false)
-                LlmHttp.extractJsonObject(raw).optJSONArray("items")
-            }
-        } catch (cancelled: CancellationException) {
-            throw cancelled
-        } catch (_: Exception) {
-            null
-        } ?: return
+        val request = JSONObject().put("review", "forms_of_address").put("story_so_far", history).put("items", items)
+        val edits = requestEdits(ADDRESS_REVIEW_PROMPT, stable, request) ?: return
         for (i in 0 until edits.length()) {
             val edit = edits.optJSONObject(i) ?: continue
             val id = edit.optInt("id", -1)
@@ -260,6 +282,18 @@ class VisionLlmEngine(
             val sourceName = DETACHED_KOREAN_ADDRESS.find(original.src)?.groupValues?.get(1)
             if (sourceName != null && validName(name) && en.contains(name, true)) terms.put(sourceName, name)
         }
+    }
+
+    private suspend fun requestEdits(instructions: String, stable: String, request: JSONObject): JSONArray? = try {
+        withTimeoutOrNull(30_000) {
+            val raw = LlmHttp.complete(settings, instructions, stable, emptyList(), request.toString(),
+                effort = "low", vision = false)
+            LlmHttp.extractJsonObject(raw).optJSONArray("items")
+        }
+    } catch (cancelled: CancellationException) {
+        throw cancelled
+    } catch (_: Exception) {
+        null
     }
 
     /**
@@ -345,6 +379,11 @@ class VisionLlmEngine(
             app.mangalens.ocr.Script.cjkCount(name) == 0 && name.lowercase() !in GENERIC_NAMES
 
         private val KOREAN_VOCATIVE = Regex("""^\s*[가-힣]{1,24}[아야]\s*[!,，！~～]""")
+        // An internal ないで may mean "without doing". Check only a completed opening sentence.
+        private val JAPANESE_NEGATIVE_REQUEST = Regex("""^[\s…「『“"']*[^。！？.!?]{1,120}ないで(?:ください|下さい|ね|よ|くれ)?[\s…」』]*(?:[。！？.!?]|$)""")
+        private val FIRST_PERSON_REFUSAL = Regex(
+            """^[\s…“"‘']*(?:i|we)\s*(?:['’](?:m|re)\s+not|(?:am|are|will|shall|do|did|can)\s+not|won['’]?t|don['’]?t|can['’]?t|cannot|never)\b""",
+            RegexOption.IGNORE_CASE)
 
         /** A name directly called by the speaker cannot identify the speaker of that line. */
         internal fun attributedSpeaker(source: String, english: String, speaker: String, listener: String): String {
@@ -413,6 +452,11 @@ class VisionLlmEngine(
         private val ADDRESS_REVIEW_PROMPT = """
 Identify whom each detached Korean remark describes. Use the called name, grammar, preceding dialogue and series glossary. Return JSON {"items":[...]} with numeric "id" and "referent" ("listener", "object" or "unclear"). For a listener also give "name", the called name in English. Render a transparent pet nickname by its meaning if the series has no established alternative. Only when the input says "rewrite":true, also give "en" containing the whole spoken translation. Otherwise omit "en". No explanation.
 """.trim()
+
+        private const val JAPANESE_REQUEST_REVIEW_PROMPT =
+            "Translate each complete Japanese source again. Its opening standalone negative request addresses the listener. " +
+                "Preserve who is asked to act, the action, timing, register and every following clause. " +
+                "Return only JSON with an items array. Each item has its numeric id and the full natural English line in en."
 
         /** Close-ups per page; each is a small upload and a few hundred tokens. */
         private const val MAX_CLOSEUPS = 6

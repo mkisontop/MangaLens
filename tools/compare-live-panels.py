@@ -92,7 +92,10 @@ def compare(root):
         directory = root / ("live-published-page-" + order) / "candidate"
         screen = json.loads((directory / "projection/projection-japanese.json").read_text())
         observed = [json.loads(row) for row in (directory / "projection-requests.jsonl").read_text().splitlines()]
-        assert any(r["images"] > 0 and r["completed"] for r in observed), "Capture must reach the real vision model"
+        pages = [r for r in observed if r["images"] > 0 and r["completed"]]
+        assert pages, "Capture must reach the real vision model"
+        sources = ["".join(c for c in a["src"] if c.isalpha()) for page in pages for a in page["answers"] if "src" in a]
+        assert "まだ帰らないで朝までここで待って" in sources, "The live capture must transcribe both Japanese requests"
         assert screen["art_pixels_changed"] == 0 and screen["residual_ink_pixels"] < .02 * screen["source_ink_pixels"]
         projection[order] = screen
     result = {"pairs": pairs, "summary": summary, "anchored_dense_pages": dense,

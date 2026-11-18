@@ -117,6 +117,19 @@ class LiveTranslationQualityTest {
             spacingAnswers.put(JSONObject().put("source", source).put("english", answer).put("passed", passing))
             report.writeText(results.toString(2) + "\n")
         }
+        val request = "まだ箱を開けないで。鍵が届くまで待って。"
+        val draft = "I'm not opening the box yet. Wait until the key arrives."
+        val reviewed = mutableListOf(VisionLlmEngine.VisionBubble(0, 0, 0, 0, 0, request, draft, false))
+        VisionLlmEngine(settings).reviewJapaneseRequests(reviewed, "{}", JSONArray())
+        val correction = reviewed.singleOrNull()?.en.orEmpty()
+        val lower = correction.lowercase().replace('’', '\'')
+        val directed = Regex("""\b(?:don't|do not|mustn't|must not|shouldn't|should not)\s+open\b""").containsMatchIn(lower)
+        val waited = words(lower, "wait|hold") && words(lower, "until|till|for") && words(lower, "key")
+        val repaired = directed && words(lower, "box") && words(lower, "yet|now") && waited
+        if (!repaired) failures += request + " => " + correction
+        results.put("japanese_listener_request", JSONObject().put("source", request).put("initial_english", draft)
+            .put("english", correction).put("passed", repaired))
+        report.writeText(results.toString(2) + "\n")
         assertTrue(failures.joinToString("\n"), failures.isEmpty())
     }
 }

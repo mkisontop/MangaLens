@@ -1,5 +1,9 @@
 package app.mangalens.translate
 
+import android.graphics.Bitmap
+import android.graphics.Color
+import android.graphics.Rect
+import app.mangalens.ocr.Bubble
 import app.mangalens.settings.AppSettings
 import app.mangalens.settings.LlmProvider
 import app.mangalens.settings.SourceLang
@@ -73,6 +77,63 @@ class TranslationServiceTest {
         assertEquals("The rider", VisionLlmEngine.attributedSpeaker(source, "Chestnut! You're so brave.", "The rider", "Chestnut"))
         assertEquals("Chestnut", VisionLlmEngine.attributedSpeaker("나는 밤톨이야.", "I'm Chestnut.", "Chestnut", ""))
         assertEquals("Mina", VisionLlmEngine.attributedSpeaker("미나가 왔어!", "Mina is here!", "Mina", ""))
+    }
+
+    @Test
+    fun anIncorrectJapaneseRequestCannotStreamOrEnterStoryMemory() = runBlocking {
+        val source = "まだ箱を開けないで。昼までここで待って。"
+        val wrong = "I'm not opening the box yet. Wait here until noon."
+        val correct = "Don't open the box yet. Wait here until noon."
+        val other = "The key is here."
+        val srv = serve { ex ->
+            val messages = JSONObject(ex.body).getJSONArray("messages")
+            if (messages.getJSONObject(1).optJSONArray("content") != null) {
+                val bubbles = JSONArray()
+                    .put(JSONObject().put("id", 0).put("src", source).put("en", wrong))
+                    .put(JSONObject().put("id", 1).put("src", "鍵はここにある。").put("en", other))
+                val delta = JSONObject().put("content", JSONObject().put("bubbles", bubbles).toString())
+                val event = JSONObject().put("choices", JSONArray().put(JSONObject().put("delta", delta)))
+                ex.respond(200, "data: $event\n\ndata: [DONE]\n\n", "text/event-stream")
+            } else {
+                val edits = JSONArray().put(JSONObject().put("id", 0).put("en", correct))
+                    .put(JSONObject().put("id", 1).put("en", "Unrequested change."))
+                val msg = JSONObject().put("content", JSONObject().put("items", edits).toString())
+                ex.respond(200, JSONObject().put("choices", JSONArray().put(JSONObject().put("message", msg))).toString())
+            }
+        }
+        val image = Bitmap.createBitmap(320, 280, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.WHITE) }
+        try {
+            val anchors = listOf(Bubble(source, Rect(12, 25, 295, 120), false),
+                Bubble("鍵はここにある。", Rect(24, 155, 278, 240), false))
+            val partials = mutableListOf<String>()
+            val final = VisionLlmEngine(custom(srv)).translatePage(image, SourceLang.JA, anchors) { partials += it.en }
+            assertEquals(listOf(other), partials)
+            assertEquals(listOf(correct, other), final.map { it.en })
+            assertEquals(listOf("— $correct", "— $other"), StoryContext.snapshot())
+            assertEquals(2, srv.exchanges.size)
+            val message = JSONObject(srv.exchanges.last().body).getJSONArray("messages").getJSONObject(1).getString("content")
+            val items = JSONObject(message.substringAfter("\n\n")).getJSONArray("items")
+            assertEquals(1, items.length())
+            assertEquals(source, items.getJSONObject(0).getString("source"))
+        } finally {
+            image.recycle()
+        }
+    }
+
+    @Test
+    fun anUnavailableJapaneseReviewFallsBackOnlyForTheReversedRequest() = runBlocking {
+        fun line(src: String, en: String) = VisionLlmEngine.VisionBubble(0, 0, 0, 0, 0, src, en, false)
+        val connective = line("あきらめないで探した。", "I don't give up and keep looking.")
+        val ownPlan = line("私はこの箱を開けない。", "I'm not opening this box.")
+        val faithful = line("走らないでください。", "Please don't run.")
+        val wrong = line("動かないでください。", "I won't move.")
+        val cards = mutableListOf(connective, wrong, ownPlan, faithful)
+        val srv = serve { it.respond(503, "unavailable") }
+        val reader = VisionLlmEngine(custom(srv))
+        reader.reviewJapaneseRequests(cards, "{}", JSONArray())
+        assertEquals(listOf(connective, ownPlan, faithful), cards)
+        reader.reviewJapaneseRequests(cards, "{}", JSONArray())
+        assertEquals(1, srv.exchanges.size)
     }
 
     @Test

@@ -189,12 +189,13 @@ class ReaderExperienceTest {
                             if (remaining * 100 < source * 2) {
                                 observed = latin.read(screen, area)
                                 val words = observed.lowercase().replace('’', '\'').replace(Regex("""\s+"""), " ")
-                                val negated = Regex("""(?:don'?t|do not|not to|can'?t|cannot|mustn'?t|shouldn'?t)\s+(?:go|leave|head|return)|not (?:going|leaving|returning)|no going home""").containsMatchIn(words)
-                                val wait = Regex("""\b(wait|stay|remain)\b""").containsMatchIn(words)
-                                val morning = Regex("""\b(morning|dawn|daybreak|sunrise)\b""").containsMatchIn(words)
-                                if (negated && wait && morning && "here" in words) {
+                                val waitHere = Regex("""\b(?:wait|stay|remain)\b[^.!?]*\bhere\b""").containsMatchIn(words)
+                                val untilMorning = Regex("""\b(?:until|till|'til|til)\s+(?:(?:the|tomorrow|early)\s+)*(?:morning|dawn|daybreak|sunrise)\b""").containsMatchIn(words)
+                                if (waitHere && untilMorning) {
                                     val elapsed = SystemClock.elapsedRealtime() - start
                                     save(screen, "projection-japanese-translated.png")
+                                    assertTrue("The speaker asks the listener to stay instead of describing their own plans. Read back " + observed,
+                                        isRequestToDelayDeparture(words))
                                     val button = requireNotNull(UiDevice.getInstance(inst).findObject(
                                         By.descContains("tap to pause"))) { "The capture control must be visible" }
                                     val buttonBounds = button.visibleBounds
@@ -222,7 +223,7 @@ class ReaderExperienceTest {
                 if (!complete) inst.uiAutomation.takeScreenshot()?.let { screen ->
                     try { save(screen, "projection-japanese-last.png") } finally { screen.recycle() }
                 }
-                assertTrue("The captured Japanese page must visibly retain the negation, place and time: " + observed, complete)
+                assertTrue("The captured page must ask the listener to wait here until morning. Read back " + observed, complete)
                 // The reader already saw the English. Keep the service alive while the
                 // model closes the response and the observer records the completed turn.
                 val completionUrl = URL(requireNotNull(args.getString("projectionCompletion")))
@@ -241,6 +242,22 @@ class ReaderExperienceTest {
                 before.recycle()
             }
         }
+    }
+
+    private fun isRequestToDelayDeparture(words: String): Boolean {
+        val request = Regex("""\b(?:(?:please\s+)?(?:don'?t|do not|never)|you\s+(?:mustn'?t|shouldn'?t|must not|should not|can'?t|cannot)|(?:ask|asking|beg|begging) you not to|(?:don'?t|do not) want you to)\s+(?:go|leave|head|return)\b""")
+        val ownPlan = Regex("""\b(?:i|we)\s*(?:'m|am|'re|are|'ll|will|won'?t|cannot|can'?t|don'?t|do not)\s+(?:not\s+)?(?:go|going|leave|leaving|return|returning|head|heading)\b""")
+        val timing = Regex("""\b(?:yet|now|for the moment)\b""")
+        return request.containsMatchIn(words) && timing.containsMatchIn(words) && !ownPlan.containsMatchIn(words)
+    }
+
+    @Test fun japaneseCaptureChecksWhoIsAskedToStay() {
+        assertTrue(isRequestToDelayDeparture("don't go home yet. wait here until morning."))
+        assertTrue(isRequestToDelayDeparture("please do not leave for now. wait here till dawn."))
+        assertTrue(isRequestToDelayDeparture("i don't want you to leave yet. stay here until morning."))
+        assertFalse(isRequestToDelayDeparture("i'm not going home yet. wait here until morning."))
+        assertFalse(isRequestToDelayDeparture("i don't go home yet. wait here until morning."))
+        assertFalse(isRequestToDelayDeparture("we can't return yet. stay here until dawn."))
     }
 
     private fun captureGrant(scenario: ActivityScenario<ComponentActivity>, key: String): Intent {
