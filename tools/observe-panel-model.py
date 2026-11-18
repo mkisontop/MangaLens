@@ -5,13 +5,87 @@ import http.client
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 from pathlib import Path
+import struct
 import sys
 import time
+from threading import Event
+
+
+def jpeg_size(data):
+    position = 2
+    while data[position:position + 1] == b"\xff":
+        marker = data[position + 1]
+        length = int.from_bytes(data[position + 2:position + 4], "big")
+        if marker in (0xc0, 0xc1, 0xc2):
+            height, width = struct.unpack_from(">HH", data, position + 5)
+            return [width, height]
+        if length < 2 or marker in (0xda, 0xd9):
+            break
+        position += length + 2
+    raise ValueError("Missing JPEG dimensions")
+
+
+class StreamTiming:
+    """Observe actual completion deltas. Keep-alives never count as content."""
+    def __init__(self, record, start):
+        self.record = record
+        self.start = start
+        self.pending = bytearray()
+        self.text = []
+        self.decoder = json.JSONDecoder()
+
+    def accept(self, chunk):
+        self.pending.extend(chunk)
+        while (end := self.pending.find(b"\n")) >= 0:
+            line = bytes(self.pending[:end]).rstrip(b"\r")
+            del self.pending[:end + 1]
+            if not line.startswith(b"data:"):
+                continue
+            data = line[5:].strip()
+            if not data or data == b"[DONE]":
+                continue
+            try:
+                event = json.loads(data)
+            except ValueError:
+                continue
+            if event.get("timings"):
+                self.record["provider_timings"] = event["timings"]
+            if event.get("usage"):
+                self.record["usage"] = event["usage"]
+            for choice in event.get("choices") or []:
+                value = (choice.get("delta") or {}).get("content")
+                if isinstance(value, str) and value:
+                    self.text.append(value)
+                    self.record.setdefault("first_content_ms", round(1000 * (time.monotonic() - self.start)))
+
+    def finish(self, wire):
+        answer = "".join(self.text)
+        if not answer:
+            try:
+                response = json.loads(wire)
+                answer = response["choices"][0]["message"]["content"]
+                if response.get("timings"):
+                    self.record["provider_timings"] = response["timings"]
+                if response.get("usage"):
+                    self.record["usage"] = response["usage"]
+            except (ValueError, KeyError, TypeError, IndexError):
+                return
+        left = answer.find("{")
+        if left < 0:
+            return
+        try:
+            parsed, _ = self.decoder.raw_decode(answer[left:])
+            self.record["answers"] = parsed.get("bubbles", parsed.get("items", []))
+        except (ValueError, AttributeError):
+            self.record["unparsed_content_chars"] = len(answer)
 
 
 class ModelObserver(BaseHTTPRequestHandler):
     def do_GET(self):
-        self.send_response(200 if self.path == "/health" else 404)
+        if self.path == "/completed-page":
+            self.send_response(200 if self.server.completed_page.wait(timeout=1) else 202)
+        else:
+            self.send_response(200 if self.path == "/health" else 404)
         self.end_headers()
 
     def do_POST(self):
@@ -26,7 +100,8 @@ class ModelObserver(BaseHTTPRequestHandler):
             for part in message["content"] if part.get("type") == "image_url"
         ]
         images = len(image_data)
-        image_bytes = sum(len(base64.b64decode(encoded)) for encoded in image_data)
+        decoded = [base64.b64decode(encoded) for encoded in image_data]
+        image_bytes = sum(map(len, decoded))
         regions = []
         history = []
         purpose = "page" if images else "unknown"
@@ -38,8 +113,8 @@ class ModelObserver(BaseHTTPRequestHandler):
                         payload = json.loads(message["content"].rsplit("\n\n", 1)[-1])
                     except (ValueError, TypeError):
                         continue
-                    if isinstance(payload, dict) and payload.get("review") == "forms_of_address":
-                        purpose = "forms_of_address"
+                    if isinstance(payload, dict) and payload.get("review") in ("forms_of_address", "japanese_requests", "dialogue_roles"):
+                        purpose = payload["review"]
                         review_items = len(payload.get("items", []))
                 continue
             for part in message["content"]:
@@ -51,7 +126,7 @@ class ModelObserver(BaseHTTPRequestHandler):
                     if isinstance(payload, dict):
                         regions.extend(payload.get("detected_regions", []))
                         history.extend(payload.get("story_so_far", []))
-        record = {"images": images, "image_bytes": image_bytes, "regions": len(regions), "story_entries": len(history),
+        record = {"images": images, "image_bytes": image_bytes, "image_dimensions": [jpeg_size(data) for data in decoded], "regions": len(regions), "story_entries": len(history),
                   "purpose": purpose, "review_items": review_items,
                   "ocr_hints": sum(bool(region.get("ocr_text_maybe_garbled")) for region in regions),
                   "completed": False}
@@ -65,6 +140,7 @@ class ModelObserver(BaseHTTPRequestHandler):
             self.send_header("Content-Type", reply.getheader("Content-Type", "application/json"))
             self.end_headers()
             response = bytearray()
+            timing = StreamTiming(record, start)
             while chunk := reply.read1(8192):
                 if len(response) < 524288:
                     response.extend(chunk[:524288 - len(response)])
@@ -72,30 +148,22 @@ class ModelObserver(BaseHTTPRequestHandler):
                     record["first_bytes_ms"] = round((time.monotonic() - start) * 1000)
                 self.wfile.write(chunk)
                 self.wfile.flush()
+                timing.accept(chunk)
             record["completed"] = 200 <= reply.status < 300
-            # This observer only runs with credited public panels. Keep the model's
-            # own words so the image reading and any text-only correction can be audited.
-            try:
-                wire = response.decode()
-                if "event-stream" in reply.getheader("Content-Type", "") or wire.lstrip().startswith("data:"):
-                    parts = (json.loads(line[6:]) for line in wire.splitlines()
-                             if line.startswith("data: ") and line[6:] != "[DONE]")
-                    answer = "".join(p["choices"][0]["delta"].get("content", "") for p in parts if p.get("choices"))
-                else:
-                    answer = json.loads(wire)["choices"][0]["message"]["content"]
-                body = json.loads(answer.strip().removeprefix("```json").removesuffix("```").strip())
-                record["answers"] = body.get("bubbles", body.get("items", []))
-            except (ValueError, KeyError, IndexError, TypeError, AttributeError):
-                pass
+            timing.finish(response)
         finally:
             backend.close()
             record["elapsed_ms"] = round((time.monotonic() - start) * 1000)
             with self.server.report.open("a", encoding="utf-8") as report:
                 report.write(json.dumps(record) + "\n")
+            if record["images"] and record["completed"]:
+                self.server.completed_page.set()
 
 
 if __name__ == "__main__":
-    with ThreadingHTTPServer(("127.0.0.1", 7879), ModelObserver) as server:
+    port = int(sys.argv[2]) if len(sys.argv) > 2 else 7879
+    with ThreadingHTTPServer(("127.0.0.1", port), ModelObserver) as server:
+        server.completed_page = Event()
         server.report = Path(sys.argv[1])
         server.report.write_text("", encoding="utf-8")
         server.serve_forever()

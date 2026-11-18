@@ -112,8 +112,8 @@ class PublishedComicExperienceTest {
         assumeTrue("Run the live Android reader job with a model endpoint", !endpoint.isNullOrBlank())
         app.mangalens.translate.StoryContext.reset()
         try {
-            readScenes(scenes.filter { it.name == "contest" || it.name == "outfit" },
-                "live-published.csv", requireNotNull(endpoint))
+            val holdout = InstrumentationRegistry.getArguments().getString("liveHoldout") == "1"
+            readScenes(if (holdout) scenes else scenes.take(2), "live-published.csv", requireNotNull(endpoint))
         } finally {
             app.mangalens.translate.StoryContext.reset()
         }
@@ -176,11 +176,13 @@ class PublishedComicExperienceTest {
             host.getLocationOnScreen(origin)
         }
         inst.waitForIdleSync()
-        SystemClock.sleep(120)
-        val original = requireNotNull(inst.uiAutomation.takeScreenshot())
+        val original = originalPageScreenshot(frame, origin, expected)
         val screenBox = Rect(expected).apply { offset(origin[0], origin[1]) }
         saveBalloonComparison(scene.name, original, original, screenBox)
         val ocr = OcrEngine()
+        var firstScreen: Bitmap? = null
+        var firstEnglish: String? = null
+        var firstVisibleMs = 0L
         try {
             MockWebServer().use { server ->
                 server.start(InetAddress.getByName("127.0.0.1"), 0)
@@ -222,7 +224,16 @@ class PublishedComicExperienceTest {
                     // be located correctly even when individual OCR syllables are wrong.
                     targetText += analysis.bubbles.filter { expected.contains(it.box.centerX(), it.box.centerY()) }
                         .map { it.text.filter(Char::isLetter) }.filter { it.isNotBlank() }
-                    analysis.bubbles.map { it.text } to pipeline.translate(analysis, settings, onPartial = {})
+                    Log.i("MangaLensUX", scene.name + " detected line bounds=" + analysis.anchorLines.map { it.box })
+                    val result = pipeline.translate(analysis, settings, onPartial = { progress ->
+                        if (liveEndpoint != null && firstScreen == null && progress.bubbles.size == 1) {
+                            inst.runOnMainSync { overlay.setBubbles(progress.bubbles, frame) }
+                            firstScreen = settledBalloonScreenshot(original, screenBox, true)
+                            firstVisibleMs = SystemClock.elapsedRealtime() - start
+                            firstEnglish = progress.bubbles.single().translated
+                        }
+                    })
+                    analysis.bubbles.map { it.text } to result
                 }
                 val elapsed = SystemClock.elapsedRealtime() - start
                 val cards = result.bubbles.map { it.translated }
@@ -241,11 +252,23 @@ class PublishedComicExperienceTest {
                 } else {
                     assertEquals("The image-reading request must complete", null, result.failure)
                     assertPanelMeaning(scene.name, cards.single())
+                    val transcript = when (scene.name) {
+                        "contest" -> "당근아 이런 귀여운 것 나를 대회 장소까지 데려다주는 거야"
+                        "outfit" -> "내 옷이랑 모자랑 포션까지 가지고 왔네"
+                        else -> "어떤 포션을 가져왔는지 볼까"
+                    }
+                    fun syllables(text: String) = text.filter { it in '가'..'힣' }
+                    assertEquals("Read every source syllable directly from its panel",
+                        syllables(transcript), syllables(result.bubbles.single().original))
+                    val story = app.mangalens.translate.StoryContext.snapshot().last()
+                    assertTrue("The listener must not be stored as the speaker: " + story,
+                        !story.substringBefore(": ", "").contains("Carrot", ignoreCase = true))
                     cards.single()
                 }
                 inst.runOnMainSync { overlay.setBubbles(result.bubbles, frame) }
                 inst.waitForIdleSync()
                 val display = settledBalloonScreenshot(original, screenBox, cards.isNotEmpty())
+                val completeVisibleMs = SystemClock.elapsedRealtime() - start
                 try {
                     for ((name, ref) in listOf("original" to original, "translated" to display)) {
                         File(output, "published-" + scene.name + "-" + name + ".png").outputStream().use {
@@ -287,11 +310,27 @@ class PublishedComicExperienceTest {
                         assertEquals("pixels changed outside the balloon", 0, art.second)
                     }
                     if (liveEndpoint != null) {
+                        val first = firstScreen ?: display
+                        val firstObserved = listOf(1f, .75f, 1.5f).asSequence()
+                            .map { english.read(first, screenBox, it) }
+                            .firstOrNull { DisplayText.letters(it).contains(target) }
+                        assertEquals("The earliest visible translation must preserve the final dialogue",
+                            expectedEnglish, firstEnglish ?: expectedEnglish)
+                        assertTrue("The OS screenshot of the first translation must contain the whole line",
+                            firstObserved != null)
+                        assertEquals("The first translation must also stay inside its balloon", 0,
+                            compareArt(original, first, origin, host.width, host.height, expected, dest).second)
+                        File(output, "published-" + scene.name + "-first.png").outputStream().use {
+                            first.compress(Bitmap.CompressFormat.PNG, 100, it)
+                        }
                         val record = JSONObject().put("model", settings.model).put("source_ocr", JSONArray(sourceLines))
                             .put("image_transcription", result.bubbles.single().original).put("english", expectedEnglish)
                             .put("display_ocr", recognized).put("ocr_and_translation_ms", elapsed)
+                            .put("story_line", app.mangalens.translate.StoryContext.snapshot().last())
+                            .put("first_display_ocr", firstObserved).put("first_visible_ms", if (firstScreen == null) completeVisibleMs else firstVisibleMs)
+                            .put("complete_visible_ms", completeVisibleMs).put("streamed_first", firstScreen != null)
                             .put("art_pixels_checked", art.first).put("art_pixels_changed", art.second)
-                        val name = if (scene.name == "outfit") "live-panel.json" else "live-contest.json"
+                        val name = if (scene.name == "outfit") "live-panel.json" else "live-" + scene.name + ".json"
                         File(output, name).writeText(record.toString(2) + "\n")
                     }
                 } finally {
@@ -300,9 +339,46 @@ class PublishedComicExperienceTest {
             }
         } finally {
             inst.runOnMainSync { host.removeAllViews() }
+            firstScreen?.recycle()
             original.recycle()
             ocr.close()
             frame.recycle()
+        }
+    }
+
+    /** A busy emulator can still be showing the activity's splash after the UI thread is idle. */
+    private fun originalPageScreenshot(frame: Bitmap, origin: IntArray, bubble: Rect): Bitmap {
+        val w = frame.width
+        val h = frame.height
+        val source = IntArray(w * h)
+        val actual = IntArray(source.size)
+        frame.getPixels(source, 0, w, 0, 0, w, h)
+        val deadline = SystemClock.elapsedRealtime() + 10000
+        while (true) {
+            val shot = requireNotNull(inst.uiAutomation.takeScreenshot())
+            shot.getPixels(actual, 0, w, origin[0], origin[1], w, h)
+            var mismatched = 0
+            var sampled = 0
+            var bubbleMismatched = 0
+            var bubbleSamples = 0
+            for (y in 0 until h step 6) for (x in 0 until w step 6) {
+                val index = y * w + x
+                val changed = (0..16 step 8).any { shift ->
+                    abs((source[index] ushr shift and 255) - (actual[index] ushr shift and 255)) > 8
+                }
+                sampled++
+                if (changed) mismatched++
+                if (bubble.contains(x, y)) {
+                    bubbleSamples++
+                    if (changed) bubbleMismatched++
+                }
+            }
+            if (mismatched * 200 <= sampled && bubbleSamples > 0 && bubbleMismatched * 200 <= bubbleSamples) return shot
+            shot.recycle()
+            check(SystemClock.elapsedRealtime() < deadline) {
+                "Source panel did not reach the device. Changed samples $mismatched of $sampled, balloon $bubbleMismatched of $bubbleSamples"
+            }
+            SystemClock.sleep(60)
         }
     }
 
@@ -352,7 +428,7 @@ class PublishedComicExperienceTest {
         val answer = translated.lowercase()
         if (scene == "contest") {
             assertTrue("The speaker asks their companion about taking them to the contest: " + answer,
-                Regex("""\b(contest|competition|tournament|venue)\b""").containsMatchIn(answer) &&
+                Regex("""\b(contest|competition|tournament|championship|match)\b""").containsMatchIn(answer) &&
                     Regex("""\b(take|takes|taking|bring|bringing|escort|escorting|carry|carrying|lead|leading|transport|driving|drop|dropping)\b""").containsMatchIn(answer) &&
                     Regex("""\bme\b""").containsMatchIn(answer))
             assertTrue("The affectionate aside should not become a means of travel: " + answer,
@@ -362,6 +438,16 @@ class PublishedComicExperienceTest {
                 Regex("""\bcarrot\b""").containsMatchIn(answer))
             assertTrue("An affectionate address should read naturally in English: " + answer,
                 !Regex("""\b(this|that|the) (cute|adorable|sweet|lovely) (thing|object)\b""").containsMatchIn(answer))
+            return
+        }
+        if (scene == "potion") {
+            assertTrue("The speaker wants to find out which potion the companion brought: " + answer,
+                Regex("""\b(which|what)\b""").containsMatchIn(answer) &&
+                    Regex("""\b(potion|elixir|medicine|concoction)s?\b""").containsMatchIn(answer) &&
+                    Regex("""\b(see|look|check|find out|wonder)\b""").containsMatchIn(answer) &&
+                    Regex("""\b(brought|bring|bringing|carried|packed|fetched|got)\b""").containsMatchIn(answer))
+            assertTrue("The speaker must not claim to have brought the potion: " + answer,
+                !Regex("""\b(?:i|we)(?:['’]ve| have| had)?\s+(?:brought|bring|carried|packed)\b""").containsMatchIn(answer))
             return
         }
         assertTrue("Clothing, hat and potion must all be present: " + answer,

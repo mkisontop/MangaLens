@@ -40,7 +40,9 @@ import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
+import java.net.HttpURLConnection
 import java.net.InetAddress
+import java.net.URL
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
@@ -125,6 +127,148 @@ class ReaderExperienceTest {
                 }
             }
         }
+    }
+
+    @Test fun liveScreenSharingReplacesUnseenJapaneseDialogue() {
+        val args = InstrumentationRegistry.getArguments()
+        val endpoint = args.getString("projectionEndpoint")
+        assumeTrue("Requires the private vision provider and an Android screen grant", endpoint != null)
+        runBlocking {
+            SettingsRepository(app).apply {
+                setProvider(LlmProvider.CUSTOM)
+                setCustomUrl(requireNotNull(endpoint))
+                setModel(LlmProvider.CUSTOM, requireNotNull(args.getString("liveModel")))
+                setSourceLang(SourceLang.JA)
+                setAiVision(AiVisionMode.ALWAYS)
+                setMode(CaptureMode.AUTO)
+                setDataSaver(true)
+                setAutoScrollButton(false)
+                setNoGhosts(true)
+            }
+        }
+        ActivityScenario.launch(ComponentActivity::class.java).use { scenario ->
+            lateinit var comic: JapaneseDialoguePage
+            scenario.onActivity { activity ->
+                activity.window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_FULLSCREEN or
+                    View.SYSTEM_UI_FLAG_HIDE_NAVIGATION or View.SYSTEM_UI_FLAG_IMMERSIVE_STICKY
+                comic = JapaneseDialoguePage(activity)
+                activity.setContentView(comic)
+            }
+            inst.waitForIdleSync()
+            val origin = IntArray(2)
+            inst.runOnMainSync { comic.getLocationOnScreen(origin) }
+            val area = comic.letteringArea().apply { offset(origin[0], origin[1]) }
+            var sourceFrame: Bitmap? = null
+            await("original Japanese lettering on screen", 6000) {
+                val shot = inst.uiAutomation.takeScreenshot() ?: return@await false
+                if (comic.sourcePixels(shot, area) > 500) {
+                    sourceFrame = shot
+                    true
+                } else {
+                    shot.recycle()
+                    false
+                }
+            }
+            val before = requireNotNull(sourceFrame)
+            val service = Intent(app, ScreenCaptureService::class.java)
+            try {
+                save(before, "projection-japanese-source.png")
+                val source = comic.sourcePixels(before, area)
+                assertTrue("The original screen contains colored Japanese strokes", source > 500)
+                val grant = captureGrant(scenario, "live-japanese-projection")
+                val start = SystemClock.elapsedRealtime()
+                ContextCompat.startForegroundService(app, grant)
+                await("real Android screen sharing", 15000) { ScreenCaptureService.running.value }
+                val device = UiDevice.getInstance(inst)
+                val selector = By.descContains("tap to pause")
+                val initialButton = requireNotNull(device.wait(Until.findObject(selector), 10000)).visibleBounds
+                // Move the real control into the upper margin. Its transient message shares the
+                // same row and can disappear between capturing a frame and reading its English.
+                val marginY = origin[1] + (comic.height * .09f).toInt()
+                assertTrue("A reader can drag the capture control", device.swipe(initialButton.centerX(),
+                    initialButton.centerY(), initialButton.centerX(), marginY, 20))
+                await("floating control above the painted panel", 6000) {
+                    val bounds = device.findObject(selector)?.visibleBounds
+                    bounds != null && bounds.bottom < origin[1] + comic.height * .22f
+                }
+                var observed = ""
+                var complete = false
+                DisplayText().use { latin ->
+                    while (!complete && SystemClock.elapsedRealtime() - start < 235000) {
+                        val screen = requireNotNull(inst.uiAutomation.takeScreenshot())
+                        try {
+                            val remaining = comic.sourcePixels(screen, area)
+                            if (remaining * 100 < source * 2) {
+                                observed = latin.read(screen, area)
+                                val words = observed.lowercase().replace('’', '\'').replace(Regex("""\s+"""), " ")
+                                val waitHere = Regex("""\b(?:wait|stay|remain)\b[^.!?]*\bhere\b""").containsMatchIn(words)
+                                val untilMorning = Regex("""\b(?:until|till|'til|til)\s+(?:(?:the|tomorrow|early)\s+)*(?:morning|dawn|daybreak|sunrise)\b""").containsMatchIn(words)
+                                if (waitHere && untilMorning) {
+                                    val elapsed = SystemClock.elapsedRealtime() - start
+                                    save(screen, "projection-japanese-translated.png")
+                                    assertTrue("The speaker asks the listener to stay instead of describing their own plans. Read back " + observed,
+                                        isRequestToDelayDeparture(words))
+                                    val button = requireNotNull(device.findObject(selector)) { "The capture control must be visible" }
+                                    val buttonBounds = button.visibleBounds
+                                    val row = button.parent?.visibleBounds?.takeIf {
+                                        it.contains(buttonBounds) && it.height() <= buttonBounds.height() * 3 / 2
+                                    } ?: buttonBounds
+                                    val controls = Rect(row).apply { inset(-1, -1) }
+                                    val art = comic.checkArt(before, screen, origin, controls)
+                                    assertTrue("Check over three hundred thousand scene pixels", art.first > 300000)
+                                    assertEquals("Visible art beyond the balloon must preserve its veiled colors", 0, art.second)
+                                    val result = JSONObject().put("display_ocr", observed).put("visible_ms", elapsed)
+                                        .put("source_ink_pixels", source).put("residual_ink_pixels", remaining)
+                                        .put("control_bounds", controls.toShortString())
+                                        .put("art_pixels_checked", art.first).put("art_pixels_changed", art.second)
+                                    File(output, "projection-japanese.json").writeText(result.toString(2) + "\n")
+                                    complete = true
+                                }
+                            }
+                        } finally {
+                            screen.recycle()
+                        }
+                        if (!complete) SystemClock.sleep(450)
+                    }
+                }
+                if (!complete) inst.uiAutomation.takeScreenshot()?.let { screen ->
+                    try { save(screen, "projection-japanese-last.png") } finally { screen.recycle() }
+                }
+                assertTrue("The captured page must ask the listener to wait here until morning. Read back " + observed, complete)
+                // The reader already saw the English. Keep the service alive while the
+                // model closes the response and the observer records the completed turn.
+                val completionUrl = URL(requireNotNull(args.getString("projectionCompletion")))
+                await("model finished the screen-sharing response", 90000) {
+                    val request = completionUrl.openConnection() as HttpURLConnection
+                    try {
+                        request.connectTimeout = 2000
+                        request.readTimeout = 2000
+                        request.responseCode == 200
+                    } finally {
+                        request.disconnect()
+                    }
+                }
+            } finally {
+                app.stopService(service)
+                before.recycle()
+            }
+        }
+    }
+
+    private fun isRequestToDelayDeparture(words: String): Boolean {
+        val request = Regex("""\b(?:(?:please\s+)?(?:don'?t|do not|never)|you\s+(?:mustn'?t|shouldn'?t|must not|should not|can'?t|cannot)|(?:ask|asking|beg|begging) you not to|(?:don'?t|do not) want you to)\s+(?:go|leave|head|return)\b""")
+        val ownPlan = Regex("""\b(?:i|we)\s*(?:'m|am|'re|are|'ll|will|won'?t|cannot|can'?t|don'?t|do not)\s+(?:not\s+)?(?:go|going|leave|leaving|return|returning|head|heading)\b""")
+        val timing = Regex("""\b(?:yet|now|for the moment)\b""")
+        return request.containsMatchIn(words) && timing.containsMatchIn(words) && !ownPlan.containsMatchIn(words)
+    }
+
+    @Test fun japaneseCaptureChecksWhoIsAskedToStay() {
+        assertTrue(isRequestToDelayDeparture("don't go home yet. wait here until morning."))
+        assertTrue(isRequestToDelayDeparture("please do not leave for now. wait here till dawn."))
+        assertTrue(isRequestToDelayDeparture("i don't want you to leave yet. stay here until morning."))
+        assertFalse(isRequestToDelayDeparture("i'm not going home yet. wait here until morning."))
+        assertFalse(isRequestToDelayDeparture("i don't go home yet. wait here until morning."))
+        assertFalse(isRequestToDelayDeparture("we can't return yet. stay here until dawn."))
     }
 
     private fun captureGrant(scenario: ActivityScenario<ComponentActivity>, key: String): Intent {

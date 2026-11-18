@@ -8,6 +8,9 @@ import android.graphics.Rect
 import android.graphics.RectF
 import android.util.Base64
 import app.mangalens.ocr.Bubble
+import app.mangalens.ocr.BubbleKind
+import app.mangalens.ocr.OcrLine
+import kotlin.math.ceil
 import java.io.ByteArrayOutputStream
 import kotlin.math.max
 import kotlin.math.roundToInt
@@ -36,6 +39,29 @@ import kotlin.math.roundToInt
 object PageMarkup {
 
     internal fun maxPageDimension(dataSaver: Boolean): Int = if (dataSaver) 1000 else 1400
+
+    /**
+     * Zoomed horizontal panels can carry phone-sized lettering in an enlarged screenshot.
+     * Retain at least 28 input pixels per detected line, together with the entire scene.
+     * With just one OCR line, a missed neighboring line could be finer. Keep the usual size
+     * for those panels, smaller print, other detected lines, vertical text and full pages.
+     */
+    internal fun zoomPageDimension(
+        upload: Rect, cropped: Boolean, anchors: List<Bubble>, readableId: Int?,
+        lines: List<OcrLine>, dataSaver: Boolean,
+    ): Int {
+        val normal = maxPageDimension(dataSaver)
+        val main = readableId?.let { anchors.getOrNull(it) } ?: return normal
+        if (!dataSaver || !cropped || upload.width() <= upload.height() || main.vertical ||
+            main.kind != BubbleKind.DIALOGUE || lines.size < 2 || anchors.size > 4) return normal
+        if (lines.any { it.vertical || it.box.isEmpty || !main.box.contains(it.box.centerX(), it.box.centerY()) }) return normal
+        val longSide = max(upload.width(), upload.height())
+        val smallest = lines.minOf { it.box.height() }
+        val preserveLettering = ceil(28.0 * longSide / smallest).toInt()
+        // A second detected region may contain visual evidence about the speaker.
+        val sceneFloor = if (anchors.size > 1) 576 else 512
+        return max(sceneFloor, preserveLettering).coerceAtMost(normal)
+    }
 
     /**
      * Wide comic panels often sit between two large, identical dark margins.
@@ -96,12 +122,13 @@ object PageMarkup {
      *
      * @return base64 JPEG of the marked page, ready for the provider payload.
      */
+    @JvmOverloads
     fun encodeMarkedPage(
         bitmap: Bitmap,
         anchors: List<Bubble>,
         dataSaver: Boolean,
+        maxDim: Int = maxPageDimension(dataSaver),
     ): String {
-        val maxDim = maxPageDimension(dataSaver)
         val quality = if (dataSaver) 55 else 72
         val scale = (maxDim.toFloat() / max(bitmap.width, bitmap.height)).coerceAtMost(1f)
 

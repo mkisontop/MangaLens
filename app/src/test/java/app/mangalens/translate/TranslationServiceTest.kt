@@ -1,5 +1,9 @@
 package app.mangalens.translate
 
+import android.graphics.Bitmap
+import android.graphics.Color
+import android.graphics.Rect
+import app.mangalens.ocr.Bubble
 import app.mangalens.settings.AppSettings
 import app.mangalens.settings.LlmProvider
 import app.mangalens.settings.SourceLang
@@ -50,6 +54,158 @@ class TranslationServiceTest {
 
     private fun custom(srv: FakeHttpServer) =
         AppSettings(provider = LlmProvider.CUSTOM, model = "m", customUrl = srv.base + "chat", apiKey = "k")
+
+    @Test
+    fun aContinuingAddressLeavesAnUnconfirmedSpeakerUnnamed() {
+        val prior = "Rider: Chestnut! You're carrying me to the village?"
+        assertEquals("", VisionLlmEngine.speakerAfterAddress(prior, "You brought my bag, too.", "Chestnut"))
+        assertEquals("Rider", VisionLlmEngine.speakerAfterAddress(prior, "You brought my bag, too.", "Rider"))
+        assertEquals("Chestnut", VisionLlmEngine.speakerAfterAddress(prior, "Yes, I'm taking you home.", "Chestnut"))
+        assertEquals("Chestnut", VisionLlmEngine.speakerAfterAddress(prior, "You called. I'm Chestnut.", "Chestnut"))
+        assertEquals("Chestnut", VisionLlmEngine.speakerAfterAddress(prior, "You want me to carry that bag?", "Chestnut"))
+        assertEquals("Chestnut", VisionLlmEngine.speakerAfterAddress(prior, "You can carry your own bag.", "Chestnut"))
+        assertEquals("Chestnut", VisionLlmEngine.speakerAfterAddress(prior, "You called me. My name is Chestnut.", "Chestnut"))
+        assertEquals("Mina", VisionLlmEngine.speakerAfterAddress("— Wait here.", "You need the map.", "Mina"))
+        assertEquals("Chestnut", VisionLlmEngine.speakerAfterAddress("— Chestnut is ready!", "You brought a bag.", "Chestnut"))
+    }
+
+    @Test
+    fun aDirectlyCalledNameCannotBecomeTheSpeakerInStoryMemory() {
+        val source = "밤톨아! 이런 용감한 아이~"
+        assertEquals("", VisionLlmEngine.attributedSpeaker(source, "Chestnut! You're so brave.", "chestnut", ""))
+        assertEquals("", VisionLlmEngine.attributedSpeaker(source, "Hey, you brave little one!", "Chestnut", "Chestnut"))
+        assertEquals("The rider", VisionLlmEngine.attributedSpeaker(source, "Chestnut! You're so brave.", "The rider", "Chestnut"))
+        assertEquals("Chestnut", VisionLlmEngine.attributedSpeaker("나는 밤톨이야.", "I'm Chestnut.", "Chestnut", ""))
+        assertEquals("Mina", VisionLlmEngine.attributedSpeaker("미나가 왔어!", "Mina is here!", "Mina", ""))
+    }
+
+    @Test
+    fun anIncorrectJapaneseRequestCannotStreamOrEnterStoryMemory() = runBlocking {
+        val source = "まだ箱を開けないで。昼までここで待って。"
+        val wrong = "I'm not opening the box yet. Wait here until noon."
+        val correct = "Don't open the box yet. Wait here until noon."
+        val other = "The key is here."
+        val srv = serve { ex ->
+            val messages = JSONObject(ex.body).getJSONArray("messages")
+            if (messages.getJSONObject(1).optJSONArray("content") != null) {
+                val bubbles = JSONArray()
+                    .put(JSONObject().put("id", 0).put("src", source).put("en", wrong))
+                    .put(JSONObject().put("id", 1).put("src", "鍵はここにある。").put("en", other))
+                val delta = JSONObject().put("content", JSONObject().put("bubbles", bubbles).toString())
+                val event = JSONObject().put("choices", JSONArray().put(JSONObject().put("delta", delta)))
+                ex.respond(200, "data: $event\n\ndata: [DONE]\n\n", "text/event-stream")
+            } else {
+                val edits = JSONArray().put(JSONObject().put("id", 0).put("en", correct))
+                    .put(JSONObject().put("id", 1).put("en", "Unrequested change."))
+                val msg = JSONObject().put("content", JSONObject().put("items", edits).toString())
+                ex.respond(200, JSONObject().put("choices", JSONArray().put(JSONObject().put("message", msg))).toString())
+            }
+        }
+        val image = Bitmap.createBitmap(320, 280, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.WHITE) }
+        try {
+            val anchors = listOf(Bubble(source, Rect(12, 25, 295, 120), false),
+                Bubble("鍵はここにある。", Rect(24, 155, 278, 240), false))
+            val partials = mutableListOf<String>()
+            val final = VisionLlmEngine(custom(srv)).translatePage(image, SourceLang.JA, anchors) { partials += it.en }
+            assertEquals(listOf(other), partials)
+            assertEquals(listOf(correct, other), final.map { it.en })
+            assertEquals(listOf("— $correct", "— $other"), StoryContext.snapshot())
+            assertEquals(2, srv.exchanges.size)
+            val message = JSONObject(srv.exchanges.last().body).getJSONArray("messages").getJSONObject(1).getString("content")
+            val items = JSONObject(message.substringAfter("\n\n")).getJSONArray("items")
+            assertEquals(1, items.length())
+            assertEquals(source, items.getJSONObject(0).getString("source"))
+        } finally {
+            image.recycle()
+        }
+    }
+
+    @Test
+    fun anUnavailableJapaneseReviewFallsBackOnlyForTheReversedRequest() = runBlocking {
+        fun line(src: String, en: String) = VisionLlmEngine.VisionBubble(0, 0, 0, 0, 0, src, en, false)
+        val connective = line("あきらめないで探した。", "I don't give up and keep looking.")
+        val ownPlan = line("私はこの箱を開けない。", "I'm not opening this box.")
+        val faithful = line("走らないでください。", "Please don't run.")
+        val wrong = line("動かないでください。", "I won't move.")
+        val cards = mutableListOf(connective, wrong, ownPlan, faithful)
+        val srv = serve { it.respond(503, "unavailable") }
+        val reader = VisionLlmEngine(custom(srv))
+        reader.reviewDialogueRoles(cards, "{}", JSONArray())
+        assertEquals(listOf(connective, ownPlan, faithful), cards)
+        reader.reviewDialogueRoles(cards, "{}", JSONArray())
+        assertEquals(1, srv.exchanges.size)
+    }
+
+    @Test
+    fun aKoreanPossessiveDoesNotTurnTheOwnerIntoTheCompanionsActionSubject() = runBlocking {
+        fun line(src: String, en: String) = VisionLlmEngine.VisionBubble(0, 0, 0, 0, 0, src, en, false)
+        val prior = "Guide: Ash, are you taking me to camp?"
+        val wrong = line("내 가방도 챙겨 왔네.", "I brought my bag along, too.")
+        val correct = "You brought my bag along, too."
+        val explicit = line("내 가방은 내가 가져왔네.", "I brought my bag.")
+        val observer = line(wrong.src, "I see you brought my bag, too.")
+        val srv = serve { ex ->
+            val edits = JSONArray().put(JSONObject().put("id", 0).put("actor", "listener").put("en", wrong.en))
+            val partlyMalformed = "{\"items\":" + edits + "-lnd\nuser\n{\"items\":[{\"id\":0,\"actor\":\"speaker\"}]}"
+            val msg = JSONObject().put("content", partlyMalformed)
+            ex.respond(200, JSONObject().put("choices", JSONArray().put(JSONObject().put("message", msg))).toString())
+        }
+        val reader = VisionLlmEngine(custom(srv))
+        val noHistory = mutableListOf(wrong)
+        reader.reviewDialogueRoles(noHistory, "{}", JSONArray())
+        assertEquals(listOf(wrong), noHistory)
+        assertTrue(srv.exchanges.isEmpty())
+        val cards = mutableListOf(wrong, explicit, observer)
+        reader.reviewDialogueRoles(cards, "{}", JSONArray().put(prior))
+        assertEquals(listOf(correct, explicit.en, observer.en), cards.map { it.en })
+        val message = JSONObject(srv.exchanges.single().body).getJSONArray("messages").getJSONObject(1).getString("content")
+        val items = JSONObject(message.substringAfter("\n\n")).getJSONArray("items")
+        assertEquals(1, items.length())
+        assertEquals(prior, items.getJSONObject(0).getString("previous_line"))
+        assertEquals(false, items.getJSONObject(0).has("draft"))
+        assertEquals("dialogue_roles", JSONObject(message.substringAfter("\n\n")).getString("review"))
+        assertEquals("You’ve already packed my books, too.",
+            VisionLlmEngine.listenerHandledPossessions("I’ve already packed my books, too."))
+        assertEquals("…You brought our bags.", VisionLlmEngine.listenerHandledPossessions("…We brought our bags."))
+        assertEquals(observer.en, VisionLlmEngine.listenerHandledPossessions(observer.en))
+    }
+
+    @Test
+    fun aConfirmedSpeakerOrNamedThirdPartyDoesNotBecomeTheListener() = runBlocking {
+        val own = VisionLlmEngine.VisionBubble(0, 0, 0, 0, 0, "내 사진도 챙겨 왔네.", "I've packed my photos, too.", false)
+        val third = VisionLlmEngine.VisionBubble(1, 0, 0, 0, 0, "내 우산이랑 지도까지 민지가 가져왔네.",
+            "I brought my umbrella and even my map.", false)
+        val correct = "Minji brought my umbrella and even my map."
+        val srv = serve { ex ->
+            val edits = JSONArray().put(JSONObject().put("id", 0).put("actor", "speaker"))
+                .put(JSONObject().put("id", 1).put("actor", "third_person").put("en", correct))
+            val msg = JSONObject().put("content", JSONObject().put("items", edits).toString())
+            ex.respond(200, JSONObject().put("choices", JSONArray().put(JSONObject().put("message", msg))).toString())
+        }
+        val cards = mutableListOf(own, third)
+        VisionLlmEngine(custom(srv)).reviewDialogueRoles(cards, "{}",
+            JSONArray().put("Guide: Ash, are you taking me to camp?"))
+        assertEquals(listOf(own.en, correct), cards.map { it.en })
+        assertEquals(1, srv.exchanges.size)
+    }
+
+    @Test
+    fun aListOfExtraPossessionsKeepsTheEstablishedHelperAndTheOriginalOwner() = runBlocking {
+        val source = "내 지도랑 등불까지 챙겨 왔네."
+        val draft = "I packed my map and even the lamp..."
+        val prior = "Guide: Star! Are you carrying me to the station?"
+        val line = VisionLlmEngine.VisionBubble(0, 0, 0, 0, 0, source, draft, false)
+        val srv = serve { it.respond(503, "No text review for a continuing list or an explicit speaker.") }
+        val reader = VisionLlmEngine(custom(srv))
+        val list = mutableListOf(line)
+        reader.reviewDialogueRoles(list, "{}", JSONArray().put(prior))
+        assertEquals("You packed my map and even the lamp...", list.single().en)
+        val explicit = mutableListOf(line.copy(src = "내 지도랑 등불까지 내가 챙겨 왔네."))
+        reader.reviewDialogueRoles(explicit, "{}", JSONArray().put(prior))
+        assertEquals(draft, explicit.single().en)
+        reader.reviewDialogueRoles(mutableListOf(line), "{}", JSONArray().put("Guide: I packed my own luggage."))
+        assertTrue(srv.exchanges.isEmpty())
+    }
 
     @Test
     fun disputedAddressesUseOneTextRequestAndLeaveOtherBalloonsIntact() = runBlocking {
