@@ -56,6 +56,17 @@ jobs:
           name: MangaLens-apk
           path: app/build/outputs/apk/debug/*.apk
 
+      - name: Build the side-by-side reader preview
+        if: github.event_name != 'push' || github.ref == 'refs/heads/perf/reader-latency-and-lettering'
+        run: |
+          ./gradlew --no-daemon -PreaderPreview :app:assembleDebug
+          cp app/build/outputs/apk/debug/app-debug.apk app/build/MangaLens-Preview.apk
+      - uses: actions/upload-artifact@v4
+        if: github.event_name != 'push' || github.ref == 'refs/heads/perf/reader-latency-and-lettering'
+        with:
+          name: MangaLens-Preview
+          path: app/build/MangaLens-Preview.apk
+
   reader-experience:
     if: github.event_name != 'push' || github.ref == 'refs/heads/perf/reader-latency-and-lettering'
     runs-on: ubuntu-latest
@@ -78,6 +89,8 @@ jobs:
           ./gradlew -PreaderEmulator :app:assembleDebug :app:assembleDebugAndroidTest
           mkdir -p app/build/reader-baseline
           cp "$baseline/app/build/outputs/apk/debug/app-debug.apk" app/build/reader-baseline/baseline.apk
+          cp app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk app/build/reader-baseline/tests.apk
+          ./gradlew -PreaderEmulator -PreaderPreview :app:assembleDebug :app:assembleDebugAndroidTest
       - name: Enable emulator acceleration
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules

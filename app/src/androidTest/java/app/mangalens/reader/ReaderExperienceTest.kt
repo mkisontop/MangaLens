@@ -65,7 +65,7 @@ class ReaderExperienceTest {
                 }
             }
             val metrics = File(output, "metrics.csv")
-            metrics.writeText("scenario,page,first_visible_ms,all_visible_ms,provider_start_ms,remaining_source_pct,guard_error\n")
+            metrics.writeText("scenario,page,first_visible_ms,all_visible_ms,provider_start_ms,arrival_source_pct,remaining_source_pct,guard_error\n")
             ActivityScenario.launch(ComponentActivity::class.java).use { scenario ->
                 scenario.onActivity { activity ->
                     activity.window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_FULLSCREEN or
@@ -188,11 +188,15 @@ class ReaderExperienceTest {
         var sourcePct = 100.0
         var guard = 255
         var last: Bitmap? = null
+        var firstFrame: Bitmap? = null
+        fun replaceLast(frame: Bitmap) {
+            if (last !== firstFrame) last?.recycle()
+            last = frame
+        }
         try {
             await("page " + index + " ink; provider calls=" + requests.keys, 30000) {
                 val screen = inst.uiAutomation.takeScreenshot() ?: return@await false
-                last?.recycle()
-                last = screen
+                replaceLast(screen)
                 val now = SystemClock.elapsedRealtime() - start
                 guard = guardError(screen, origin)
                 if (guard > 15) return@await false
@@ -200,7 +204,10 @@ class ReaderExperienceTest {
                 val b = if (index == 0) a else page.ink(screen, screenBottom)
                 val topVisible = a.source * 10 < topSource && a.english > 80
                 val bottomVisible = index == 0 || b.source * 10 < bottomSource && b.english > 80
-                if (topVisible && first < 0) first = now
+                if (topVisible && first < 0) {
+                    first = now
+                    firstFrame = screen
+                }
                 val request = requests[page.source[index]]
                 if (topVisible && bottomVisible && request != null && start + now >= request + 1800) {
                     full = now
@@ -211,11 +218,11 @@ class ReaderExperienceTest {
             }
             // Read the settled letters independently of the first frame that was visible.
             SystemClock.sleep(180)
-            inst.uiAutomation.takeScreenshot()?.let { settled ->
-                last?.recycle()
-                last = settled
-            }
+            inst.uiAutomation.takeScreenshot()?.let(::replaceLast)
             val result = requireNotNull(last)
+            val settledInk = page.ink(result, screenTop).source +
+                (if (index == 0) 0 else page.ink(result, screenBottom).source)
+            val settledPct = 100.0 * settledInk / (topSource + bottomSource)
             val targets = if (index == 0) listOf(screenTop to page.english.first())
                 else listOf(screenTop to page.english.first(), screenBottom to page.english[index])
             for ((region, expected) in targets) {
@@ -224,12 +231,13 @@ class ReaderExperienceTest {
                     DisplayText.letters(read).contains(DisplayText.letters(expected)))
             }
             val requestMs = requests.getValue(page.source[index]) - start
-            val row = listOf("media-projection", index, first, full, requestMs, sourcePct, guard).joinToString(",")
+            val row = listOf("media-projection", index, first, full, requestMs, sourcePct, settledPct, guard).joinToString(",")
             metrics.appendText(row + "\n")
             Log.i("MangaLensUX", row)
-            assertTrue("Source ink stays erased", sourcePct < 10.0)
+            assertTrue("Source ink stays erased", settledPct < 10.0)
         } finally {
             save(raw, "page-" + index + "-raw.png")
+            firstFrame?.let { save(it, "page-" + index + "-first.png") }
             last?.let { save(it, "page-" + index + "-screen.png") }
             if (full < 0) {
                 val ocr = OcrEngine()
@@ -248,7 +256,8 @@ class ReaderExperienceTest {
                     ocr.close()
                 }
             }
-            last?.recycle()
+            if (last !== firstFrame) last?.recycle()
+            firstFrame?.recycle()
             raw.recycle()
         }
     }

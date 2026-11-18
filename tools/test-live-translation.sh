@@ -3,10 +3,14 @@ set -euo pipefail
 
 export MANGALENS_LIVE_REPORT="$PWD/app/build/reader-live/translations.json"
 run_test() {
-    ./gradlew :app:testDebugUnitTest --tests app.mangalens.translate.LiveTranslationQualityTest
+    if (($#)); then
+        "$@"
+    else
+        ./gradlew :app:testDebugUnitTest --tests app.mangalens.translate.LiveTranslationQualityTest
+    fi
 }
 
-if [[ -n "${GEMINI_API_KEY:-}" ]]; then
+if [[ -n "${GEMINI_API_KEY:-}" && $# == 0 ]]; then
     run_test
     exit
 fi
@@ -50,4 +54,4 @@ done
 curl -fsS http://127.0.0.1:7878/health
 export MANGALENS_LIVE_ENDPOINT=http://127.0.0.1:7878/v1/chat/completions
 export MANGALENS_LIVE_MODEL="$model"
-run_test
+run_test "$@"

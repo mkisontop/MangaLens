@@ -10,26 +10,38 @@ failed=0
 builds=(baseline candidate)
 if [[ "${READER_ORDER:-baseline-first}" == candidate-first ]]; then builds=(candidate baseline); fi
 for build in "${builds[@]}"; do
+    id=app.mangalens.preview
     apk=app/build/outputs/apk/debug/app-debug.apk
-    if [[ "$build" == baseline ]]; then apk=app/build/reader-baseline/baseline.apk; fi
+    tests=app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
+    if [[ "$build" == baseline ]]; then
+        id=app.mangalens
+        apk=app/build/reader-baseline/baseline.apk
+        tests=app/build/reader-baseline/tests.apk
+    fi
     adb install -r -g "$apk"
-    adb install -r -g app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
-    adb shell pm clear app.mangalens
-    adb shell run-as app.mangalens mkdir -p files
-    adb exec-in run-as app.mangalens dd of=files/potion-contest-page.jpg < app/build/reader-fixtures/potion-contest-page.jpg
-    adb shell pm grant app.mangalens android.permission.POST_NOTIFICATIONS
-    adb shell appops set app.mangalens SYSTEM_ALERT_WINDOW allow
+    adb install -r -g "$tests"
+    adb shell pm clear "$id"
+    bash tools/fetch-reader-page.sh "$id"
+    adb shell pm grant "$id" android.permission.POST_NOTIFICATIONS
+    adb shell appops set "$id" SYSTEM_ALERT_WINDOW allow
     adb logcat -c
-    adb shell am instrument -w -r -e build "$build" app.mangalens.test/androidx.test.runner.AndroidJUnitRunner \
+    adb shell am instrument -w -r -e build "$build" "$id.test/androidx.test.runner.AndroidJUnitRunner" \
         | tee "$out/$build-instrumentation.txt"
     adb logcat -d > "$out/$build-device-log.txt"
-    if adb exec-out run-as app.mangalens tar -cf - -C files/reader-ux "$build" > "$out/$build.tar"; then
+    if adb exec-out run-as "$id" tar -cf - -C files/reader-ux "$build" > "$out/$build.tar"; then
         tar -xf "$out/$build.tar" -C "$out"
         rm "$out/$build.tar"
     fi
     for csv in "$out/$build"/*.csv; do
         [[ -f "$csv" ]] && sed "s/^/$build $(basename "$csv") /" "$csv"
     done
+    if [[ "$build" == candidate ]]; then
+        for detail in "$out/$build"/published-*-detail.jpg; do
+            [[ -f "$detail" ]] || continue
+            echo "MangaLensDetail $(basename "$detail")"
+            base64 -w 960 "$detail" | sed 's/^/MangaLensFrame /'
+        done
+    fi
     if ! grep -Eq '^OK \([1-9][0-9]* tests?\)' "$out/$build-instrumentation.txt"; then
         failed=1
         grep -Ei 'MangaLensUX|UnsatisfiedLinkError|FATAL EXCEPTION|dlopen failed|text recognizer.*fail' "$out/$build-device-log.txt" | tail -80 || true

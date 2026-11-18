@@ -37,6 +37,12 @@ android {
     buildTypes {
         debug {
             signingConfig = signingConfigs.getByName("debug")
+            val preview = providers.gradleProperty("readerPreview").isPresent
+            manifestPlaceholders["debugAppLabel"] = if (preview) "MangaLens Preview" else "@string/app_name"
+            if (preview) {
+                applicationIdSuffix = ".preview"
+                versionNameSuffix = "-preview"
+            }
             if (providers.gradleProperty("readerEmulator").isPresent) {
                 ndk.abiFilters += "x86_64"
             }

@@ -40,6 +40,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertTrue
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 
@@ -103,8 +104,20 @@ class PublishedComicExperienceTest {
 
     @Test
     fun publishedKoreanBalloonsShowReadableEnglishWithinTheirOwnPanels() {
+        readScenes(scenes, "published.csv")
+    }
+
+    @Test
+    fun realModelLettersThePublishedKoreanPanelOnTheDevice() {
+        val endpoint = InstrumentationRegistry.getArguments().getString("liveEndpoint")
+        assumeTrue("Run the live Android reader job with a model endpoint", !endpoint.isNullOrBlank())
+        val scene = scenes.single { it.name == "device" }
+        readScenes(listOf(scene), "live-published.csv", requireNotNull(endpoint))
+    }
+
+    private fun readScenes(selected: List<Scene>, csvName: String, liveEndpoint: String? = null) {
         val page = requireNotNull(BitmapFactory.decodeFile(File(inst.targetContext.filesDir, "potion-contest-page.jpg").path))
-        val csv = File(output, "published.csv")
+        val csv = File(output, csvName)
         csv.writeText("scene,matched_source,english_read_back,original_marker_visible,art_pixels_checked,art_pixels_changed\n")
         try {
             ActivityScenario.launch(ComponentActivity::class.java).use { activity ->
@@ -117,7 +130,7 @@ class PublishedComicExperienceTest {
                 }
                 inst.waitForIdleSync()
                 DisplayText().use { english ->
-                    for (scene in scenes) read(page, scene, host, csv, english)
+                    for (scene in selected) read(page, scene, host, csv, english, liveEndpoint)
                 }
             }
         } finally {
@@ -125,7 +138,7 @@ class PublishedComicExperienceTest {
         }
     }
 
-    private fun read(page: Bitmap, scene: Scene, host: FrameLayout, csv: File, english: DisplayText) {
+    private fun read(page: Bitmap, scene: Scene, host: FrameLayout, csv: File, english: DisplayText, liveEndpoint: String?) {
         fun source(r: RectF) = Rect((r.left * page.width).roundToInt(), (r.top * page.height).roundToInt(),
             (r.right * page.width).roundToInt(), (r.bottom * page.height).roundToInt())
         val crop = source(scene.crop)
@@ -161,6 +174,8 @@ class PublishedComicExperienceTest {
         inst.waitForIdleSync()
         SystemClock.sleep(120)
         val original = requireNotNull(inst.uiAutomation.takeScreenshot())
+        val screenBox = Rect(expected).apply { offset(origin[0], origin[1]) }
+        saveBalloonComparison(scene.name, original, original, screenBox)
         val ocr = OcrEngine()
         try {
             MockWebServer().use { server ->
@@ -185,17 +200,35 @@ class PublishedComicExperienceTest {
                             .setBody(JSONObject().put("choices", JSONArray().put(reply)).toString())
                     }
                 }
-                val settings = AppSettings(provider = LlmProvider.CUSTOM, model = "fixture",
-                    customUrl = server.url("/chat").toString(), sourceLang = SourceLang.KO,
+                val settings = AppSettings(provider = LlmProvider.CUSTOM,
+                    model = if (liveEndpoint == null) "fixture" else "qwen2.5-7b-instruct-q4_k_m",
+                    customUrl = liveEndpoint ?: server.url("/chat").toString(), sourceLang = SourceLang.KO,
                     aiVision = AiVisionMode.OFF, ignoreTopPct = 0f, ignoreBottomPct = 0f)
                 val cache = TranslationCache()
                 val pipeline = TranslatePipeline(ocr, TranslationService(cache), cache)
-                val result = runBlocking(Dispatchers.Default) {
-                    pipeline.translate(pipeline.analyze(frame, settings), settings)
+                val start = SystemClock.elapsedRealtime()
+                val (sourceLines, result) = runBlocking(Dispatchers.Default) {
+                    val analysis = pipeline.analyze(frame, settings)
+                    Log.i("MangaLensUX", scene.name + " image=" + page.width + "x" + page.height +
+                        " viewport=" + frame.width + "x" + frame.height + " balloon=" + expected +
+                        " OCR=" + analysis.ocr.lines.map { it.text } + " regions=" + analysis.bubbles.map { it.text })
+                    analysis.bubbles.map { it.text } to pipeline.translate(analysis, settings)
                 }
-                Log.i("MangaLensUX", scene.name + " source=" + seen + " cards=" + result.bubbles.map { it.translated })
-                assertEquals("the published balloon was recognized: " + seen, listOf(scene.english),
-                    result.bubbles.map { it.translated })
+                val elapsed = SystemClock.elapsedRealtime() - start
+                val cards = result.bubbles.map { it.translated }
+                Log.i("MangaLensUX", scene.name + " source=" + sourceLines + " cards=" + cards)
+                val expectedEnglish = if (liveEndpoint == null) {
+                    assertEquals("the published balloon was recognized: " + seen, listOf(scene.english), cards)
+                    scene.english
+                } else {
+                    assertTrue("The published source mentions potions and a device: " + sourceLines,
+                        scene.markers.all { marker -> sourceLines.any { marker in it.filter(Char::isLetter) } })
+                    val answer = cards.single().lowercase()
+                    assertTrue("The real translation must preserve the apparatus and potions: " + answer,
+                        Regex("potion|elixir|concoction").containsMatchIn(answer) &&
+                            Regex("device|apparatus|machine|mechanism|gadget|contraption|equipment").containsMatchIn(answer))
+                    cards.single()
+                }
                 inst.runOnMainSync { overlay.setBubbles(result.bubbles, frame) }
                 inst.waitForIdleSync()
                 SystemClock.sleep(250)
@@ -213,17 +246,23 @@ class PublishedComicExperienceTest {
                     } finally {
                         if (box !== display) box.recycle()
                     }
-                    val screenBox = Rect(expected).apply { offset(origin[0], origin[1]) }
+                    saveBalloonComparison(scene.name, original, display, screenBox)
                     val recognized = english.read(display, screenBox)
                     val markerVisible = scene.markers.any { it in korean.filter(Char::isLetter) }
                     val art = compareArt(original, display, origin, host.width, host.height, expected, dest)
                     Log.i("MangaLensUX", scene.name + " English=" + recognized + " art=" + art)
                     assertTrue("Complete English read back from the balloon: " + recognized,
-                        DisplayText.letters(recognized).contains(DisplayText.letters(scene.english)))
+                        DisplayText.letters(recognized).contains(DisplayText.letters(expectedEnglish)))
                     assertTrue("Korean still visible in the translated balloon: " + korean, !markerVisible)
                     assertTrue("checked painted panel artwork", art.first > 80_000)
                     assertEquals("pixels changed outside the balloon", 0, art.second)
                     csv.appendText(listOf(scene.name, true, true, markerVisible, art.first, art.second).joinToString(",") + "\n")
+                    if (liveEndpoint != null) {
+                        val record = JSONObject().put("model", settings.model).put("source_ocr", JSONArray(sourceLines))
+                            .put("english", expectedEnglish).put("display_ocr", recognized).put("ocr_and_translation_ms", elapsed)
+                            .put("art_pixels_checked", art.first).put("art_pixels_changed", art.second)
+                        File(output, "live-panel.json").writeText(record.toString(2) + "\n")
+                    }
                 } finally {
                     display.recycle()
                 }
@@ -233,6 +272,30 @@ class PublishedComicExperienceTest {
             original.recycle()
             ocr.close()
             frame.recycle()
+        }
+    }
+
+    /** The left and right halves are actual screenshots from before and after lettering. */
+    private fun saveBalloonComparison(scene: String, original: Bitmap, display: Bitmap, balloon: Rect) {
+        val bounds = Rect(balloon).apply {
+            inset(-28, -28)
+            check(intersect(0, 0, display.width, display.height))
+        }
+        val w = minOf(480, bounds.width())
+        val h = (w.toFloat() * bounds.height() / bounds.width()).roundToInt()
+        val pair = Bitmap.createBitmap(w * 2 + 6, h, Bitmap.Config.ARGB_8888)
+        try {
+            val paint = Paint(Paint.FILTER_BITMAP_FLAG)
+            Canvas(pair).apply {
+                drawColor(Color.DKGRAY)
+                drawBitmap(original, bounds, Rect(0, 0, w, h), paint)
+                drawBitmap(display, bounds, Rect(w + 6, 0, 2 * w + 6, h), paint)
+            }
+            File(output, "published-" + scene + "-detail.jpg").outputStream().use {
+                pair.compress(Bitmap.CompressFormat.JPEG, 86, it)
+            }
+        } finally {
+            pair.recycle()
         }
     }
 
