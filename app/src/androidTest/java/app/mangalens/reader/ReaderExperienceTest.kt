@@ -44,6 +44,7 @@ import java.net.InetAddress
 import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import java.util.regex.Pattern
 import kotlin.math.abs
 
 @RunWith(AndroidJUnit4::class)
@@ -147,11 +148,27 @@ class ReaderExperienceTest {
             }
             launcher.launch(request)
         }
-        val device = UiDevice.getInstance(inst)
+        approveSharing(UiDevice.getInstance(inst))
+        return granted.get(10, TimeUnit.SECONDS)
+    }
+
+    private fun approveSharing(device: UiDevice, chooseEntireScreen: Boolean = false) {
+        if (chooseEntireScreen) {
+            val option = device.wait(Until.findObject(By.textContains("A single app")), 2500)
+                ?: device.findObject(By.clazz("android.widget.Spinner"))
+            if (option != null) {
+                option.click()
+                val entire = device.wait(Until.findObject(By.text(Pattern.compile("(?i).*entire screen.*"))), 4000)
+                requireNotNull(entire) { "The system offered an app chooser without the entire-screen option" }.click()
+            }
+        }
         val approve = device.wait(Until.findObject(By.textContains("Start now")), 6000)
             ?: device.wait(Until.findObject(By.res("android", "button1")), 2000)
-        approve?.click()
-        return granted.get(10, TimeUnit.SECONDS)
+        if (chooseEntireScreen) {
+            requireNotNull(approve) { "The fresh screen-sharing confirmation was not visible" }.click()
+        } else {
+            approve?.click()
+        }
     }
 
     @Test fun anExpiredScreenGrantReturnsHomeAndFreshConsentResumesCapture() {
@@ -199,11 +216,12 @@ class ReaderExperienceTest {
                         }
                     }
                     assertTrue("Home explains how to renew screen-sharing permission", visible)
+                    val go = device.wait(Until.findObject(By.desc("Start translating")), 5000)
+                    requireNotNull(go) { "The reader's GO control was missing from Home" }.click()
+                    approveSharing(device, chooseEntireScreen = true)
+                    await("fresh authorized session from Home", 10000) { ScreenCaptureService.running.value }
+                    assertFalse(ScreenCaptureService.captureConsentRequired.value)
                 }
-
-                ContextCompat.startForegroundService(app, captureGrant(host, "fresh-capture"))
-                await("fresh authorized session", 10000) { ScreenCaptureService.running.value }
-                assertFalse(ScreenCaptureService.captureConsentRequired.value)
             } finally {
                 app.stopService(service)
             }
