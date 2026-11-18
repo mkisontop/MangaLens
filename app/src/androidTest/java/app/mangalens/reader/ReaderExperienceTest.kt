@@ -19,6 +19,7 @@ import androidx.test.uiautomator.By
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
 import app.mangalens.capture.ScreenCaptureService
+import app.mangalens.ocr.OcrEngine
 import app.mangalens.settings.AiVisionMode
 import app.mangalens.settings.CaptureMode
 import app.mangalens.settings.LlmProvider
@@ -82,6 +83,7 @@ class ReaderExperienceTest {
                         for (n in 0 until lines.length()) {
                             val line = lines.getJSONObject(n)
                             val original = line.getString("text").filter(Char::isLetter)
+                            Log.i("MangaLensUX", "Provider received fixture text " + original)
                             val index = page.source.indexOf(original)
                             if (index < 0) return MockResponse().setResponseCode(422).setBody("Unexpected fixture text: " + original)
                             requests[original] = SystemClock.elapsedRealtime()
@@ -172,6 +174,23 @@ class ReaderExperienceTest {
             if (index <= 1 || full < 0) {
                 save(raw, "page-" + index + "-raw.png")
                 last?.let { save(it, "page-" + index + "-screen.png") }
+            }
+            if (full < 0) {
+                val ocr = OcrEngine()
+                try {
+                    runBlocking {
+                        for ((label, frame) in listOf("fixture" to raw, "display" to last)) {
+                            if (frame != null) {
+                                val read = ocr.recognize(frame, SourceLang.KO)
+                                Log.i("MangaLensUX", label + " OCR: " + read.lines.map { it.text })
+                            }
+                        }
+                    }
+                    Log.i("MangaLensUX", "Page " + index + " first=" + first + " artwork error=" + guard)
+                    UiDevice.getInstance(inst).dumpWindowHierarchy(File(output, "windows.xml"))
+                } finally {
+                    ocr.close()
+                }
             }
             last?.recycle()
             raw.recycle()
