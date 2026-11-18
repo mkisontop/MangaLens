@@ -47,12 +47,16 @@ for name, prompt, (src, draft, prior), issue, compact in [
     print("Role probe "+json.dumps({"case":name,"output":response["choices"][0]["message"]["content"],
         "tokens":response["usage"],"timings":response.get("timings",{})},ensure_ascii=False),flush=True)
 
-actor_prompt = ("Identify who performed the final verb in each Korean utterance. The noun after 내 or 제 belongs to the speaker. "
-    "Ownership alone does not identify the actor. Use explicit subjects or the preceding exchange. "
-    "A noticing ending -네 can describe what the companion just addressed did. Return JSON with an items array. "
-    "For each input id give actor as listener, speaker, third_person or unclear. For listener or speaker give "
-    "only id and actor. For third_person or unclear also give en with the full natural English line, "
-    "keeping every possession and action. Leave a genuinely unknown actor implicit. No explanation.")
+actor_prompt = ("Decide who physically handled the possessions. The owner and the carrier can be different people. "
+    "Use an explicitly marked Korean subject first. For example 내 책은 내가 챙겼네 has actor speaker; "
+    "내 책은 지우가 챙겼네 has actor third_person (Jiwoo). 내 or 제 before a noun just means my. "
+    "If the earlier speaker calls a helper and asks whether YOU are taking ME somewhere, then notices "
+    "내 책도 챙겼네 without an explicit subject, the speaker is observing that helper's kindness: actor listener. "
+    "Do not assign that observation to the owner merely because the book is theirs. For each input return its "
+    "numeric id and actor: listener, speaker, third_person or unclear. Only for third_person or unclear, also "
+    "translate the entire source into en. Keep the actual name and every possession. Output one compact JSON "
+    "object, for example {\"items\":[{\"id\":3,\"actor\":\"listener\"},{\"id\":4,\"actor\":\"speaker\"}]}. "
+    "No explanations or subsequent conversation.")
 for name, src, prior in [("classify-bag",ko[0],ko[2]),("classify-outfit",panel[0],panel[2]),
         ("classify-self","내 가방은 내가 가져왔네.",ko[2]),
         ("classify-third","내 우산은 민지가 가져왔네.",ko[2])]:
