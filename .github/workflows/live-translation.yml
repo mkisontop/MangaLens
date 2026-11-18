@@ -3,7 +3,7 @@ name: Live translation quality
 on:
   workflow_dispatch:
   push:
-    branches: ["perf/reader-latency-and-lettering", "perf/unseen-page-translation"]
+    branches: ["perf/reader-latency-and-lettering", "perf/unseen-page-translation", "perf/short-vision-instructions"]
     paths:
       - ".github/workflows/live-translation.yml"
       - "tools/test-live-translation.sh"
