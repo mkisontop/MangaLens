@@ -1,9 +1,9 @@
-name: Live translation quality
+name: Published dialogue localization check
 
 on:
   workflow_dispatch:
   push:
-    branches: ["perf/reader-latency-and-lettering"]
+    branches: ["test/reader-dialogue-localization"]
     paths:
       - ".github/workflows/live-translation.yml"
       - "tools/test-live-translation.sh"
@@ -19,30 +19,6 @@ permissions:
   contents: read
 
 jobs:
-  translate:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 35
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: "17"
-          cache: gradle
-      - name: Translate original Korean, Japanese and Chinese dialogue
-        env:
-          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
-        run: bash tools/test-live-translation.sh
-      - name: Show the exact translations
-        if: always()
-        run: |
-          if [[ -f app/build/reader-live/translations.json ]]; then cat app/build/reader-live/translations.json; fi
-      - uses: actions/upload-artifact@v4
-        if: always()
-        with:
-          name: live-translations
-          path: app/build/reader-live/translations.json
-
   published-page-on-android:
     runs-on: ubuntu-24.04
     timeout-minutes: 35
