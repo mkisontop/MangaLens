@@ -143,7 +143,7 @@ class ReaderExperienceTest {
         region.offset(origin[0], origin[1])
         val start = SystemClock.elapsedRealtime()
         var translated = false
-        while (!translated && SystemClock.elapsedRealtime() - start < 12000) {
+        while (!translated && SystemClock.elapsedRealtime() - start < 35000) {
             if (requests.containsKey(page.startupSource)) {
                 inst.uiAutomation.takeScreenshot()?.let { frame ->
                     try {

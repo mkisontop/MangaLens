@@ -173,7 +173,7 @@ class LetteringRenderTest {
         val border = Paint().apply { color = Color.BLUE }
         Canvas(page).drawRect(118f, 380f, 600f, 388f, border)
         val v = view()
-        v.setBubbles(listOf(RenderBubble(box, "Go!", "지금 바로 이쪽으로 오세요", Color.WHITE, Color.BLACK, false)))
+        v.setBubbles(listOf(RenderBubble(box, "Go!", "지금 바로 이쪽으로 오세요", Color.WHITE, Color.BLACK, false, coverSource = true)))
         v.draw(Canvas(page))
         assertEquals("source glyphs to either side of the English", 0, count(page, box, ::isLetteringInk))
         assertEquals("panel edge survives", Color.BLUE, page.getPixel(130, 384))

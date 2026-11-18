@@ -104,6 +104,8 @@ data class RenderBubble(
      * the border into the next one. Null when the page's panels were not read.
      */
     val panel: Rect? = null,
+    /** An OCR source box whose strokes still need a fixed fallback wipe. */
+    val coverSource: Boolean = false,
 ) {
     /** This card for the page moved [dy] rows down: everything it places moves with it. */
     fun shiftedBy(dy: Int): RenderBubble {
@@ -216,6 +218,7 @@ class BubbleOverlayView(context: Context) : View(context) {
         val balloon: Balloon?,
         val inpainted: Boolean,
         val patched: Boolean,
+        val coverSource: Boolean,
         val busy: Boolean,
         /**
          * The panel free lettering is fitted and held to. It is the same for
@@ -715,6 +718,7 @@ class BubbleOverlayView(context: Context) : View(context) {
                 balloon = if (stamp != null) balloon else null,
                 inpainted = stamp != null && b.fill != null,
                 patched = patch != null,
+                coverSource = b.coverSource,
                 busy = busy,
                 panel = b.panel?.let(::Rect),
             )
@@ -749,7 +753,10 @@ class BubbleOverlayView(context: Context) : View(context) {
                 dy = claim.top - (l.card ?: l.inkRect).top
             }
             val bounds = RectF(l.inkRect).apply { offset(0f, dy) }
-            l.card?.let { bounds.union(claim) }
+            l.card?.let {
+                // The card's antialiased hairline belongs inside the capture mask too.
+                bounds.union(RectF(claim).apply { inset(-dp(1f), -dp(1f)) })
+            }
             l.wipe?.let { bounds.union(it) }
             val stampDst = if (stamp != null) RectF(balloon!!.box) else null
             stampDst?.let { bounds.union(it) }
@@ -1935,7 +1942,7 @@ class BubbleOverlayView(context: Context) : View(context) {
         // A short translation or a card nudged off a neighbour can leave source
         // glyphs exposed on either side. Keep the fallback wipe on the source,
         // bounded like the card itself if an OCR box spans a whole page.
-        val wipe = if (column || (b.box.width() <= screenW * .92f && b.box.height() <= screenH * .5f)) {
+        val wipe = if (column || (b.coverSource && b.box.width() <= screenW * .92f && b.box.height() <= screenH * .5f)) {
             RectF(b.box).apply { inset(-dp(2f), -dp(2f)) }
         } else null
         return lettering(

@@ -1380,6 +1380,7 @@ class TranslatePipeline(
             fill = fill,
             patch = erasure?.patch,
             patchRect = erasure?.rect,
+            coverSource = cleanOcrText && kind == BubbleKind.DIALOGUE && balloon == null && erasure == null,
         )
     }
 

@@ -13,8 +13,8 @@ on:
       reader_order:
         description: Order for the two Android builds on the same emulator
         type: choice
-        default: baseline-first
-        options: [baseline-first, candidate-first]
+        default: both
+        options: [both, baseline-first, candidate-first]
 
 permissions:
   contents: read
@@ -68,6 +68,10 @@ jobs:
           path: app/build/MangaLens-Preview.apk
 
   reader-experience:
+    strategy:
+      fail-fast: false
+      matrix:
+        order: ${{ fromJSON(inputs.reader_order == 'candidate-first' && '["candidate-first"]' || inputs.reader_order == 'baseline-first' && '["baseline-first"]' || '["baseline-first","candidate-first"]') }}
     if: github.event_name != 'push' || github.ref == 'refs/heads/perf/reader-latency-and-lettering'
     runs-on: ubuntu-latest
     timeout-minutes: 35
@@ -101,7 +105,7 @@ jobs:
       - name: Read fixture pages on an Android screen
         uses: reactivecircus/android-emulator-runner@v2
         env:
-          READER_ORDER: ${{ inputs.reader_order || 'baseline-first' }}
+          READER_ORDER: ${{ matrix.order }}
         with:
           api-level: 33
           target: google_apis
@@ -112,6 +116,6 @@ jobs:
       - uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: reader-experience
+          name: reader-experience-${{ matrix.order }}
           path: app/build/reader-experience
           if-no-files-found: warn
