@@ -1,0 +1,55 @@
+name: Inspect captured reader pixels
+on:
+  push:
+    branches: ["test/reader-screenshot-inspection"]
+permissions:
+  contents: read
+  actions: read
+jobs:
+  inspect:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 6
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          run-id: 44303992797
+          github-token: ${{ github.token }}
+          name: reader-experience-candidate-first
+          path: evidence
+      - name: Locate every changed native pixel outside the known speech area
+        run: |
+          python3 - <<'PY'
+          from collections import Counter
+          from pathlib import Path
+          from PIL import Image, ImageChops, ImageDraw, ImageOps
+          import subprocess, shutil
+          base = next(Path("evidence").rglob("candidate/published-outfit-original.png"))
+          before = Image.open(base).convert("RGB")
+          after = Image.open(base.with_name("published-outfit-translated.png")).convert("RGB")
+          print("Source",base,"size",before.size)
+          speech = (167,502,683,772)
+          dark = before.getpixel((0,0))
+          content = ImageChops.difference(before,Image.new("RGB",before.size,dark)).getbbox()
+          print("Background",dark,"painted bounding box",content)
+          diff=ImageChops.difference(before,after)
+          colors=Counter(); rows=Counter(); cols=Counter(); coords=[]
+          for y in range(content[1],content[3]):
+              for x in range(content[0],content[2]):
+                  if speech[0]<=x<speech[2] and speech[1]<=y<speech[3]: continue
+                  d=max(diff.getpixel((x,y)))
+                  if d>3:
+                      coords.append((x,y,d))
+                      colors[(before.getpixel((x,y)),after.getpixel((x,y)))]+=1
+                      rows[y]+=1; cols[x]+=1
+          print("Count",len(coords),"strongest",sorted(coords,key=lambda c:-c[2])[:15])
+          print("Rows",rows.most_common(30),"Cols",cols.most_common(30))
+          print("Color pairs",colors.most_common(20))
+          print("Bounds",(min(x for x,y,d in coords),min(y for x,y,d in coords),max(x for x,y,d in coords),max(y for x,y,d in coords)) if coords else None)
+          if shutil.which("tesseract"):
+              for factor in (1,2):
+                  crop=after.crop(speech); crop=crop.resize((crop.width*factor,crop.height*factor))
+                  crop.save("/tmp/speech.png")
+                  for mode in (6,11):
+                      out=subprocess.run(["tesseract","/tmp/speech.png","stdout","--psm",str(mode)],capture_output=True,text=True)
+                      print("Latin OCR",factor,mode,repr(out.stdout))
+          PY
