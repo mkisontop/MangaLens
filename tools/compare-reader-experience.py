@@ -62,6 +62,8 @@ def main(root):
                 "Unreplaced source or changed artwork on page turns: " + build)
         require(all(int(r["source_pixels_remaining"]) < 50 and int(r["art_max_error"]) <= 4 and int(r["lines"]) == 12 for r in dense),
                 "Unreplaced source, missing line, or changed artwork on dense pages: " + build)
+        require(all(0 <= int(r["first_draw_ms"]) < int(r["full_draw_ms"]) for r in dense),
+                "The first dense line was not physically drawn before the whole page: " + build)
         # The first page populates the text cache; the first dense draw warms fonts/JIT.
         worst_balloon = max(float(r["worst_balloon_source_pct"]) for r in turns)
         turns, dense = turns[1:], dense[1:]
@@ -112,8 +114,6 @@ def main(root):
     require(after["published_scrolls_correct"] == 12, "Incorrect registration on the published artwork")
     require(after["scrolls_using_only_strip"] == 2 and after["gemini_image_bytes"] < before["gemini_image_bytes"] * .8,
             "The app reread the full frame where only a new strip was visible")
-    require(after["buffered_first_draw_ms"] <= before["buffered_first_draw_ms"] * 1.20 + 18,
-            "The first buffered line appeared later")
 
 
 def compare_orders(root):
@@ -150,6 +150,10 @@ def compare_orders(root):
             "Balanced time to cached English did not improve by 450 ms")
     require(after["all_visible_ms"] <= before["all_visible_ms"] * 1.15 + 120,
             "Balanced time to a fully lettered page regressed")
+    # First-draw time shares font/JIT and host warm-up with full-page drawing.
+    # Compare both installation orders while every individual trial must show an early frame.
+    require(after["buffered_first_draw_ms"] <= before["buffered_first_draw_ms"] * 1.20 + 18,
+            "Balanced first buffered line appeared later")
     require(after["buffered_full_draw_ms"] < before["buffered_full_draw_ms"] * .8,
             "Buffered page drawing did not improve by 20 percent")
 
