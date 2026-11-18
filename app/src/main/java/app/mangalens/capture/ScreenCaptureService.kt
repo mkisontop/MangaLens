@@ -13,6 +13,8 @@ import android.graphics.ColorMatrixColorFilter
 import android.graphics.Paint
 import android.graphics.PixelFormat
 import android.graphics.Rect
+import android.graphics.Region
+import android.graphics.RegionIterator
 import android.hardware.display.DisplayManager
 import android.hardware.display.VirtualDisplay
 import android.media.Image
@@ -163,6 +165,19 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
          * changed.
          */
         private const val MASK_GRACE_MS = 300L
+
+        /** Did the controls reveal enough of a previously excluded area for lettering? */
+        internal fun uncoveredTextArea(before: List<Rect>, now: List<Rect>): Boolean {
+            val uncovered = Region()
+            for (rect in before) uncovered.op(rect, Region.Op.UNION)
+            for (rect in now) uncovered.op(rect, Region.Op.DIFFERENCE)
+            val pieces = RegionIterator(uncovered)
+            val piece = Rect()
+            while (pieces.next(piece)) {
+                if (piece.width() >= 12 && piece.height() >= 12) return true
+            }
+            return false
+        }
 
         /**
          * Passes a page change may cancel mid-stream, one after another,
@@ -384,6 +399,10 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
      * cumulative comparison has every frame.
      */
     @Volatile private var shownThumb: IntArray? = null
+
+    /** Controls present when an automatic pass found a blank page. Main thread only. */
+    private var blankReadExclusions: List<Rect>? = null
+    private var uncoveredRead: Job? = null
 
     /**
      * The thumb cells our own overlays currently cover: the cards, and the
@@ -1053,6 +1072,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
      */
     private fun takeDown() {
         translateJob?.cancel()
+        forgetBlankRead()
         discardPrepared()
         state = State.SCANNING
         shownThumb = null
@@ -1118,6 +1138,32 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         setOverlayMask(currentOverlayMask())
         // The floating controls sit still while the page moves: the dark gaps must not follow them.
         controller?.let { shade?.setExclusions(it.overlayExclusions()) }
+        retryUncoveredBlank()
+    }
+
+    private fun forgetBlankRead() {
+        blankReadExclusions = null
+        uncoveredRead?.cancel()
+        uncoveredRead = null
+    }
+
+    // A pill or menu can hide the only line on a stationary page. Wait for its pixels
+    // to leave the capture, then read again if the same page is still there.
+    private fun retryUncoveredBlank() {
+        val before = blankReadExclusions ?: return
+        val reference = shownThumb ?: return
+        val controls = controller ?: return
+        if (paused || settings.mode != CaptureMode.AUTO || state != State.SHOWING || uncoveredRead?.isActive == true) return
+        if (!uncoveredTextArea(before, controls.overlayExclusions())) return
+        uncoveredRead = scope.launch {
+            delay(MASK_GRACE_MS)
+            uncoveredRead = null
+            if (!paused && settings.mode == CaptureMode.AUTO && state == State.SHOWING &&
+                shownThumb === reference && blankReadExclusions === before &&
+                uncoveredTextArea(before, controls.overlayExclusions())) {
+                startTranslate(auto = true)
+            }
+        }
     }
 
     /** Pushes the dark-gap settings, and the screen's size, to the shade; and the touch watch that anticipates a scroll. */
@@ -1344,6 +1390,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
 
     private fun startTranslate(auto: Boolean) {
         if (state == State.TRANSLATING || !settingsLoaded) return
+        forgetBlankRead()
         // Translation is the AI's alone. Without a key there is nothing to
         // ask, and a pass would only spin the busy ring to paint nothing,
         // so the reader is told what to add instead — once per stop: a
@@ -1517,6 +1564,10 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                 suppressUntil = SystemClock.uptimeMillis() + 500
                 paintCards(shown, bmp)
                 state = State.SHOWING
+                if (auto && shown.isEmpty() && result.failure == null && analysis.exclusions.isNotEmpty()) {
+                    blankReadExclusions = analysis.exclusions
+                    retryUncoveredBlank()
+                }
                 passes++
                 // A page with dialogue keeps the current work alive and feeds it
                 // the names that identify it; a run of pages without any means

@@ -33,6 +33,21 @@ jobs:
       - name: Unit tests
         run: ./gradlew --no-daemon :app:testDebugUnitTest
 
+      - name: Count verified tests
+        if: always()
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          from xml.etree import ElementTree
+          suites = [ElementTree.parse(path).getroot() for path in
+                    Path("app/build/test-results/testDebugUnitTest").glob("TEST-*.xml")]
+          counts = {name: sum(int(suite.get(name, 0)) for suite in suites)
+                    for name in ("tests", "failures", "errors", "skipped")}
+          passed = counts["tests"] - counts["failures"] - counts["errors"] - counts["skipped"]
+          print(f'Unit tests: {passed} passed, {counts["skipped"]} skipped, {counts["failures"] + counts["errors"]} failed')
+          assert suites and passed > 0
+          PY
+
       - name: Build debug APK
         run: ./gradlew --no-daemon :app:assembleDebug
 

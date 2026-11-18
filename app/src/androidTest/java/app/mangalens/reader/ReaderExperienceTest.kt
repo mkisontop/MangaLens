@@ -84,10 +84,11 @@ class ReaderExperienceTest {
                             val line = lines.getJSONObject(n)
                             val original = line.getString("text").filter(Char::isLetter)
                             Log.i("MangaLensUX", "Provider received fixture text " + original)
-                            val index = page.source.indexOf(original)
-                            if (index < 0) return MockResponse().setResponseCode(422).setBody("Unexpected fixture text: " + original)
+                            val translated = if (original == page.startupSource) page.startupEnglish
+                                else page.english.getOrNull(page.source.indexOf(original))
+                                    ?: return MockResponse().setResponseCode(422).setBody("Unexpected fixture text: " + original)
                             requests[original] = SystemClock.elapsedRealtime()
-                            answer.put(JSONObject().put("id", line.getInt("id")).put("kind", "dialogue").put("en", page.english[index]))
+                            answer.put(JSONObject().put("id", line.getInt("id")).put("kind", "dialogue").put("en", translated))
                         }
                         val result = JSONObject().put("bubbles", answer).toString()
                         val message = JSONObject().put("content", result)
@@ -114,6 +115,7 @@ class ReaderExperienceTest {
                     approve?.click()
                     await("screen capture consent", 10000) { ScreenCaptureService.running.value }
                     DisplayText().use { english ->
+                        measureStartup(scenario, english)
                         for (index in page.source.indices) {
                             measurePage(scenario, index, metrics, english)
                         }
@@ -125,11 +127,50 @@ class ReaderExperienceTest {
         }
     }
 
+    private fun measureStartup(scenario: ActivityScenario<ComponentActivity>, reader: DisplayText) {
+        val region = page.region(false)
+        val origin = IntArray(2)
+        var originalInk = 0
+        scenario.onActivity {
+            page.getLocationOnScreen(origin)
+            val raw = Bitmap.createBitmap(page.width, page.height, Bitmap.Config.ARGB_8888)
+            page.draw(Canvas(raw))
+            originalInk = page.ink(raw, region).source
+            save(raw, "startup-raw.png")
+            raw.recycle()
+        }
+        assertTrue("The startup balloon contains Korean lettering", originalInk > 100)
+        region.offset(origin[0], origin[1])
+        val start = SystemClock.elapsedRealtime()
+        var translated = false
+        while (!translated && SystemClock.elapsedRealtime() - start < 12000) {
+            if (requests.containsKey(page.startupSource)) {
+                inst.uiAutomation.takeScreenshot()?.let { frame ->
+                    try {
+                        val ink = page.ink(frame, region)
+                        if (guardError(frame, origin) <= 15 && ink.source * 10 < originalInk && ink.english > 80) {
+                            translated = DisplayText.letters(reader.read(frame, region))
+                                .contains(DisplayText.letters(page.startupEnglish))
+                            if (translated) save(frame, "startup-screen.png")
+                        }
+                    } finally {
+                        frame.recycle()
+                    }
+                }
+            }
+            if (!translated) SystemClock.sleep(55)
+        }
+        val elapsed = SystemClock.elapsedRealtime() - start
+        File(output, "startup.csv").writeText("translated,elapsed_ms\n" + translated + "," + elapsed + "\n")
+        Log.i("MangaLensUX", "Stationary startup page translated=" + translated + " after " + elapsed + " ms")
+    }
+
     private fun measurePage(scenario: ActivityScenario<ComponentActivity>, index: Int, metrics: File, reader: DisplayText) {
         lateinit var raw: Bitmap
         val origin = IntArray(2)
         val start = SystemClock.elapsedRealtime()
         scenario.onActivity {
+            page.startupProbe = false
             page.page = index
             page.getLocationOnScreen(origin)
             raw = Bitmap.createBitmap(page.width, page.height, Bitmap.Config.ARGB_8888)
@@ -167,6 +208,12 @@ class ReaderExperienceTest {
                     return@await true
                 }
                 false
+            }
+            // Read the settled letters independently of the first frame that was visible.
+            SystemClock.sleep(180)
+            inst.uiAutomation.takeScreenshot()?.let { settled ->
+                last?.recycle()
+                last = settled
             }
             val result = requireNotNull(last)
             val targets = if (index == 0) listOf(screenTop to page.english.first())

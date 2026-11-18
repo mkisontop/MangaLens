@@ -12,6 +12,9 @@ import android.view.View
 
 /** Original fixture pages. The Korean ink has a distinct hue so the screenshot can measure erasure. */
 internal class ReaderPage(context: Context) : View(context) {
+    var startupProbe = true
+    val startupSource = "오른쪽이에요"
+    val startupEnglish = "It is on the right."
     var page = 0
         set(value) {
             field = value
@@ -27,11 +30,21 @@ internal class ReaderPage(context: Context) : View(context) {
         typeface = Typeface.create("sans-serif", Typeface.BOLD)
     }
 
-    fun ground() = if (page % 2 == 0) Color.rgb(49, 126, 143) else Color.rgb(171, 95, 58)
+    fun ground() = when {
+        startupProbe -> Color.rgb(104, 92, 160)
+        page % 2 == 0 -> Color.rgb(49, 126, 143)
+        else -> Color.rgb(171, 95, 58)
+    }
 
     fun region(lower: Boolean): Rect {
         val x = width * (if (page % 2 == 0) .44f else .58f)
-        val y = height * (if (lower) .72f else if (page % 2 == 0) .28f else .42f)
+        val y = when {
+            startupProbe -> 196f * resources.displayMetrics.density
+            lower -> height * .72f
+            page == 0 -> height * .53f
+            page % 2 == 0 -> height * .28f
+            else -> height * .42f
+        }
         return Rect((x - width * .21f).toInt(), (y - height * .048f).toInt(),
             (x + width * .21f).toInt(), (y + height * .048f).toInt())
     }
@@ -45,8 +58,8 @@ internal class ReaderPage(context: Context) : View(context) {
             val x = width * (.05f + i * .20f)
             canvas.drawLine(x, height * .08f, x + (if (page % 2 == 0) 80 else -80), height * .19f, paint)
         }
-        balloon(canvas, false, source.first())
-        if (page > 0) balloon(canvas, true, source[page])
+        balloon(canvas, false, if (startupProbe) startupSource else source.first())
+        if (!startupProbe && page > 0) balloon(canvas, true, source[page])
     }
 
     private fun balloon(canvas: Canvas, lower: Boolean, label: String) {

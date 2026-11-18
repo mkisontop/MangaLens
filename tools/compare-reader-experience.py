@@ -23,6 +23,8 @@ def require(condition, reason):
 def main(root):
     result = {}
     for build in ("baseline", "candidate"):
+        startup = read(root, build, "startup.csv")
+        require(len(startup) == 1, "Missing stationary startup result: " + build)
         turns = read(root, build, "metrics.csv")
         dense = read(root, build, "buffered.csv")
         scrolls = read(root, build, "scroll.csv")
@@ -60,6 +62,8 @@ def main(root):
         # The first page populates the text cache; the first dense draw warms fonts/JIT.
         turns, dense = turns[1:], dense[1:]
         result[build] = {
+            "startup_translated_without_scrolling": startup[0]["translated"] == "true",
+            "startup_observation_ms": int(startup[0]["elapsed_ms"]),
             "first_visible_ms": median(turns, "first_visible_ms"),
             "all_visible_ms": median(turns, "all_visible_ms"),
             "buffered_first_draw_ms": median(dense, "first_draw_ms"),
@@ -87,6 +91,7 @@ def main(root):
     print(json.dumps(result, indent=2), flush=True)
     (root / "comparison.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     before, after = result["baseline"], result["candidate"]
+    require(after["startup_translated_without_scrolling"], "The controls left the first page unread")
     require(after["erased_image_crc"] == before["erased_image_crc"],
             "The optimized clean pages differ from the reference build")
     require(after["first_visible_ms"] + 450 < before["first_visible_ms"],

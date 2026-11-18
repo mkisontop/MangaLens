@@ -6,6 +6,7 @@ import android.graphics.Color
 import android.graphics.Paint
 import android.graphics.Rect
 import android.graphics.RectF
+import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import org.junit.runner.RunWith
@@ -27,6 +28,21 @@ import org.robolectric.annotation.GraphicsMode
 @Config(sdk = [34])
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class PageChangeDetectionTest {
+
+    @Test fun aRetractingPillOrMovingControlUncoversReadableSpace() {
+        val pill = listOf(Rect(0, 40, 180, 96))
+        assertTrue(ScreenCaptureService.uncoveredTextArea(pill, listOf(Rect(0, 40, 52, 96))))
+        assertTrue(ScreenCaptureService.uncoveredTextArea(pill, listOf(Rect(25, 40, 205, 96))))
+        assertTrue(ScreenCaptureService.uncoveredTextArea(pill, emptyList()))
+    }
+
+    @Test fun overlappingControlsExpansionAndLayoutJitterShouldNotRepeatARead() {
+        val pill = listOf(Rect(0, 40, 180, 96))
+        assertFalse(ScreenCaptureService.uncoveredTextArea(pill, listOf(Rect(0, 40, 230, 96))))
+        assertFalse(ScreenCaptureService.uncoveredTextArea(pill, listOf(Rect(0, 40, 100, 96), Rect(90, 40, 180, 96))))
+        assertFalse(ScreenCaptureService.uncoveredTextArea(pill, listOf(Rect(1, 40, 180, 96))))
+        assertFalse(ScreenCaptureService.uncoveredTextArea(emptyList(), pill))
+    }
 
     private val motionThreshold = 3.6
     private val pageChangeFraction = 0.015
