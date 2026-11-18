@@ -26,8 +26,18 @@ class ModelObserver(BaseHTTPRequestHandler):
         )
         regions = []
         history = []
+        purpose = "page" if images else "unknown"
+        review_items = 0
         for message in messages:
             if not isinstance(message["content"], list):
+                if message["role"] == "user" and not images:
+                    try:
+                        payload = json.loads(message["content"].rsplit("\n\n", 1)[-1])
+                    except (ValueError, TypeError):
+                        continue
+                    if isinstance(payload, dict) and payload.get("review") == "forms_of_address":
+                        purpose = "forms_of_address"
+                        review_items = len(payload.get("items", []))
                 continue
             for part in message["content"]:
                 if part.get("type") == "text":
@@ -39,6 +49,7 @@ class ModelObserver(BaseHTTPRequestHandler):
                         regions.extend(payload.get("detected_regions", []))
                         history.extend(payload.get("story_so_far", []))
         record = {"images": images, "regions": len(regions), "story_entries": len(history),
+                  "purpose": purpose, "review_items": review_items,
                   "ocr_hints": sum(bool(region.get("ocr_text_maybe_garbled")) for region in regions),
                   "completed": False}
         start = time.monotonic()

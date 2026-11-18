@@ -6,8 +6,10 @@ import android.util.Base64
 import app.mangalens.settings.AppSettings
 import app.mangalens.settings.SourceLang
 import java.io.ByteArrayOutputStream
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+import kotlinx.coroutines.withTimeoutOrNull
 import org.json.JSONArray
 import org.json.JSONObject
 
@@ -128,9 +130,10 @@ class VisionLlmEngine(
             val crops = if (closeups.isEmpty()) emptyList() else {
                 PageMarkup.encodeRegionCrops(bitmap, anchors, closeups, settings.dataSaver)
             }
+            val history = JSONArray(StoryContext.snapshot())
             val page = JSONObject()
                 .put("expected_source_language", langHint)
-                .put("story_so_far", JSONArray(StoryContext.snapshot()))
+                .put("story_so_far", history)
                 .put("detected_regions", regions)
                 .put("closeups", JSONArray(crops.map { it.first }))
                 .toString()
@@ -142,7 +145,10 @@ class VisionLlmEngine(
                 effort = LlmHttp.effortLevel(settings, vision = true),
                 vision = true,
                 onDelta = if (stream == null) null else { delta ->
-                    for (o in stream.feed(delta)) entry(o, anchors, streamed, upload, bitmap.width, bitmap.height)?.let { onBubble!!(it) }
+                    for (o in stream.feed(delta)) {
+                        val bubble = entry(o, anchors, streamed, upload, bitmap.width, bitmap.height) ?: continue
+                        if (!bubble.needsAddressReview()) onBubble!!(bubble)
+                    }
                 },
             )
             val reply = LlmHttp.extractJsonObject(raw)
@@ -154,20 +160,71 @@ class VisionLlmEngine(
                 val o = arr.optJSONObject(i) ?: continue
                 entry(o, anchors, seenIds, upload, bitmap.width, bitmap.height)?.let { out.add(it) }
             }
+            val terms = reply.optJSONObject("new_terms") ?: JSONObject()
+            reviewFormsOfAddress(out, stable, history, terms)
             // A reply that lands after the reader moved on to another work (a
             // long pause, "New series") still letters its page, but what it
             // would teach belongs to the work it was asked about.
             if (generation == StoryContext.generation) {
-                reply.optJSONObject("new_terms")?.let { terms ->
-                    val learned = HashMap<String, String>()
-                    for (k in terms.keys()) learned[k] = terms.optString(k, "")
-                    glossary?.learn(learned)
-                }
+                val learned = HashMap<String, String>()
+                for (k in terms.keys()) learned[k] = terms.optString(k, "")
+                glossary?.learn(learned)
                 cast?.learn(CastBook.parse(reply.optJSONObject("characters")))
                 out.forEach { if (!it.sfx) StoryContext.remember(it.en, it.who) }
             }
             out
         }
+
+    private fun VisionBubble.needsAddressReview(): Boolean =
+        !sfx && OBJECT_PHRASE.containsMatchIn(en) && DETACHED_KOREAN_ADDRESS.containsMatchIn(src)
+
+    /** Re-read disputed addressees from the transcribed words in one small text request. */
+    internal suspend fun reviewFormsOfAddress(
+        bubbles: MutableList<VisionBubble>,
+        stable: String,
+        history: JSONArray,
+        terms: JSONObject,
+    ) {
+        val pending = bubbles.indices.filterTo(mutableSetOf()) { bubbles[it].needsAddressReview() }
+        if (pending.isEmpty()) return
+        val items = JSONArray()
+        for (id in pending) {
+            val b = bubbles[id]
+            items.put(JSONObject().put("id", id).put("source", b.src).put("speaker", b.who))
+        }
+        val request = JSONObject().put("review", "forms_of_address")
+            .put("story_so_far", history).put("items", items).toString()
+        // The image already supplied a usable line. An unavailable editor must not
+        // suppress it, and cancellation when the reader moves on still stops both calls.
+        val edits = try {
+            withTimeoutOrNull(30_000) {
+                val raw = LlmHttp.complete(settings, ADDRESS_REVIEW_PROMPT, stable, emptyList(), request,
+                    effort = "low", vision = false)
+                LlmHttp.extractJsonObject(raw).optJSONArray("items")
+            }
+        } catch (cancelled: CancellationException) {
+            throw cancelled
+        } catch (_: Exception) {
+            null
+        } ?: return
+        for (i in 0 until edits.length()) {
+            val edit = edits.optJSONObject(i) ?: continue
+            val id = edit.optInt("id", -1)
+            if (id !in pending || edit.optString("referent") != "listener") continue
+            val original = bubbles[id]
+            val en = JunkFilter.accept(original.src, edit.optString("en")) ?: continue
+            if (OBJECT_PHRASE.containsMatchIn(en)) continue
+            pending.remove(id)
+            bubbles[id] = original.copy(en = en)
+            val names = edit.optJSONObject("names") ?: continue
+            for (source in names.keys()) {
+                val name = names.optString(source).trim()
+                if (source.isNotBlank() && name.isNotBlank() && source in original.src && en.contains(name, true)) {
+                    terms.put(source, name)
+                }
+            }
+        }
+    }
 
     /**
      * The regions that get a close-up: those OCR read next to nothing in,
@@ -235,6 +292,15 @@ class VisionLlmEngine(
 
     companion object {
 
+        private val DETACHED_KOREAN_ADDRESS = Regex(
+            """[가-힣]{1,24}[아야]\s*[,，!！~～]\s*(?:이런|요런|저런)\s+[^.!?！？~～\n]{1,38}(?:것|거|녀석|아이|애)\s*[~～!！]"""
+        )
+        private val OBJECT_PHRASE = Regex("""\b(?:this|that)\s+(?:[a-z'-]+\s+){1,3}thing\b""", RegexOption.IGNORE_CASE)
+        private val ADDRESS_REVIEW_PROMPT = """
+You edit Korean comic dialogue for spoken English. Each source starts with a name being called, followed by a detached remark. Decide what the remark refers to from the entire Korean line and the preceding dialogue: "listener" for the addressee, "object" for a separate thing, or "unclear". When it is spoken affectionately to the listener, translate the whole line like someone speaking to them: address them directly with "you" or an endearment. Preserve the rest of the sentence, its action and who does what to whom. Use established names from the glossary. An obvious everyday noun used as a pet name can be translated by its meaning.
+Return JSON with an "items" array, one object per input id. Give "id" and "referent". For "listener" also give "en" containing the complete spoken English and "names" mapping any name you localized from source spelling to English. Output only the JSON.
+""".trim()
+
         /** Close-ups per page; each is a small upload and a few hundred tokens. */
         private const val MAX_CLOSEUPS = 6
         private const val MAX_CLOSEUPS_DATA_SAVER = 3
@@ -263,7 +329,7 @@ class VisionLlmEngine(
         private val SYSTEM_PROMPT = """
 Translate the lettering in this comic image into natural, concise English that can be printed in each balloon. Read the image first. The detected_regions OCR is only a rough hint and can be wrong. The magenta badge is the region id. If a numbered close-up follows the page, read its sharper lettering. Read vertical columns from right to left, top to bottom within each column. Keep a balloon's lines together.
 
-Return a JSON object with an array named "bubbles". For each numbered region write its numeric "id", then "who" identifying the speaker when known, then "en" as the English words that person would actually say. After writing the dialogue, transcribe the original lettering exactly in "src" and set "kind" to "dialogue", "sfx" or "skip". Keep literal wording in the transcription. Use real words in the values. Answer each id once. Skip already-English lettering, interface labels, watermarks and genuinely unreadable marks. For other visible comic lettering outside every outline, return the same fields with "box" [left, top, width, height] in thousandths of the page image instead of an id. Never duplicate a numbered balloon.
+Return a JSON object with an array named "bubbles". For each numbered region give its numeric "id", "src" containing the words you actually read, "en" containing their English translation, "who" identifying the speaker when known, and "kind" set to "dialogue", "sfx" or "skip". Use real words in the values. Answer each id once. Skip already-English lettering, interface labels, watermarks and genuinely unreadable marks. For other visible comic lettering outside every outline, return the same fields with "box" [left, top, width, height] in thousandths of the page image instead of an id. Never duplicate a numbered balloon.
 
 Read all the way to the end of the last line before translating. Preserve the action, its actor and objects, negation, emphasis, emotion and the speaker's register. When several things are named before a final verb, translate the complete clause. An ellipsis is a pause and adds no information. Use the art, balloon tails, dialogue history and series memory to resolve omitted subjects. An object's owner may be different from the person acting. Look at the preceding exchange before choosing a pronoun. If the actor remains unclear, use natural subjectless English. Introduce a recipient only when the dialogue establishes one. Honour the series glossary, pronouns, established names and meaningful honorifics. Keep ordinary personal names in their usual spelling. For an affectionate nickname or pet name that is plainly an everyday noun, use its natural English meaning unless the series has established a different rendering. When a speaker calls a name and then praises their listener, write the compliment as direct speech to that person. A demonstrative points to a separate object only when the scene establishes one. Keep a following question separate from the aside. Translate the source language visible in the image, even when the language hint differs. Translate sound effects into short English effects in capitals. For matching "run" numbers, read the whole sentence in "part" order, then divide its English across those balloons. Preserve the original tone and intensity. Add no explanations.
 

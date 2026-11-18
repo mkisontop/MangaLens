@@ -52,6 +52,50 @@ class TranslationServiceTest {
         AppSettings(provider = LlmProvider.CUSTOM, model = "m", customUrl = srv.base + "chat", apiKey = "k")
 
     @Test
+    fun disputedAddressesUseOneTextRequestAndLeaveOtherBalloonsIntact() = runBlocking {
+        fun bubble(src: String, en: String) = VisionLlmEngine.VisionBubble(0, 0, 0, 0, 0, src, en, false, "")
+        val first = bubble("봄이야! 이런 장난스러운 녀석~ 또 날 기다렸어?", "Spring! This playful little thing! Were you waiting for me?")
+        val second = bubble("눈송이야! 요런 예쁜 것~ 새로 산 인형이야?", "Snowflake! This lovely little thing! Is it a new doll?")
+        val direct = bubble(first.src, "Spring! You little rascal! Were you waiting for me?")
+        val ordinary = bubble("수연아! 이 장난감은 누구 거야?", "Suyeon! Whose toy is this cute thing?")
+        val cards = mutableListOf(first, second, direct, ordinary)
+        val srv = serve { ex ->
+            val edits = JSONArray()
+                .put(JSONObject().put("id", 0).put("referent", "listener").put("en", direct.en)
+                    .put("names", JSONObject().put("봄이", "Spring").put("엉뚱", "Spring")))
+                .put(JSONObject().put("id", 1).put("referent", "object"))
+                .put(JSONObject().put("id", 2).put("referent", "listener").put("en", "Unrequested change"))
+            val body = JSONObject().put("items", edits)
+            val msg = JSONObject().put("content", body.toString())
+            ex.respond(200, JSONObject().put("choices", JSONArray().put(JSONObject().put("message", msg))).toString())
+        }
+        val reader = VisionLlmEngine(custom(srv))
+        val terms = JSONObject()
+        reader.reviewFormsOfAddress(cards, "{}", JSONArray().put("Wait here."), terms)
+        assertEquals(listOf(direct.en, second.en, direct.en, ordinary.en), cards.map { it.en })
+        assertEquals("Spring", terms.getString("봄이"))
+        assertTrue(!terms.has("엉뚱"))
+        val message = JSONObject(srv.exchanges.single().body).getJSONArray("messages").getJSONObject(1).getString("content")
+        val request = JSONObject(message.substringAfter("\n\n"))
+        assertTrue(!message.contains("base64"))
+        assertEquals(2, request.getJSONArray("items").length())
+        assertEquals("Wait here.", request.getJSONArray("story_so_far").getString(0))
+        reader.reviewFormsOfAddress(mutableListOf(direct, ordinary), "{}", JSONArray(), terms)
+        assertEquals(1, srv.exchanges.size)
+    }
+
+    @Test
+    fun anUnavailableAddressReviewKeepsTheOriginalImageTranslation() = runBlocking {
+        val srv = serve { ex -> ex.respond(503, "unavailable") }
+        val original = VisionLlmEngine.VisionBubble(0, 0, 0, 0, 0,
+            "별이야! 이런 다정한 아이~ 날 기다렸구나!", "Star! That gentle little thing! You waited for me!", false, "")
+        val cards = mutableListOf(original)
+        VisionLlmEngine(custom(srv)).reviewFormsOfAddress(cards, "{}", JSONArray(), JSONObject())
+        assertEquals(listOf(original), cards)
+        assertEquals(1, srv.exchanges.size)
+    }
+
+    @Test
     fun copiedSchemaValuesAreRetriedAndNeverShownEvenFromAnOlderCache() = runBlocking {
         var answer = "<English>"
         val srv = serve { ex ->
