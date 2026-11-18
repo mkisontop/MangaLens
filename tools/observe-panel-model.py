@@ -24,7 +24,21 @@ class ModelObserver(BaseHTTPRequestHandler):
             for message in messages if isinstance(message["content"], list)
             for part in message["content"]
         )
-        record = {"images": images, "completed": False}
+        regions = []
+        for message in messages:
+            if not isinstance(message["content"], list):
+                continue
+            for part in message["content"]:
+                if part.get("type") == "text":
+                    try:
+                        payload = json.loads(part["text"])
+                    except json.JSONDecodeError:
+                        continue
+                    if isinstance(payload, dict):
+                        regions.extend(payload.get("detected_regions", []))
+        record = {"images": images, "regions": len(regions),
+                  "ocr_hints": sum(bool(region.get("ocr_text_maybe_garbled")) for region in regions),
+                  "completed": False}
         start = time.monotonic()
         backend = http.client.HTTPConnection("127.0.0.1", 7878, timeout=240)
         try:

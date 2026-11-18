@@ -90,6 +90,11 @@ class VisionLlmEngine(
             // Each detected region is an anchor the model answers by id, so
             // overlays land pixel-perfect even when the model's own sense of
             // image coordinates drifts.
+            // On a zoomed, single dialogue balloon the lettering is already
+            // large enough to read. A damaged OCR hint can override those pixels.
+            val largeSingleRegion = pageAnchors.singleOrNull()?.box?.let {
+                it.width() >= upload.width() / 3 && it.height() >= upload.height() / 6
+            } == true
             val regions = JSONArray()
             pageAnchors.forEachIndexed { i, b ->
                 val o = JSONObject()
@@ -102,8 +107,8 @@ class VisionLlmEngine(
                             .put(b.box.width() * 1000 / upload.width())
                             .put(b.box.height() * 1000 / upload.height())
                     )
-                    .put("ocr_text_maybe_garbled", b.text)
                     .put("kind_guess", if (b.kind == app.mangalens.ocr.BubbleKind.SFX) "sfx" else "dialogue")
+                if (!largeSingleRegion) o.put("ocr_text_maybe_garbled", b.text)
                 if (b.runId >= 0) o.put("run", b.runId).put("part", b.runPart)
                 regions.put(o)
             }

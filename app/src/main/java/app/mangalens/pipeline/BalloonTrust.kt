@@ -136,7 +136,7 @@ internal object BalloonTrust {
      * on past that span, like the features of a face drawn beside the
      * text, does not.
      */
-    private fun withNeighbours(bitmap: Bitmap, balloon: Balloon, text: List<Rect>): List<Rect> {
+    internal fun withNeighbours(bitmap: Bitmap, balloon: Balloon, text: List<Rect>): List<Rect> {
         if (text.isEmpty()) return text
         val grid = inkGrid(bitmap, balloon) ?: return text
         return sideBySide(text).map { grow(grid, it) }

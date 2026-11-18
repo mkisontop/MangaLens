@@ -223,6 +223,11 @@ class PublishedComicExperienceTest {
                 val cards = result.bubbles.map { it.translated }
                 Log.i("MangaLensUX", scene.name + " source=" + sourceLines + " cards=" + cards +
                     if (liveEndpoint == null) "" else " imageTranscription=" + result.bubbles.map { it.original })
+                if (build != "baseline") {
+                    Log.i("MangaLensUX", scene.name + " geometry=" + result.bubbles.map {
+                        listOf(it.box, it.balloon?.box, it.sourceInkBounds, it.patchRect)
+                    })
+                }
                 val expectedEnglish = if (liveEndpoint == null) {
                     if (build != "baseline") {
                         assertEquals("the published balloon was recognized: " + seen, listOf(scene.english), cards)

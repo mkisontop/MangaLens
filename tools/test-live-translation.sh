@@ -82,6 +82,8 @@ log = Path(sys.argv[1]).read_text(errors="replace")
 records = [json.loads(row) for row in Path("app/build/reader-live-device/model-requests.jsonl").read_text().splitlines()]
 assert len(records) == 1 and records[0]["images"] >= 1 and records[0]["completed"], (
     "The on-screen answer must come from one complete image request without a text retry", records)
+assert records[0]["regions"] == 1 and records[0]["ocr_hints"] == 0, (
+    "This zoomed balloon must be read from the lettering in the image", records)
 images = [int(value) for value in re.findall(r"image (?:processed|slice encoded) in (\d+) ms", log)]
 report = {"android_requests": records, "image_processing_ms": images}
 out = Path("app/build/reader-live-device/model-timing.json")

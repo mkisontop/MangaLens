@@ -642,7 +642,7 @@ class TranslatePipeline(
         val onProgress: (suspend (List<RenderBubble>) -> Unit)? = onPartial?.let { emit ->
             { rendered -> emit(PageResult(UpgradeMerge.merge(fromImage, rendered), vision.label, null)) }
         }
-        val text = aiTextTranslate(bitmap, bubbles, ocrResult.lang, settings, detected, onProgress)
+        val text = aiTextTranslate(bitmap, bubbles, ocrResult.lang, settings, detected, anchorLines, onProgress)
         val shown = UpgradeMerge.merge(fromImage, text.bubbles)
         val failure = imageFailure ?: return text.copy(bubbles = shown)
         return text.copy(
@@ -821,7 +821,7 @@ class TranslatePipeline(
             val lined = withLines()
             val partialShown = resolver.resolve(lettered(streamed))
             val text = try {
-                aiTextTranslate(bitmap, lined.bubbles, lined.ocr.lang, settings, lined.detected)
+                aiTextTranslate(bitmap, lined.bubbles, lined.ocr.lang, settings, lined.detected, lined.anchorLines)
             } catch (e: CancellationException) {
                 throw e
             } catch (_: Exception) {
@@ -1053,6 +1053,7 @@ class TranslatePipeline(
         lang: SourceLang,
         settings: AppSettings,
         detected: List<Balloon>,
+        ocrLines: List<OcrLine>,
         onProgress: (suspend (List<RenderBubble>) -> Unit)? = null,
     ): PageResult {
         // Text-only requests can say nothing about a balloon OCR could not
@@ -1069,7 +1070,7 @@ class TranslatePipeline(
             val previous = cards[k]
             if (previous != null && previous.translated == english) return previous
             val next = previous?.copy(translated = english)
-                ?: renderBubble(bitmap, b.box, english, b.text, b.vertical, b.kind, detected, cleanOcrText = true)
+                ?: renderBubble(bitmap, b.box, english, b.text, b.vertical, b.kind, detected, ocrLines, cleanOcrText = true)
             cards[k] = next
             return next
         }
@@ -1161,7 +1162,7 @@ class TranslatePipeline(
             renderBubble(
                 bitmap, anchor.box, v.en, v.src.ifBlank { anchor.text }, anchor.vertical,
                 if (v.sfx) BubbleKind.SFX else BubbleKind.DIALOGUE, detected,
-                cleanOcrText = anchor.text.isNotBlank(),
+                ocrLines, cleanOcrText = anchor.text.isNotBlank(),
             )
         }
 
@@ -1219,7 +1220,7 @@ class TranslatePipeline(
             renderBubble(
                 bitmap, box, v.en, original, vertical,
                 if (v.sfx) BubbleKind.SFX else BubbleKind.DIALOGUE, detected,
-                cleanOcrText = textBox != null,
+                ocrLines, cleanOcrText = textBox != null,
             )
         }
         return anchored + extras
@@ -1344,6 +1345,7 @@ class TranslatePipeline(
         vertical: Boolean,
         kind: BubbleKind,
         detected: List<Balloon>,
+        ocrLines: List<OcrLine>,
         cleanOcrText: Boolean = false,
     ): RenderBubble {
         // Art that passed for a balloon — a face, a highlight — is never
@@ -1354,17 +1356,24 @@ class TranslatePipeline(
         val shape = balloonFor(box, detected)
         val ink = shape?.let { BalloonTrust.letteringBlock(bitmap, it) }?.takeIf { Rect.intersects(it, box) }
         val balloon = shape?.takeIf { ink != null || BalloonTrust.holdsOnly(bitmap, it, listOf(box)) }
-        // Keep the detected shape for typesetting. Cleaning the source glyphs
-        // needs only their measured block, not the shaded outline or balloon tail.
-        val inkBounds = if (ink != null && balloon != null) Rect(ink).apply {
-            val pad = (minOf(width(), height()) / 20).coerceIn(4, 12)
-            inset(-pad, -pad)
-            intersect(balloon.box)
-        } else null
+        // A welded region is the whole balloon. Use its original OCR line
+        // bounds for cleaning and extend them over adjacent strokes OCR missed.
+        val lines = ocrLines.asSequence().map { it.box }
+            .filter { box.contains(it.centerX(), it.centerY()) }.toList()
+        fun combined(rects: List<Rect>) = Rect().apply { rects.forEach { union(it) } }
+        val sourceBox = if (lines.isEmpty()) box else combined(lines)
+        val inkBounds = balloon?.let { shapeToClean ->
+            val block = if (lines.isEmpty()) ink else combined(BalloonTrust.withNeighbours(bitmap, shapeToClean, lines))
+            block?.let { Rect(it).apply {
+                val pad = (minOf(width(), height()) / 20).coerceIn(4, 12)
+                inset(-pad, -pad)
+                intersect(shapeToClean.box)
+            } }
+        }
         // Dialogue can be perfectly readable even when a page edge or a control
         // hides the balloon outline. Clean the OCR strokes on their own paper.
         val erasure = if (cleanOcrText && balloon == null && kind == BubbleKind.DIALOGUE) {
-            TextEraser.erase(bitmap, box, ItemKind.SPEECH)
+            TextEraser.erase(bitmap, sourceBox, ItemKind.SPEECH)
         } else null
         val bg = when {
             balloon != null -> PageColors.interiorColor(bitmap, balloon)
