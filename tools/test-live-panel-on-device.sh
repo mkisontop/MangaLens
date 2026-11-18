@@ -12,6 +12,21 @@ adb install -r -g app/build/outputs/apk/androidTest/debug/app-debug-androidTest.
 bash tools/fetch-reader-page.sh "$id"
 # The app reaches the runner's private model over the emulator's loopback interface.
 adb reverse tcp:7878 tcp:7878
+# A CPU runner pays a substantial one-time prompt prefill. Warm only the
+# app's fixed instructions; the comic image and its words arrive from Android.
+python3 - <<'PY'
+import json, os, re, textwrap, urllib.request
+from pathlib import Path
+source = Path("app/src/main/java/app/mangalens/translate/VisionLlmEngine.kt").read_text()
+match = re.search(r'private val SYSTEM_PROMPT = """(.*?)"""', source, re.S)
+prompt = textwrap.dedent(match.group(1)).strip()
+body = {"model": os.environ["MANGALENS_LIVE_MODEL"], "max_tokens": 1,
+        "messages": [{"role": "system", "content": prompt}, {"role": "user", "content": "Ready."}]}
+req = urllib.request.Request(os.environ["MANGALENS_LIVE_ENDPOINT"], data=json.dumps(body).encode(),
+                             headers={"Content-Type": "application/json"})
+with urllib.request.urlopen(req, timeout=240) as reply:
+    print("Model instructions warmed", json.load(reply).get("usage"))
+PY
 adb logcat -c
 adb shell am instrument -w -r -e build live -e liveEndpoint "$MANGALENS_LIVE_ENDPOINT" \
     -e class 'app.mangalens.reader.PublishedComicExperienceTest#realModelLettersThePublishedKoreanPanelOnTheDevice' \
@@ -22,6 +37,11 @@ adb exec-out run-as "$id" tar -cf - -C files/reader-ux live > "$out/page.tar"
 tar -xf "$out/page.tar" -C "$out"
 rm "$out/page.tar"
 cp app/src/androidTest/assets/peppercarrot-CREDITS.txt "$out/"
+for detail in "$out"/live/published-*-detail.jpg; do
+    [[ -f "$detail" ]] || continue
+    echo "MangaLensDetail $(basename "$detail")"
+    base64 -w 960 "$detail" | sed 's/^/MangaLensFrame /'
+done
 grep -Eq '^OK \(1 test\)' "$out/instrumentation.txt"
 test -s "$out/live/live-panel.json"
 cat "$out/live/live-panel.json"

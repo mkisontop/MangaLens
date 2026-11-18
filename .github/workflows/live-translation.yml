@@ -57,6 +57,8 @@ jobs:
           sudo udevadm control --reload-rules
           sudo udevadm trigger --name-match=kvm
       - name: Read a Korean comic panel with the pinned model and the Android compositor
+        env:
+          MANGALENS_LIVE_VISION: "1"
         uses: reactivecircus/android-emulator-runner@v2
         with:
           api-level: 33
