@@ -25,23 +25,31 @@ cleanup() {
     rm -rf "$work"
 }
 trap cleanup EXIT
-engine="https://github.com/ggml-org/llama.cpp/releases/download/b6752/llama-b6752-bin-ubuntu-x64.zip"
 fetch() { curl -fsSL --retry 3 --retry-all-errors --connect-timeout 20 --max-time 720 "$1" -o "$2"; }
-fetch "$engine" "$work/engine.zip"
-echo "31cad32d9e191505ddf0c0e1f8ff2ab9f6ff64dbe9525b0931e9cf1cb8990d9b  $work/engine.zip" | sha256sum --check
-unzip -q "$work/engine.zip" -d "$work/engine"
+mkdir -p "$work/engine"
+if [[ "${MANGALENS_LIVE_VISION:-0}" == 1 ]]; then
+    engine="https://github.com/ggml-org/llama.cpp/releases/download/b12503/llama-b12503-bin-ubuntu-x64.tar.gz"
+    fetch "$engine" "$work/engine.tar.gz"
+    echo "0d585f8a78ffdfdc4f6303a089aaa1379c15323b33483b6548c85c774a376a9d  $work/engine.tar.gz" | sha256sum --check
+    tar -xzf "$work/engine.tar.gz" -C "$work/engine"
+else
+    engine="https://github.com/ggml-org/llama.cpp/releases/download/b6752/llama-b6752-bin-ubuntu-x64.zip"
+    fetch "$engine" "$work/engine.zip"
+    echo "31cad32d9e191505ddf0c0e1f8ff2ab9f6ff64dbe9525b0931e9cf1cb8990d9b  $work/engine.zip" | sha256sum --check
+    unzip -q "$work/engine.zip" -d "$work/engine"
+fi
 server=$(find "$work/engine" -type f -name llama-server -print -quit)
 extra=()
 if [[ "${MANGALENS_LIVE_VISION:-0}" == 1 ]]; then
-    model=qwen2.5-vl-7b-instruct-q4_k_m
-    revision=508edd0afaa66bb9e9f40587acc2184f02daf1f6
-    base="https://huggingface.co/ggml-org/Qwen2.5-VL-7B-Instruct-GGUF/resolve/$revision"
-    model_file="$work/Qwen2.5-VL-7B-Instruct-Q4_K_M.gguf"
-    projector="$work/mmproj-Qwen2.5-VL-7B-Instruct-Q8_0.gguf"
+    model=qwen3-vl-8b-instruct-q4_k_m
+    revision=00e7d63528e65d7b64e80e1293a8360b4af6a594
+    base="https://huggingface.co/Qwen/Qwen3-VL-8B-Instruct-GGUF/resolve/$revision"
+    model_file="$work/Qwen3VL-8B-Instruct-Q4_K_M.gguf"
+    projector="$work/mmproj-Qwen3VL-8B-Instruct-Q8_0.gguf"
     fetch "$base/$(basename "$model_file")" "$model_file"
     fetch "$base/$(basename "$projector")" "$projector"
-    echo "9258bf05b12686d097ff3b6b18d968ab393649780aa2b3cd67fec43d50554392  $model_file" | sha256sum --check
-    echo "2ddb555391bae966e412deab9e07b58afa18bcc06930ba0f1c78a3695ab9e506  $projector" | sha256sum --check
+    echo "67d1659bfe71b89d50b45a4ad1a9e5b997e5bb16ce5da66a6a6167abd569e9e2  $model_file" | sha256sum --check
+    echo "c6ba85508d82f42590e6eb77d5340369ab6fecf107a7561d809523d8aa5f3bfd  $projector" | sha256sum --check
     extra=(--mmproj "$projector")
 else
     model=qwen2.5-7b-instruct-q4_k_m
@@ -71,12 +79,13 @@ if [[ "${MANGALENS_LIVE_VISION:-0}" == 1 && $# -gt 0 ]]; then
 import json, re, sys
 from pathlib import Path
 log = Path(sys.argv[1]).read_text(errors="replace")
-requests = len(re.findall(r"request: POST /v1/chat/completions .*? 200", log))
-images = [int(value) for value in re.findall(r"image processed in (\d+) ms", log)]
-report = {"chat_requests_including_prompt_warmup": requests, "image_processing_ms": images}
+records = [json.loads(row) for row in Path("app/build/reader-live-device/model-requests.jsonl").read_text().splitlines()]
+assert len(records) == 1 and records[0]["images"] >= 1 and records[0]["completed"], (
+    "The on-screen answer must come from one complete image request without a text retry", records)
+images = [int(value) for value in re.findall(r"image (?:processed|slice encoded) in (\d+) ms", log)]
+report = {"android_requests": records, "image_processing_ms": images}
 out = Path("app/build/reader-live-device/model-timing.json")
 out.write_text(json.dumps(report, indent=2) + "\n")
 print(report)
-assert requests == 2 and images, "The panel must come from the image request without a text retry"
 PY
 fi

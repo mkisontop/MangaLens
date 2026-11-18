@@ -221,7 +221,8 @@ class PublishedComicExperienceTest {
                 }
                 val elapsed = SystemClock.elapsedRealtime() - start
                 val cards = result.bubbles.map { it.translated }
-                Log.i("MangaLensUX", scene.name + " source=" + sourceLines + " cards=" + cards)
+                Log.i("MangaLensUX", scene.name + " source=" + sourceLines + " cards=" + cards +
+                    if (liveEndpoint == null) "" else " imageTranscription=" + result.bubbles.map { it.original })
                 val expectedEnglish = if (liveEndpoint == null) {
                     if (build != "baseline") {
                         assertEquals("the published balloon was recognized: " + seen, listOf(scene.english), cards)
@@ -234,6 +235,11 @@ class PublishedComicExperienceTest {
                         Regex("potion|elixir|concoction").containsMatchIn(answer) &&
                             Regex("clothes|clothing|outfit|garments|dress|costume").containsMatchIn(answer) &&
                             Regex("\\b(hat|cap)s?\\b").containsMatchIn(answer))
+                    assertTrue("The speaker recognizes their belongings being brought: " + answer,
+                        Regex("\\b(brought|bring|bringing|carried|packed|fetched|got|took along|came with)\\b").containsMatchIn(answer) &&
+                            Regex("\\bmy\\b").containsMatchIn(answer))
+                    assertTrue("The translation added items absent from the panel: " + answer,
+                        !Regex("\\beverything else\\b|\\ball the rest\\b").containsMatchIn(answer))
                     cards.single()
                 }
                 inst.runOnMainSync { overlay.setBubbles(result.bubbles, frame) }

@@ -15,7 +15,15 @@ adb install -r -g app/build/outputs/apk/debug/app-debug.apk
 adb install -r -g app/build/outputs/apk/androidTest/debug/app-debug-androidTest.apk
 bash tools/fetch-reader-page.sh "$id"
 # The app reaches the runner's private model over the emulator's loopback interface.
-adb reverse tcp:7878 tcp:7878
+python3 tools/observe-panel-model.py "$out/model-requests.jsonl" &
+observer=$!
+trap 'kill "$observer" 2>/dev/null || true' EXIT
+for attempt in {1..20}; do
+    if curl -fsS http://127.0.0.1:7879/health > /dev/null 2>&1; then break; fi
+    sleep 0.2
+done
+curl -fsS http://127.0.0.1:7879/health > /dev/null
+adb reverse tcp:7879 tcp:7879
 # A CPU runner pays a substantial one-time prompt prefill. Warm only the
 # app's fixed instructions; the comic image and its words arrive from Android.
 python3 - <<'PY'
@@ -32,7 +40,7 @@ with urllib.request.urlopen(req, timeout=240) as reply:
     print("Model instructions warmed", json.load(reply).get("usage"))
 PY
 adb logcat -c
-adb shell am instrument -w -r -e build live -e liveEndpoint "$MANGALENS_LIVE_ENDPOINT" -e liveModel "$MANGALENS_LIVE_MODEL" \
+adb shell am instrument -w -r -e build live -e liveEndpoint http://127.0.0.1:7879/v1/chat/completions -e liveModel "$MANGALENS_LIVE_MODEL" \
     -e class 'app.mangalens.reader.PublishedComicExperienceTest#realModelLettersThePublishedKoreanPanelOnTheDevice' \
     "$id.test/androidx.test.runner.AndroidJUnitRunner" | tee "$out/instrumentation.txt"
 adb logcat -d -s MangaLensUX:I > "$out/device.log"
