@@ -31,6 +31,23 @@ import org.robolectric.annotation.GraphicsMode
 @GraphicsMode(GraphicsMode.Mode.NATIVE)
 class PageMarkupTest {
 
+    @Test
+    fun aWholeFrameCloseupKeepsTheReadersImmutableCaptureUsable() {
+        for (size in listOf(176, 900)) {
+            val page = Bitmap.createBitmap(IntArray(size * size) { Color.WHITE }, size, size, Bitmap.Config.ARGB_8888)
+            try {
+                assertTrue("The fixture models an immutable captured page", !page.isMutable)
+                val anchor = Bubble("", Rect(0, 0, size, size), false)
+                val closeup = PageMarkup.encodeRegionCrops(page, listOf(anchor), listOf(0), dataSaver = true)
+                assertEquals(1, closeup.size)
+                assertTrue("The capture is still available to OCR and lettering", !page.isRecycled)
+                assertEquals(Color.WHITE, page.getPixel(0, 0))
+            } finally {
+                page.recycle()
+            }
+        }
+    }
+
     private val outputDir = File("build/markup-preview").apply { mkdirs() }
 
     /** A stand-in manga page: panel borders, balloons, and bars for lettering. */

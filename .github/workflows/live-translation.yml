@@ -10,6 +10,8 @@ on:
       - "app/src/test/java/app/mangalens/translate/LiveTranslationQualityTest.kt"
       - "app/src/androidTest/java/app/mangalens/reader/PublishedComicExperienceTest.kt"
       - "tools/test-live-panel-on-device.sh"
+      - "app/src/main/java/app/mangalens/translate/**"
+      - "app/src/main/java/app/mangalens/pipeline/**"
 
 permissions:
   contents: read

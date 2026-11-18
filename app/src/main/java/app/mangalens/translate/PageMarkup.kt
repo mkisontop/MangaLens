@@ -116,8 +116,9 @@ object PageMarkup {
             val cut = Bitmap.createBitmap(bitmap, crop.left, crop.top, crop.width(), crop.height())
             val sized = if (scale < 1f) Bitmap.createScaledBitmap(cut, w, h, true) else cut
             val canvasBitmap = if (sized !== bitmap && sized.isMutable) sized else sized.copy(Bitmap.Config.ARGB_8888, true)
-            if (sized !== cut) cut.recycle()
-            if (canvasBitmap !== sized) sized.recycle()
+            // Android may return the caller's immutable frame for a whole-frame crop.
+            if (sized !== cut && cut !== bitmap) cut.recycle()
+            if (canvasBitmap !== sized && sized !== bitmap) sized.recycle()
             if (canvasBitmap == null) continue
             runCatching { drawBadge(canvasBitmap, id) }
             out.add(id to encodeJpeg(canvasBitmap, quality))

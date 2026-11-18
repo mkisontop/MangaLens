@@ -448,7 +448,7 @@ class TranslatePipeline(
         val h = (crop.height() * scale).toInt()
         val src = Bitmap.createBitmap(bitmap, crop.left, crop.top, crop.width(), crop.height())
         val scaled = Bitmap.createScaledBitmap(src, w, h, true)
-        if (scaled !== src) src.recycle()
+        if (scaled !== src && src !== bitmap) src.recycle()
         // Light lettering on a dark box reads far better with the polarity
         // flipped back to what the recognizers expect.
         val input = if (b.inverted) invert(scaled) else scaled
@@ -464,7 +464,7 @@ class TranslatePipeline(
             }
         } finally {
             if (input !== scaled) input.recycle()
-            scaled.recycle()
+            if (scaled !== bitmap) scaled.recycle()
         }
     }
 

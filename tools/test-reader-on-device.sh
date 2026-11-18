@@ -24,6 +24,9 @@ for build in "${builds[@]}"; do
     bash tools/fetch-reader-page.sh "$id"
     adb shell pm grant "$id" android.permission.POST_NOTIFICATIONS
     adb shell appops set "$id" SYSTEM_ALERT_WINDOW allow
+    adb shell am start -W -n "$id/app.mangalens.MainActivity" | tee "$out/$build-home-launch.txt"
+    grep -Eq '^Status: ok' "$out/$build-home-launch.txt"
+    adb shell am force-stop "$id"
     adb logcat -c
     adb shell am instrument -w -r -e build "$build" "$id.test/androidx.test.runner.AndroidJUnitRunner" \
         | tee "$out/$build-instrumentation.txt"
