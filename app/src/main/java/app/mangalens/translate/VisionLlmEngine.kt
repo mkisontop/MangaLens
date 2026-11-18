@@ -158,6 +158,12 @@ class VisionLlmEngine(
                     if (lang == SourceLang.JA) put("reading_note",
                         "In Japanese, a sentence ending in ～ないで or ～ないでください asks the listener not to act. " +
                             "Translate that request to the listener. Within a longer clause ～ないで can mean without doing.")
+                    if (lang == SourceLang.KO && listenerActsOnSpeaker(previousDialogue.lastOrNull().orEmpty()) &&
+                        anchors.any { KOREAN_OWNED_NOUN.containsMatchIn(it.text) }) {
+                        put("reading_note", "In Korean, 내 or 제 before a noun identifies its owner. " +
+                            "A speaker ending in -네 or -네요 can be noticing what their companion did. " +
+                            "Use the preceding exchange to identify the actor of the verb.")
+                    }
                 }
                 .toString()
 
@@ -171,7 +177,7 @@ class VisionLlmEngine(
                 onDelta = if (stream == null) null else { delta ->
                     for (o in stream.feed(delta)) {
                         val bubble = entry(o, anchors, streamed, upload, bitmap.width, bitmap.height) ?: continue
-                        if (!bubble.needsAddressReview() && !bubble.reversesJapaneseRequest()) {
+                        if (!bubble.needsAddressReview() && bubble.roleConflict(streamedPreviousLine) == null) {
                             val ready = bubble.afterAddress(streamedPreviousLine)
                             onBubble!!(ready)
                             if (!ready.sfx) streamedPreviousLine = StoryContext.scriptLine(ready.en, ready.who)
@@ -190,7 +196,7 @@ class VisionLlmEngine(
             }
             val terms = reply.optJSONObject("new_terms") ?: JSONObject()
             reviewFormsOfAddress(out, stable, history, terms)
-            reviewJapaneseRequests(out, stable, history)
+            reviewDialogueRoles(out, stable, history)
             var previousLine = previousDialogue.lastOrNull().orEmpty()
             for (i in out.indices) {
                 val bubble = out[i]
@@ -221,33 +227,47 @@ class VisionLlmEngine(
         !sfx && !refersToObject && DETACHED_KOREAN_ADDRESS.containsMatchIn(src) &&
             (OBJECT_PHRASE.containsMatchIn(en) || GENERIC_CALLOUT.containsMatchIn(en) || POINTED_REMARK.containsMatchIn(en))
 
-    private fun VisionBubble.reversesJapaneseRequest(): Boolean =
-        !sfx && FIRST_PERSON_REFUSAL.containsMatchIn(en) && JAPANESE_NEGATIVE_REQUEST.containsMatchIn(src)
+    private fun VisionBubble.roleConflict(previous: String): String? = when {
+        sfx -> null
+        FIRST_PERSON_REFUSAL.containsMatchIn(en) && JAPANESE_NEGATIVE_REQUEST.containsMatchIn(src) -> "listener_request"
+        SELF_HANDLED_POSSESSIONS.containsMatchIn(en) && KOREAN_OWNED_NOUN.containsMatchIn(src) &&
+            NOTICING_ENDING.containsMatchIn(src) && !NAMED_FIRST_PERSON_ACTOR.containsMatchIn(src) &&
+            listenerActsOnSpeaker(previous) -> "actor_and_owner"
+        else -> null
+    }
 
-    /** Keep a request to the listener off screen if the image reply turned it into the speaker's own refusal. */
-    internal suspend fun reviewJapaneseRequests(bubbles: MutableList<VisionBubble>, stable: String, history: JSONArray) {
-        val pending = bubbles.indices.filterTo(mutableSetOf()) { bubbles[it].reversesJapaneseRequest() }
-        if (pending.isEmpty()) return
+    /** Check only disputed roles against the transcribed source before painting or remembering them. */
+    internal suspend fun reviewDialogueRoles(bubbles: MutableList<VisionBubble>, stable: String, history: JSONArray) {
+        val pending = mutableMapOf<Int, String>()
         val items = JSONArray()
-        for (id in pending) {
-            val bubble = bubbles[id]
-            items.put(JSONObject().put("id", id).put("source", bubble.src).put("draft", bubble.en))
+        var previous = history.optString(history.length() - 1, "")
+        for ((id, bubble) in bubbles.withIndex()) {
+            val issue = bubble.roleConflict(previous)
+            if (issue != null) {
+                pending[id] = previous
+                items.put(JSONObject().put("id", id).put("source", bubble.src).put("draft", bubble.en)
+                    .put("issue", issue).put("previous_line", previous))
+            } else if (!bubble.sfx) {
+                previous = StoryContext.scriptLine(bubble.en, bubble.who)
+            }
         }
-        val request = JSONObject().put("review", "japanese_requests").put("story_so_far", history).put("items", items)
-        val edits = requestEdits(JAPANESE_REQUEST_REVIEW_PROMPT, stable, request) ?: JSONArray()
+        if (pending.isEmpty()) return
+        val request = JSONObject().put("review", "dialogue_roles").put("story_so_far", history).put("items", items)
+        val edits = requestEdits(ROLE_REVIEW_PROMPT, stable, request) ?: JSONArray()
         for (i in 0 until edits.length()) {
             val edit = edits.optJSONObject(i) ?: continue
             val id = edit.optInt("id", -1)
-            if (id !in pending) continue
+            val preceding = pending[id] ?: continue
             val original = bubbles[id]
             val english = JunkFilter.accept(original.src, edit.optString("en")) ?: continue
             val corrected = original.copy(en = english)
-            if (corrected.reversesJapaneseRequest()) continue
+            val conflict = corrected.roleConflict(preceding)
+            if (conflict != null && !(conflict == "actor_and_owner" && edit.optString("actor") == "speaker")) continue
             bubbles[id] = corrected
             pending.remove(id)
         }
         // The pipeline can fill any unresolved region through its ordinary text path.
-        for (id in pending.sortedDescending()) bubbles.removeAt(id)
+        for (id in pending.keys.sortedDescending()) bubbles.removeAt(id)
     }
 
     /** Re-read disputed addressees from the transcribed words in one small text request. */
@@ -384,6 +404,15 @@ class VisionLlmEngine(
         private val FIRST_PERSON_REFUSAL = Regex(
             """^[\s…“"‘']*(?:i|we)\s*(?:['’](?:m|re)\s+not|(?:am|are|will|shall|do|did|can)\s+not|won['’]?t|don['’]?t|can['’]?t|cannot|never)\b""",
             RegexOption.IGNORE_CASE)
+        private val SELF_HANDLED_POSSESSIONS = Regex(
+            """^[\s.…“"'‘]*(?:i|we)(?:['’]ve|\s+(?:have|had))?\s+(?:(?:even|also|just|already)\s+)*(?:brought|bring|carried|carry|packed|pack|fetched|deliver(?:ed)?|moved|took|bought|returned|prepared|grabbed|picked up|loaded|collected)\b[^.!?]*\b(?:my|our)\b""",
+            RegexOption.IGNORE_CASE)
+        private val KOREAN_OWNED_NOUN = Regex("""^[\s.…「“"']*(?:내|제|우리(?:의)?)\s+[가-힣]""")
+        private val NOTICING_ENDING = Regex("""(?:[가-힣]네(?:요)?|군(?:요)?|구나)[\s.!?…~～！？」”"']*$""")
+        private val NAMED_FIRST_PERSON_ACTOR = Regex("""(?<![가-힣])(?:내가|제가|나는|난|저는|우리가|우리는)(?![가-힣])""")
+        private val LISTENER_SUBJECT = Regex("""\byou\b""", RegexOption.IGNORE_CASE)
+        private fun listenerActsOnSpeaker(line: String): Boolean =
+            LISTENER_SUBJECT.containsMatchIn(line) && FIRST_PERSON_OBJECT.containsMatchIn(line)
 
         /** A name directly called by the speaker cannot identify the speaker of that line. */
         internal fun attributedSpeaker(source: String, english: String, speaker: String, listener: String): String {
@@ -453,10 +482,13 @@ class VisionLlmEngine(
 Identify whom each detached Korean remark describes. Use the called name, grammar, preceding dialogue and series glossary. Return JSON {"items":[...]} with numeric "id" and "referent" ("listener", "object" or "unclear"). For a listener also give "name", the called name in English. Render a transparent pet nickname by its meaning if the series has no established alternative. Only when the input says "rewrite":true, also give "en" containing the whole spoken translation. Otherwise omit "en". No explanation.
 """.trim()
 
-        private const val JAPANESE_REQUEST_REVIEW_PROMPT =
-            "Translate each complete Japanese source again. Its opening standalone negative request addresses the listener. " +
-                "Preserve who is asked to act, the action, timing, register and every following clause. " +
-                "Return only JSON with an items array. Each item has its numeric id and the full natural English line in en."
+        private const val ROLE_REVIEW_PROMPT =
+            "Read each original again with its preceding dialogue. For listener_request, the standalone Japanese negative " +
+                "request addresses the listener. For actor_and_owner, Korean 내 or 제 identifies the owner of a noun. " +
+                "Determine separately who performed the final action. A noticing ending -네 often describes the companion's action. " +
+                "Follow the preceding exchange and use implicit wording if the actor is uncertain. Preserve the action, all objects, " +
+                "timing, register and every following clause. Return only JSON with an items array. Each item has its numeric id " +
+                "and full natural English in en. For actor_and_owner also give actor as speaker, other or unclear."
 
         /** Close-ups per page; each is a small upload and a few hundred tokens. */
         private const val MAX_CLOSEUPS = 6

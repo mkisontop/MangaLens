@@ -130,10 +130,38 @@ class TranslationServiceTest {
         val cards = mutableListOf(connective, wrong, ownPlan, faithful)
         val srv = serve { it.respond(503, "unavailable") }
         val reader = VisionLlmEngine(custom(srv))
-        reader.reviewJapaneseRequests(cards, "{}", JSONArray())
+        reader.reviewDialogueRoles(cards, "{}", JSONArray())
         assertEquals(listOf(connective, ownPlan, faithful), cards)
-        reader.reviewJapaneseRequests(cards, "{}", JSONArray())
+        reader.reviewDialogueRoles(cards, "{}", JSONArray())
         assertEquals(1, srv.exchanges.size)
+    }
+
+    @Test
+    fun aKoreanPossessiveDoesNotTurnTheOwnerIntoTheCompanionsActionSubject() = runBlocking {
+        fun line(src: String, en: String) = VisionLlmEngine.VisionBubble(0, 0, 0, 0, 0, src, en, false)
+        val prior = "Guide: Ash, are you taking me to camp?"
+        val wrong = line("내 가방도 챙겨 왔네.", "I brought my bag along, too.")
+        val correct = "You brought my bag along, too."
+        val explicit = line("내 가방은 내가 가져왔네.", "I brought my bag.")
+        val observer = line(wrong.src, "I see you brought my bag, too.")
+        val srv = serve { ex ->
+            val edits = JSONArray().put(JSONObject().put("id", 0).put("actor", "other").put("en", correct))
+            val msg = JSONObject().put("content", JSONObject().put("items", edits).toString())
+            ex.respond(200, JSONObject().put("choices", JSONArray().put(JSONObject().put("message", msg))).toString())
+        }
+        val reader = VisionLlmEngine(custom(srv))
+        val noHistory = mutableListOf(wrong)
+        reader.reviewDialogueRoles(noHistory, "{}", JSONArray())
+        assertEquals(listOf(wrong), noHistory)
+        assertTrue(srv.exchanges.isEmpty())
+        val cards = mutableListOf(wrong, explicit, observer)
+        reader.reviewDialogueRoles(cards, "{}", JSONArray().put(prior))
+        assertEquals(listOf(correct, explicit.en, observer.en), cards.map { it.en })
+        val message = JSONObject(srv.exchanges.single().body).getJSONArray("messages").getJSONObject(1).getString("content")
+        val items = JSONObject(message.substringAfter("\n\n")).getJSONArray("items")
+        assertEquals(1, items.length())
+        assertEquals(prior, items.getJSONObject(0).getString("previous_line"))
+        assertEquals("actor_and_owner", items.getJSONObject(0).getString("issue"))
     }
 
     @Test

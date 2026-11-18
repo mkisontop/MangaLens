@@ -176,8 +176,7 @@ class PublishedComicExperienceTest {
             host.getLocationOnScreen(origin)
         }
         inst.waitForIdleSync()
-        SystemClock.sleep(120)
-        val original = requireNotNull(inst.uiAutomation.takeScreenshot())
+        val original = originalPageScreenshot(frame, origin, expected)
         val screenBox = Rect(expected).apply { offset(origin[0], origin[1]) }
         saveBalloonComparison(scene.name, original, original, screenBox)
         val ocr = OcrEngine()
@@ -344,6 +343,42 @@ class PublishedComicExperienceTest {
             original.recycle()
             ocr.close()
             frame.recycle()
+        }
+    }
+
+    /** A busy emulator can still be showing the activity's splash after the UI thread is idle. */
+    private fun originalPageScreenshot(frame: Bitmap, origin: IntArray, bubble: Rect): Bitmap {
+        val w = frame.width
+        val h = frame.height
+        val source = IntArray(w * h)
+        val actual = IntArray(source.size)
+        frame.getPixels(source, 0, w, 0, 0, w, h)
+        val deadline = SystemClock.elapsedRealtime() + 10000
+        while (true) {
+            val shot = requireNotNull(inst.uiAutomation.takeScreenshot())
+            shot.getPixels(actual, 0, w, origin[0], origin[1], w, h)
+            var mismatched = 0
+            var sampled = 0
+            var bubbleMismatched = 0
+            var bubbleSamples = 0
+            for (y in 0 until h step 6) for (x in 0 until w step 6) {
+                val index = y * w + x
+                val changed = (0..16 step 8).any { shift ->
+                    abs((source[index] ushr shift and 255) - (actual[index] ushr shift and 255)) > 8
+                }
+                sampled++
+                if (changed) mismatched++
+                if (bubble.contains(x, y)) {
+                    bubbleSamples++
+                    if (changed) bubbleMismatched++
+                }
+            }
+            if (mismatched * 200 <= sampled && bubbleSamples > 0 && bubbleMismatched * 200 <= bubbleSamples) return shot
+            shot.recycle()
+            check(SystemClock.elapsedRealtime() < deadline) {
+                "Source panel did not reach the device. Changed samples $mismatched of $sampled, balloon $bubbleMismatched of $bubbleSamples"
+            }
+            SystemClock.sleep(60)
         }
     }
 

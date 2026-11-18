@@ -120,10 +120,20 @@ assert len(pages) == expected_pages and all(r["completed"] and r["image_bytes"] 
     "Each zoomed panel must receive one completed image request", records)
 assert 1 <= pages[0]["images"] <= 2 and pages[1]["images"] == 1, (
     "The contextual panel may keep one detailed close-up and the ordinary zoom uses one image", records)
-assert records[0] == pages[0] and records[-1] == pages[-1] and len(reviews) <= 1, (
-    "The ordinary follow-up balloon must finish with its single image request", records)
-assert all(r["purpose"] == "forms_of_address" and r["review_items"] == 1 and r["completed"] for r in reviews), (
-    "Only the ambiguous address may receive a small text-only review", records)
+assert records[0] == pages[0] and records[-1] == pages[-1] and len(reviews) <= 2
+scene = -1
+reviewed = set()
+for entry in records:
+    if entry["images"]:
+        scene += 1
+        continue
+    assert scene not in reviewed and entry["review_items"] == 1 and entry["completed"]
+    if scene == 0:
+        assert entry["purpose"] == "forms_of_address"
+    else:
+        assert scene == 1 and expected_pages == 3 and entry["purpose"] == "dialogue_roles", entry
+        assert any(re.match(r"^(?:I|We)\b", a.get("en", "").lstrip(" .…"), re.I) for a in pages[scene]["answers"])
+    reviewed.add(scene)
 assert all(r["regions"] >= 1 and r["ocr_hints"] == 0 for r in pages[:2]), (
     "These zoomed balloons must be read from the lettering in the images", records)
 assert pages[0]["story_entries"] == 0 and all(page["story_entries"] > 0 for page in pages[1:]), (

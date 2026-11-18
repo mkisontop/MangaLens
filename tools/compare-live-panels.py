@@ -20,6 +20,9 @@ def read_panel(root, run, arm, scene, index):
     assert len(pages) == len(SCENES) + int(arm == "candidate")
     page = pages[index]
     assert page["completed"] and page["ocr_hints"] == 0
+    start = requests.index(page)
+    stop = requests.index(pages[index + 1]) if index + 1 < len(pages) else len(requests)
+    turns = requests[start:stop]
     timings = page["provider_timings"]
     cached_tokens = timings.get("cache_n", 0)
     if index == 0:
@@ -34,7 +37,8 @@ def read_panel(root, run, arm, scene, index):
     return {
         "first_visible_ms": result["first_visible_ms"],
         "complete_visible_ms": result["complete_visible_ms"],
-        "model_ms": page["elapsed_ms"],
+        "model_ms": sum(turn["elapsed_ms"] for turn in turns),
+        "text_reviews": len(turns) - 1,
         "uncached_prompt_tokens": timings["prompt_n"],
         "cached_prompt_tokens": cached_tokens,
         "first_model_content_ms": page["first_content_ms"],

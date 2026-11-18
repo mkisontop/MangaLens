@@ -120,7 +120,7 @@ class LiveTranslationQualityTest {
         val request = "まだ箱を開けないで。鍵が届くまで待って。"
         val draft = "I'm not opening the box yet. Wait until the key arrives."
         val reviewed = mutableListOf(VisionLlmEngine.VisionBubble(0, 0, 0, 0, 0, request, draft, false))
-        VisionLlmEngine(settings).reviewJapaneseRequests(reviewed, "{}", JSONArray())
+        VisionLlmEngine(settings).reviewDialogueRoles(reviewed, "{}", JSONArray())
         val correction = reviewed.singleOrNull()?.en.orEmpty()
         val lower = correction.lowercase().replace('’', '\'')
         val directed = Regex("""\b(?:don't|do not|mustn't|must not|shouldn't|should not)\s+open\b""").containsMatchIn(lower)
@@ -129,6 +129,18 @@ class LiveTranslationQualityTest {
         if (!repaired) failures += request + " => " + correction
         results.put("japanese_listener_request", JSONObject().put("source", request).put("initial_english", draft)
             .put("english", correction).put("passed", repaired))
+        val source = "내 가방도 챙겨 왔네."
+        val wrongOwner = "I brought my bag along, too."
+        val prior = "Guide: Ash! Are you taking me to camp?"
+        val luggage = mutableListOf(VisionLlmEngine.VisionBubble(0, 0, 0, 0, 0, source, wrongOwner, false))
+        VisionLlmEngine(settings).reviewDialogueRoles(luggage, "{}", JSONArray().put(prior))
+        val corrected = luggage.singleOrNull()?.en.orEmpty()
+        val luggageWords = corrected.lowercase()
+        val keptOwner = words(luggageWords, "my") && words(luggageWords, "bag|backpack|luggage")
+        val companionActed = Regex("""\byou(?:['’]ve| have)?\s+(?:(?:also|even|already)\s+)*(?:brought|packed|carried|grabbed|got|picked up)\b""").containsMatchIn(luggageWords)
+        if (!keptOwner || !companionActed) failures += source + " => " + corrected
+        results.put("korean_actor_and_owner", JSONObject().put("source", source).put("previous_line", prior)
+            .put("initial_english", wrongOwner).put("english", corrected).put("passed", keptOwner && companionActed))
         report.writeText(results.toString(2) + "\n")
         assertTrue(failures.joinToString("\n"), failures.isEmpty())
     }
