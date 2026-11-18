@@ -15,6 +15,7 @@ import androidx.activity.ComponentActivity
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
@@ -55,13 +56,6 @@ class MainActivity : ComponentActivity() {
     /** Where the last request asked Tweaks to open. */
     private var tweaksTarget by mutableStateOf(TweaksTarget.TOP)
 
-    /**
-     * The last start ended at the screen-capture dialog's Cancel. Fuki
-     * says so on the home screen, which is still in front of the reader,
-     * instead of a toast that is gone before it is read.
-     */
-    private var startRefused by mutableStateOf(false)
-
     private var browserName by mutableStateOf<String?>(null)
 
     private val projectionLauncher =
@@ -74,7 +68,7 @@ class MainActivity : ComponentActivity() {
                     .putExtra(ScreenCaptureService.EXTRA_RESULT_DATA, data)
                 ContextCompat.startForegroundService(this, intent)
             } else {
-                startRefused = true
+                ScreenCaptureService.captureConsentRequired.value = true
             }
         }
 
@@ -91,6 +85,7 @@ class MainActivity : ComponentActivity() {
         if (savedInstanceState == null) openRequested(intent)
         setContent {
             MangaLensTheme {
+                val startRefused by ScreenCaptureService.captureConsentRequired.collectAsState()
                 HomeScreen(
                     repo = repo,
                     browserName = browserName,
@@ -136,7 +131,7 @@ class MainActivity : ComponentActivity() {
         if (packageManager.getLaunchIntentForPackage(BRAVE) != null) "Brave" else null
 
     private fun startFlow() {
-        startRefused = false
+        ScreenCaptureService.captureConsentRequired.value = false
         if (Build.VERSION.SDK_INT >= 33 &&
             checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
         ) {

@@ -5,7 +5,9 @@ import android.content.Intent
 import android.graphics.Bitmap
 import android.graphics.Canvas
 import android.graphics.Rect
+import android.media.projection.MediaProjectionConfig
 import android.media.projection.MediaProjectionManager
+import android.os.Build
 import android.os.SystemClock
 import android.util.Log
 import android.view.View
@@ -18,6 +20,7 @@ import androidx.test.platform.app.InstrumentationRegistry
 import androidx.test.uiautomator.By
 import androidx.test.uiautomator.UiDevice
 import androidx.test.uiautomator.Until
+import app.mangalens.MainActivity
 import app.mangalens.capture.ScreenCaptureService
 import app.mangalens.ocr.OcrEngine
 import app.mangalens.settings.AiVisionMode
@@ -33,10 +36,12 @@ import okhttp3.mockwebserver.RecordedRequest
 import org.json.JSONArray
 import org.json.JSONObject
 import org.junit.Assert.*
+import org.junit.Assume.assumeTrue
 import org.junit.Test
 import org.junit.runner.RunWith
 import java.io.File
 import java.net.InetAddress
+import java.util.concurrent.CompletableFuture
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import kotlin.math.abs
@@ -99,21 +104,15 @@ class ReaderExperienceTest {
                 }
                 val service = Intent(app, ScreenCaptureService::class.java)
                 try {
-                    scenario.onActivity { activity ->
-                        val consent = activity.activityResultRegistry.register("capture-fixture", ActivityResultContracts.StartActivityForResult()) { result ->
-                            check(result.resultCode == Activity.RESULT_OK)
-                            val start = Intent(service).setAction(ScreenCaptureService.ACTION_START)
-                                .putExtra(ScreenCaptureService.EXTRA_RESULT_CODE, result.resultCode)
-                                .putExtra(ScreenCaptureService.EXTRA_RESULT_DATA, result.data)
-                            ContextCompat.startForegroundService(activity, start)
-                        }
-                        consent.launch(activity.getSystemService(MediaProjectionManager::class.java).createScreenCaptureIntent())
+                    val candidate = InstrumentationRegistry.getArguments().getString("build") != "baseline"
+                    ContextCompat.startForegroundService(app, captureGrant(scenario, "capture-fixture"))
+                    await("screen capture consent", 10000) {
+                        ScreenCaptureService.running.value || (candidate && ScreenCaptureService.captureConsentRequired.value)
                     }
-                    val device = UiDevice.getInstance(inst)
-                    val approve = device.wait(Until.findObject(By.textContains("Start now")), 6000)
-                        ?: device.wait(Until.findObject(By.res("android", "button1")), 2000)
-                    approve?.click()
-                    await("screen capture consent", 10000) { ScreenCaptureService.running.value }
+                    if (!ScreenCaptureService.running.value) {
+                        ContextCompat.startForegroundService(app, captureGrant(scenario, "capture-fixture-fresh"))
+                        await("fresh screen capture consent", 10000) { ScreenCaptureService.running.value }
+                    }
                     DisplayText().use { english ->
                         measureStartup(scenario, english)
                         for (index in page.source.indices) {
@@ -123,6 +122,65 @@ class ReaderExperienceTest {
                 } finally {
                     app.stopService(service)
                 }
+            }
+        }
+    }
+
+    private fun captureGrant(scenario: ActivityScenario<ComponentActivity>, key: String): Intent {
+        val granted = CompletableFuture<Intent>()
+        scenario.onActivity { activity ->
+            val launcher = activity.activityResultRegistry.register(key, ActivityResultContracts.StartActivityForResult()) { result ->
+                val grant = result.data
+                if (result.resultCode == Activity.RESULT_OK && grant != null) {
+                    granted.complete(Intent(app, ScreenCaptureService::class.java).setAction(ScreenCaptureService.ACTION_START)
+                        .putExtra(ScreenCaptureService.EXTRA_RESULT_CODE, result.resultCode)
+                        .putExtra(ScreenCaptureService.EXTRA_RESULT_DATA, grant))
+                } else {
+                    granted.completeExceptionally(AssertionError("Screen-sharing consent was declined"))
+                }
+            }
+            val manager = activity.getSystemService(MediaProjectionManager::class.java)
+            val request = if (Build.VERSION.SDK_INT >= 34) {
+                manager.createScreenCaptureIntent(MediaProjectionConfig.createConfigForDefaultDisplay())
+            } else {
+                manager.createScreenCaptureIntent()
+            }
+            launcher.launch(request)
+        }
+        val device = UiDevice.getInstance(inst)
+        val approve = device.wait(Until.findObject(By.textContains("Start now")), 6000)
+            ?: device.wait(Until.findObject(By.res("android", "button1")), 2000)
+        approve?.click()
+        return granted.get(10, TimeUnit.SECONDS)
+    }
+
+    @Test fun anExpiredScreenGrantReturnsHomeAndFreshConsentResumesCapture() {
+        assumeTrue(Build.VERSION.SDK_INT >= 34 &&
+            InstrumentationRegistry.getArguments().getString("build", "candidate") != "baseline")
+        runBlocking { SettingsRepository(app).setMode(CaptureMode.MANUAL) }
+        val service = Intent(app, ScreenCaptureService::class.java)
+        ActivityScenario.launch(ComponentActivity::class.java).use { host ->
+            try {
+                val first = captureGrant(host, "first-capture")
+                ContextCompat.startForegroundService(app, first)
+                await("first authorized session", 10000) { ScreenCaptureService.running.value }
+                app.stopService(service)
+                await("first session to end", 10000) { !ScreenCaptureService.running.value }
+
+                ContextCompat.startForegroundService(app, Intent(first))
+                await("expired grant to be rejected", 10000) { ScreenCaptureService.captureConsentRequired.value }
+                assertFalse(ScreenCaptureService.running.value)
+                ActivityScenario.launch(MainActivity::class.java).use {
+                    val device = UiDevice.getInstance(inst)
+                    assertTrue("Home explains that fresh screen sharing is needed",
+                        device.wait(Until.hasObject(By.textContains("I can't read what I can't see")), 10000))
+                }
+
+                ContextCompat.startForegroundService(app, captureGrant(host, "fresh-capture"))
+                await("fresh authorized session", 10000) { ScreenCaptureService.running.value }
+                assertFalse(ScreenCaptureService.captureConsentRequired.value)
+            } finally {
+                app.stopService(service)
             }
         }
     }

@@ -14,6 +14,7 @@ on:
       - "tools/observe-panel-model.py"
       - "app/src/main/java/app/mangalens/translate/**"
       - "app/src/main/java/app/mangalens/pipeline/**"
+      - "app/src/main/java/app/mangalens/capture/**"
 
 permissions:
   contents: read

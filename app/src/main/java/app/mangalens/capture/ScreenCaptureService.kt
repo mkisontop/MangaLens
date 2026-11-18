@@ -233,6 +233,9 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
 
         val running = MutableStateFlow(false)
 
+        /** Keep a declined or expired grant visible on Home until the reader asks again. */
+        val captureConsentRequired = MutableStateFlow(false)
+
         /**
          * Whether translation is paused, for the home screen: it shows Fuki
          * napping and offers "Wake up" instead of treating a paused session
@@ -639,10 +642,15 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                 val code = intent.getIntExtra(EXTRA_RESULT_CODE, Activity.RESULT_CANCELED)
                 val data = IntentCompat.getParcelableExtra(intent, EXTRA_RESULT_DATA, Intent::class.java)
                 if (code != Activity.RESULT_OK || data == null) {
-                    stopSelf()
+                    stopForCaptureConsent()
                 } else {
-                    startAsForeground()
-                    startProjection(code, data)
+                    captureConsentRequired.value = false
+                    try {
+                        startAsForeground()
+                        startProjection(code, data)
+                    } catch (_: SecurityException) {
+                        stopForCaptureConsent()
+                    }
                 }
             }
             ACTION_STOP -> stopSelf()
@@ -650,6 +658,11 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
             ACTION_TOGGLE_PAUSE -> onTogglePause()
         }
         return START_NOT_STICKY
+    }
+
+    private fun stopForCaptureConsent() {
+        captureConsentRequired.value = true
+        stopSelf()
     }
 
     private fun startAsForeground() {
@@ -670,7 +683,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
             null
         }
         if (mp == null) {
-            stopSelf()
+            stopForCaptureConsent()
             return
         }
         projection = mp
@@ -682,7 +695,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
                 scope.launch { stopSelf() }
             }
         }, captureHandler)
-        setupDisplay()
+        if (!setupDisplay()) return
         pipeline.warm(settings)
         // The hyphenation patterns load here, not on the UI thread when the
         // first long word is lettered.
@@ -765,7 +778,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         }
     }
 
-    private fun setupDisplay() {
+    private fun setupDisplay(): Boolean {
         val (w, h, dpi) = displaySize()
         capW = w
         capH = h
@@ -775,23 +788,34 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         val reader = ImageReader.newInstance(w, h, PixelFormat.RGBA_8888, 3)
         reader.setOnImageAvailableListener({ r -> onFrame(r) }, captureHandler)
         val vd = virtualDisplay
-        if (vd == null) {
-            virtualDisplay = projection?.createVirtualDisplay(
-                "mangalens",
-                w, h, dpi,
-                DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
-                reader.surface,
-                null,
-                captureHandler
-            )
-        } else {
-            // Android 14+ allows only one createVirtualDisplay per projection,
-            // so rotations are handled by resizing the existing one.
-            vd.resize(w, h, dpi)
-            vd.surface = reader.surface
+        val display = try {
+            if (vd == null) {
+                projection?.createVirtualDisplay(
+                    "mangalens",
+                    w, h, dpi,
+                    DisplayManager.VIRTUAL_DISPLAY_FLAG_AUTO_MIRROR,
+                    reader.surface,
+                    null,
+                    captureHandler
+                )
+            } else {
+                // A rotation keeps the existing, already authorized display.
+                vd.resize(w, h, dpi)
+                vd.surface = reader.surface
+                vd
+            }
+        } catch (_: SecurityException) {
+            null
         }
+        if (display == null) {
+            onCaptureThread(captureHandler) { runCatching { reader.close() } }
+            stopForCaptureConsent()
+            return false
+        }
+        virtualDisplay = display
         imageReader?.let { old -> onCaptureThread(captureHandler) { runCatching { old.close() } } }
         imageReader = reader
+        return true
     }
 
     override fun onConfigurationChanged(newConfig: Configuration) {
@@ -801,8 +825,7 @@ class ScreenCaptureService : Service(), OverlayController.Listener {
         if (w != capW || h != capH) {
             takeDown()
             releaseFrameBuffers()
-            setupDisplay()
-            applyShadeSettings()
+            if (setupDisplay()) applyShadeSettings()
         }
     }
 
