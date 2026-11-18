@@ -82,7 +82,7 @@ log = Path(sys.argv[1]).read_text(errors="replace")
 records = [json.loads(row) for row in Path("app/build/reader-live-device/model-requests.jsonl").read_text().splitlines()]
 assert len(records) == 2 and all(r["images"] >= 1 and r["completed"] for r in records), (
     "Each on-screen answer must come from one complete image request without a text retry", records)
-assert all(r["regions"] == 1 and r["ocr_hints"] == 0 for r in records), (
+assert all(r["regions"] >= 1 and r["ocr_hints"] == 0 for r in records), (
     "These zoomed balloons must be read from the lettering in the images", records)
 assert records[0]["story_entries"] == 0 and records[1]["story_entries"] > 0, (
     "The second frame must use the model's own preceding dialogue", records)

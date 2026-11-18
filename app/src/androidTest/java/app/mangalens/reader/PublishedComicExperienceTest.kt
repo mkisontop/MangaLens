@@ -314,6 +314,9 @@ class PublishedComicExperienceTest {
                 Regex("""\b(contest|competition|tournament|venue)\b""").containsMatchIn(answer) &&
                     Regex("""\b(take|takes|taking|bring|bringing|escort|escorting|carry|carrying|lead|leading|transport|driving|drop|dropping)\b""").containsMatchIn(answer) &&
                     Regex("""\bme\b""").containsMatchIn(answer))
+            assertTrue("The affectionate aside should not become a means of travel: " + answer,
+                Regex("""cute|adorable|sweet|darling|dear|lovely""").containsMatchIn(answer) &&
+                    !Regex("""\b(with|using|on|by) (this|that|a|the|your) (cute|adorable|sweet|lovely)\b""").containsMatchIn(answer))
             return
         }
         assertTrue("Clothing, hat and potion must all be present: " + answer,
