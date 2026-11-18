@@ -175,7 +175,7 @@ class BubbleOverlayView(context: Context) : View(context) {
         val movable: Boolean,
         val card: RectF? = null,
         val cardColor: Int = 0,
-        /** Rectangle wiped to [cardColor] under a card: an on-art vertical column. */
+        /** Source lettering cleared in place, even when its English card moves. */
         val wipe: RectF? = null,
         /** Tint for a flat balloon stamp; null draws the stamp's own colours. */
         val tint: PorterDuffColorFilter? = null,
@@ -1932,7 +1932,12 @@ class BubbleOverlayView(context: Context) : View(context) {
         top = top.coerceAtMost(screenH - h - dp(2f)).coerceAtLeast(dp(2f))
         val rect = RectF(left, top, left + w, top + h)
 
-        val wipe = if (column) RectF(b.box).apply { inset(-dp(2f), -dp(2f)) } else null
+        // A short translation or a card nudged off a neighbour can leave source
+        // glyphs exposed on either side. Keep the fallback wipe on the source,
+        // bounded like the card itself if an OCR box spans a whole page.
+        val wipe = if (column || (b.box.width() <= screenW * .92f && b.box.height() <= screenH * .5f)) {
+            RectF(b.box).apply { inset(-dp(2f), -dp(2f)) }
+        } else null
         return lettering(
             layout = chosen,
             x = rect.centerX() - chosen.width / 2f,

@@ -60,6 +60,7 @@ def main(root):
         require(all(int(r["source_pixels_remaining"]) < 50 and int(r["art_max_error"]) <= 4 and int(r["lines"]) == 12 for r in dense),
                 "Unreplaced source, missing line, or changed artwork on dense pages: " + build)
         # The first page populates the text cache; the first dense draw warms fonts/JIT.
+        worst_balloon = max(float(r["worst_balloon_source_pct"]) for r in turns)
         turns, dense = turns[1:], dense[1:]
         result[build] = {
             "startup_translated_without_scrolling": startup[0]["translated"] == "true",
@@ -84,6 +85,7 @@ def main(root):
             "gemini_encoded_height": median(uploads, "encoded_height"),
             "scrolls_using_only_strip": sum(r["strip"] == "true" for r in uploads),
             "max_source_ink_remaining_pct": max(float(r["remaining_source_pct"]) for r in turns),
+            "worst_balloon_source_pct": worst_balloon,
             "pages_with_hit_before_provider_reply": sum(
                 int(r["first_visible_ms"]) < int(r["provider_start_ms"]) + 1800 for r in turns
             ),
@@ -92,6 +94,7 @@ def main(root):
     (root / "comparison.json").write_text(json.dumps(result, indent=2) + "\n", encoding="utf-8")
     before, after = result["baseline"], result["candidate"]
     require(after["startup_translated_without_scrolling"], "The controls left the first page unread")
+    require(after["worst_balloon_source_pct"] == 0, "Original source-coloured strokes remained on a settled fixture balloon")
     require(after["erased_image_crc"] == before["erased_image_crc"],
             "The optimized clean pages differ from the reference build")
     require(after["first_visible_ms"] + 450 < before["first_visible_ms"],

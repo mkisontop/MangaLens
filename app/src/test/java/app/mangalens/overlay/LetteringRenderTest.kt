@@ -166,6 +166,21 @@ class LetteringRenderTest {
         return out
     }
 
+    @Test fun aShortFallbackCardClearsAllTheWideOriginalAndKeepsNearbyArt() {
+        val page = Bitmap.createBitmap(pageW, pageH, Bitmap.Config.ARGB_8888).apply { eraseColor(Color.WHITE) }
+        val box = Rect(125, 410, 590, 468)
+        drawLettering(Canvas(page), box, false, letteringInk)
+        val border = Paint().apply { color = Color.BLUE }
+        Canvas(page).drawRect(118f, 380f, 600f, 388f, border)
+        val v = view()
+        v.setBubbles(listOf(RenderBubble(box, "Go!", "지금 바로 이쪽으로 오세요", Color.WHITE, Color.BLACK, false)))
+        v.draw(Canvas(page))
+        assertEquals("source glyphs to either side of the English", 0, count(page, box, ::isLetteringInk))
+        assertEquals("panel edge survives", Color.BLUE, page.getPixel(130, 384))
+        assertRectsCoverOverlay(v, "short fallback card")
+        page.recycle()
+    }
+
     private fun assertRectsCoverOverlay(v: BubbleOverlayView, what: String) {
         val overlay = overlayOnly(v)
         val rects = v.placedRects()

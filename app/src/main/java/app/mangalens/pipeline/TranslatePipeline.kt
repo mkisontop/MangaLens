@@ -1068,7 +1068,7 @@ class TranslatePipeline(
             val previous = cards[k]
             if (previous != null && previous.translated == english) return previous
             val next = previous?.copy(translated = english)
-                ?: renderBubble(bitmap, b.box, english, b.text, b.vertical, b.kind, detected)
+                ?: renderBubble(bitmap, b.box, english, b.text, b.vertical, b.kind, detected, cleanOcrText = true)
             cards[k] = next
             return next
         }
@@ -1339,6 +1339,7 @@ class TranslatePipeline(
         vertical: Boolean,
         kind: BubbleKind,
         detected: List<Balloon>,
+        cleanOcrText: Boolean = false,
     ): RenderBubble {
         // Art that passed for a balloon — a face, a highlight — is never
         // wiped: only a detection holding nothing but this lettering is.
@@ -1349,7 +1350,16 @@ class TranslatePipeline(
             BalloonTrust.holdsOnly(bitmap, it, listOf(box)) ||
                 BalloonTrust.letteringBlock(bitmap, it)?.let { block -> Rect.intersects(block, box) } == true
         }
-        val bg = if (balloon != null) PageColors.interiorColor(bitmap, balloon) else PageColors.sampleBackground(bitmap, box)
+        // Dialogue can be perfectly readable even when a page edge or a control
+        // hides the balloon outline. Clean the OCR strokes on their own paper.
+        val erasure = if (cleanOcrText && balloon == null && kind == BubbleKind.DIALOGUE) {
+            TextEraser.erase(bitmap, box, ItemKind.SPEECH)
+        } else null
+        val bg = when {
+            balloon != null -> PageColors.interiorColor(bitmap, balloon)
+            erasure != null -> erasure.background
+            else -> PageColors.sampleBackground(bitmap, box)
+        }
         val textColor = when {
             balloon?.inverted == true -> 0xFFF2F3F7.toInt()
             PageColors.luminance(bg) < 140 -> Color.WHITE
@@ -1368,6 +1378,8 @@ class TranslatePipeline(
             kind = kind,
             balloon = balloon,
             fill = fill,
+            patch = erasure?.patch,
+            patchRect = erasure?.rect,
         )
     }
 

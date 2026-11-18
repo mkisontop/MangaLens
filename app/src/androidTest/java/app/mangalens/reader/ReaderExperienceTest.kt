@@ -65,7 +65,7 @@ class ReaderExperienceTest {
                 }
             }
             val metrics = File(output, "metrics.csv")
-            metrics.writeText("scenario,page,first_visible_ms,all_visible_ms,provider_start_ms,arrival_source_pct,remaining_source_pct,guard_error\n")
+            metrics.writeText("scenario,page,first_visible_ms,all_visible_ms,provider_start_ms,arrival_source_pct,remaining_source_pct,worst_balloon_source_pct,guard_error\n")
             ActivityScenario.launch(ComponentActivity::class.java).use { scenario ->
                 scenario.onActivity { activity ->
                     activity.window.decorView.systemUiVisibility = View.SYSTEM_UI_FLAG_FULLSCREEN or
@@ -220,9 +220,12 @@ class ReaderExperienceTest {
             SystemClock.sleep(180)
             inst.uiAutomation.takeScreenshot()?.let(::replaceLast)
             val result = requireNotNull(last)
-            val settledInk = page.ink(result, screenTop).source +
-                (if (index == 0) 0 else page.ink(result, screenBottom).source)
+            val topInk = page.ink(result, screenTop).source
+            val bottomInk = if (index == 0) 0 else page.ink(result, screenBottom).source
+            val settledInk = topInk + bottomInk
             val settledPct = 100.0 * settledInk / (topSource + bottomSource)
+            val worstBalloon = maxOf(100.0 * topInk / topSource,
+                if (index == 0) 0.0 else 100.0 * bottomInk / bottomSource)
             val targets = if (index == 0) listOf(screenTop to page.english.first())
                 else listOf(screenTop to page.english.first(), screenBottom to page.english[index])
             for ((region, expected) in targets) {
@@ -231,7 +234,7 @@ class ReaderExperienceTest {
                     DisplayText.letters(read).contains(DisplayText.letters(expected)))
             }
             val requestMs = requests.getValue(page.source[index]) - start
-            val row = listOf("media-projection", index, first, full, requestMs, sourcePct, settledPct, guard).joinToString(",")
+            val row = listOf("media-projection", index, first, full, requestMs, sourcePct, settledPct, worstBalloon, guard).joinToString(",")
             metrics.appendText(row + "\n")
             Log.i("MangaLensUX", row)
             assertTrue("Source ink stays erased", settledPct < 10.0)
